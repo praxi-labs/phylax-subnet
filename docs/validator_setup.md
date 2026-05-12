@@ -15,7 +15,7 @@ miners over the dendrite and score responses.
 ## 2. Install
 
 ```bash
-git clone https://github.com/your-org/phylax-subnet.git
+git clone https://github.com/praxi-labs/phylax-subnet.git
 cd phylax-subnet
 pip install -e .
 ```

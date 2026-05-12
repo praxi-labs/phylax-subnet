@@ -17,7 +17,7 @@ Optional but recommended:
 ## 2. Clone + install
 
 ```bash
-git clone https://github.com/your-org/phylax-subnet.git
+git clone https://github.com/praxi-labs/phylax-subnet.git
 cd phylax-subnet
 pip install -e .
 ```
