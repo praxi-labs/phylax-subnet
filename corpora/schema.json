@@ -1,0 +1,87 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Phylax Corpora Task",
+  "description": "Ground-truth task definition used by validators to score miners. Each JSON file under known_bad/, known_good/, near_miss/, adversarial/ must conform to this schema.",
+  "type": "object",
+  "required": ["name", "bundle_hash", "expected_verdict"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Human-readable task name. Unique within the corpora directory."
+    },
+    "description": {
+      "type": "string",
+      "description": "What this task tests. Useful for triage when miner scores anomalously."
+    },
+    "bundle_hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "sha256:<hex> of the skill bundle zip. Primary identifier."
+    },
+    "bundle_url": {
+      "type": "string",
+      "format": "uri",
+      "description": "URL where the bundle can be downloaded by the miner."
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Skill metadata as it would arrive in a real submission.",
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "permissions": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "test_profile": {
+      "type": "string",
+      "enum": ["fast", "standard", "deep"],
+      "default": "standard"
+    },
+    "expected_verdict": {
+      "type": "string",
+      "enum": ["ALLOW", "WARN", "BLOCK"]
+    },
+    "expected_risk_score": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "expected_capabilities": {
+      "type": "object",
+      "description": "Capability map the miner should produce — used for fine-grained scoring."
+    },
+    "expected_policy": {
+      "type": "object",
+      "description": "Minimal recommended_policy the miner should produce.",
+      "properties": {
+        "egress_allowlist": { "type": "array", "items": { "type": "string" } },
+        "shell_access":     { "type": "boolean" },
+        "env_allowlist":    { "type": "array", "items": { "type": "string" } },
+        "max_memory_mb":    { "type": "integer" },
+        "timeout_seconds":  { "type": "integer" }
+      }
+    },
+    "expected_findings": {
+      "type": "array",
+      "description": "Optional list of finding titles/severities the miner should detect.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "title_contains":    { "type": "string" },
+          "minimum_severity":  {
+            "type": "string",
+            "enum": ["LOW", "MEDIUM", "HIGH", "CRITICAL"]
+          }
+        }
+      }
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Free-form tags: e.g. 'exfiltration', 'typosquat', 'prompt-injection'."
+    }
+  }
+}

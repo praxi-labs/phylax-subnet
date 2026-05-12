@@ -1,0 +1,41 @@
+# Phylax sandbox — locked detonation environment
+#
+# This image is what each scanned skill bundle actually runs inside.
+# It is launched by the miner via `docker run --rm --network none ...`.
+#
+# Inside this container:
+#   /skill    — the bundle, mounted READ-ONLY
+#   /evidence — output directory the harness writes JSONL traces into
+#
+# The container has NO network capability by default. The miner can add
+# specific routes if a deep-profile scan needs them.
+
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PHYLAX_SEED=1337
+
+# Minimal forensics tooling — strace + tcpdump for behavioural capture
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        strace tcpdump procps coreutils \
+        && rm -rf /var/lib/apt/lists/*
+
+# In-container harness that runs the skill and emits JSONL traces
+COPY docker/harness/ /opt/harness/
+RUN pip install -r /opt/harness/requirements.txt 2>/dev/null || true
+
+# Non-root user — skills run as 'sandbox', not root
+RUN useradd --no-create-home --shell /usr/sbin/nologin sandbox
+USER sandbox
+
+WORKDIR /skill
+
+# The harness is the entrypoint; it imports the skill, invokes its public
+# surface (declared in manifest.json or detected via heuristics), and emits:
+#   /evidence/network.jsonl
+#   /evidence/fs.jsonl
+#   /evidence/process.jsonl
+#   /evidence/secrets.jsonl
+ENTRYPOINT ["python", "/opt/harness/run.py"]

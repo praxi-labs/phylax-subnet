@@ -1,0 +1,2 @@
+# Sandbox harness has no external dependencies — keep it that way.
+# Anything we install here becomes attack surface from inside the sandbox.

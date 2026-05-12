@@ -1,0 +1,25 @@
+# Core
+bittensor
+pydantic
+torch
+numpy
+
+# Static analysis (optional but recommended)
+bandit
+
+# SBOM
+cyclonedx-bom
+
+# Cryptography / SS58
+substrate-interface
+PyNaCl
+
+# Networking / HTTP
+requests
+
+# TOML parsing on py3.10 (3.11+ has tomllib built in)
+tomli ; python_version < "3.11"
+
+# Testing
+pytest
+pytest-asyncio

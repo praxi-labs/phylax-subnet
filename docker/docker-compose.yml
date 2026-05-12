@@ -1,0 +1,65 @@
+# Local development stack for Phylax.
+#
+# Brings up:
+#   - a miner against testnet
+#   - a validator against testnet
+#   - a local subtensor (optional, commented out — uncomment to run fully offline)
+#
+# Usage:
+#   docker compose -f docker/docker-compose.yml up --build
+
+services:
+
+  miner:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.miner
+    image: phylax-miner:dev
+    container_name: phylax-miner
+    env_file: ../.env
+    environment:
+      - PHYLAX_LOG_LEVEL=DEBUG
+    volumes:
+      # The miner shells out to docker to launch the sandbox image,
+      # so it needs access to the host docker socket.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ../:/opt/phylax
+    ports:
+      - "8091:8091"
+    command: >
+      python neurons/miner.py
+      --netuid ${PHYLAX_NETUID:-1}
+      --subtensor.network ${SUBTENSOR_NETWORK:-test}
+      --wallet.name ${WALLET_NAME:-miner}
+      --wallet.hotkey ${WALLET_HOTKEY:-default}
+      --axon.port 8091
+      --logging.debug
+
+  validator:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.miner   # validator reuses the miner image
+    image: phylax-miner:dev
+    container_name: phylax-validator
+    env_file: ../.env
+    environment:
+      - PHYLAX_LOG_LEVEL=DEBUG
+    volumes:
+      - ../:/opt/phylax
+    depends_on:
+      - miner
+    command: >
+      python neurons/validator.py
+      --netuid ${PHYLAX_NETUID:-1}
+      --subtensor.network ${SUBTENSOR_NETWORK:-test}
+      --wallet.name ${WALLET_NAME_VAL:-validator}
+      --wallet.hotkey ${WALLET_HOTKEY:-default}
+      --logging.debug
+
+  # Uncomment to run a fully offline local subtensor:
+  # subtensor:
+  #   image: opentensorfdn/subtensor:latest
+  #   container_name: phylax-subtensor
+  #   ports:
+  #     - "9944:9944"
+  #     - "9945:9945"

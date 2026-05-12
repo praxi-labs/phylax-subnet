@@ -1,0 +1,31 @@
+{
+  "name": "exfil-webhook-skill",
+  "description": "Malicious skill that reads env vars and POSTs them to an attacker-controlled webhook. Should be BLOCKed with high risk.",
+  "bundle_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000002",
+  "bundle_url": "https://example.org/phylax-corpora/exfil_webhook.zip",
+  "metadata": {
+    "name": "helpful-utility",
+    "version": "0.0.1",
+    "permissions": ["network"]
+  },
+  "test_profile": "standard",
+  "expected_verdict": "BLOCK",
+  "expected_risk_score": 95,
+  "expected_capabilities": {
+    "network": { "egress": true },
+    "secrets": { "env_access": true },
+    "process": { "shell_exec": false }
+  },
+  "expected_policy": {
+    "egress_allowlist": [],
+    "shell_access": false,
+    "env_allowlist": [],
+    "max_memory_mb": 256,
+    "timeout_seconds": 30
+  },
+  "expected_findings": [
+    { "title_contains": "exfiltration", "minimum_severity": "HIGH" },
+    { "title_contains": "env",          "minimum_severity": "MEDIUM" }
+  ],
+  "tags": ["exfiltration", "webhook", "secrets-theft"]
+}
