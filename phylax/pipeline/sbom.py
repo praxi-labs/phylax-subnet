@@ -1,26 +1,38 @@
-"""
-phylax/pipeline/sbom.py
-
-Layer 2: SBOM generation + supply-chain risk analysis.
-
-Generates a Software Bill of Materials for the bundle and checks each
-dependency against:
-  - CVE database (osv.dev or local snapshot)
-  - Typosquatting heuristics (Levenshtein distance to known popular packages)
-  - Install-hook detection (postinstall scripts, setup.py side effects)
-"""
-
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
 from phylax.protocol import Finding, FindingEvidence, Severity
+
+
+# OSV.dev CVE lookup. Responses cached on disk for 24h.
+
+OSV_API_URL = "https://api.osv.dev/v1/query"
+OSV_CACHE_DIR = Path(os.getenv("PHYLAX_OSV_CACHE_DIR", str(Path.home() / ".phylax" / "osv_cache")))
+OSV_CACHE_TTL_SECONDS = 24 * 60 * 60
+OSV_TIMEOUT_SECONDS = 10
+
+OSV_ECOSYSTEMS = {
+    "python": "PyPI",
+    "pypi": "PyPI",
+    "npm": "npm",
+    "node": "npm",
+    "go": "Go",
+    "rust": "crates.io",
+    "java": "Maven",
+    "maven": "Maven",
+    "ruby": "RubyGems",
+    "rubygems": "RubyGems",
+    "nuget": "NuGet",
+}
 
 
 # A small starter list of high-profile packages used for typosquat detection.
@@ -37,6 +49,40 @@ INSTALL_HOOK_PATTERNS = [
     re.compile(r"def\s+run\s*\(.*\):", re.IGNORECASE),
     re.compile(r"postinstall|preinstall", re.IGNORECASE),
 ]
+
+
+# ---------------------------------------------------------------------------
+# Disk-backed OSV cache helpers
+# ---------------------------------------------------------------------------
+
+def _osv_cache_key(ecosystem: str, name: str, version: str) -> Path:
+    digest = hashlib.sha256(f"{ecosystem}|{name.lower()}|{version}".encode()).hexdigest()
+    return OSV_CACHE_DIR / f"{digest}.json"
+
+
+def _osv_cache_get(ecosystem: str, name: str, version: str) -> Optional[list[str]]:
+    path = _osv_cache_key(ecosystem, name, version)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return None
+    if time.time() - data.get("fetched_at", 0) > OSV_CACHE_TTL_SECONDS:
+        return None
+    return list(data.get("ids", []))
+
+
+def _osv_cache_put(ecosystem: str, name: str, version: str, ids: list[str]) -> None:
+    try:
+        OSV_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        path = _osv_cache_key(ecosystem, name, version)
+        path.write_text(
+            json.dumps({"fetched_at": time.time(), "ids": ids}, sort_keys=True),
+            encoding="utf-8",
+        )
+    except Exception:  # noqa: BLE001 — cache failures must never break a scan
+        pass
 
 
 @dataclass
@@ -170,8 +216,7 @@ class SBOMAnalyzer:
                     owasp_ref="AG07 — Insecure Supply Chain",
                 ))
 
-        # CVE lookup (stub — production uses osv.dev or local DB)
-        cves = self._lookup_cves(name, pkg.get("version", ""))
+        cves = self._lookup_cves(name, pkg.get("version", ""), pkg.get("type", "python"))
         for cve in cves:
             result.known_vulns.append(cve)
             result.findings.append(Finding(
@@ -210,13 +255,62 @@ class SBOMAnalyzer:
             previous = current
         return previous[-1]
 
-    def _lookup_cves(self, name: str, version: str) -> list[str]:
+    # CVE lookup cache — keyed by (ecosystem, name, version). Process-local
+    # so re-scans during one validator round are fast; reset on restart.
+    _cve_cache: dict[tuple[str, str, str], list[str]] = {}
+
+    def _lookup_cves(self, name: str, version: str, pkg_type: str = "python") -> list[str]:
         """
-        Look up CVEs for a package@version.
-        Production: query osv.dev (https://osv.dev/docs/) or a local mirror.
-        Stub: return empty list.
+        Query osv.dev /v1/query for vulnerabilities affecting ``name@version``.
+
+        Two layers of cache: in-memory for the lifetime of this analyzer
+        instance, and disk-backed under ``OSV_CACHE_DIR`` with 24h TTL so
+        the cache survives process restarts and can be warmed by
+        phylax-server's drift watcher.
+
+        Silent-failure semantics: any network / parse error returns an
+        empty list. The next scan will retry once the disk cache expires.
         """
-        return []
+        if not name or not version or version == "unpinned":
+            return []
+
+        ecosystem = OSV_ECOSYSTEMS.get((pkg_type or "python").lower(), "PyPI")
+        cache_key = (ecosystem, name.lower(), version)
+
+        cached = self._cve_cache.get(cache_key)
+        if cached is not None:
+            return list(cached)
+
+        disk = _osv_cache_get(ecosystem, name, version)
+        if disk is not None:
+            self._cve_cache[cache_key] = disk
+            return list(disk)
+
+        try:
+            import httpx  # local import — keeps cold-start cheap
+        except ImportError:
+            self._cve_cache[cache_key] = []
+            return []
+
+        payload = {
+            "version": version,
+            "package": {"name": name, "ecosystem": ecosystem},
+        }
+        ids: list[str] = []
+        try:
+            r = httpx.post(OSV_API_URL, json=payload, timeout=OSV_TIMEOUT_SECONDS)
+            if r.status_code == 200:
+                for vuln in r.json().get("vulns", []) or []:
+                    vid = vuln.get("id")
+                    if vid:
+                        ids.append(vid)
+        except Exception:  # noqa: BLE001
+            ids = []
+
+        ids = sorted(set(ids))
+        self._cve_cache[cache_key] = ids
+        _osv_cache_put(ecosystem, name, version, ids)
+        return list(ids)
 
     # -----------------------------------------------------------------------
 

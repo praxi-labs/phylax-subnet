@@ -1,15 +1,3 @@
-"""
-phylax/policy/generator.py
-
-Generate a machine-readable RecommendedPolicy from observed capabilities
-and findings. The policy is meant to be enforceable by runtimes before
-the skill executes.
-
-Principle of least privilege:
-    Only allow what was actually observed during analysis.
-    Anything not observed should be denied.
-"""
-
 from __future__ import annotations
 
 from typing import List

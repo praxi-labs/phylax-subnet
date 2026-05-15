@@ -1,5 +1,3 @@
-"""Phylax shared utilities."""
-
 from phylax.utils.hashing import sha256_bytes, sha256_file, content_address
 from phylax.utils.logging import get_logger
 

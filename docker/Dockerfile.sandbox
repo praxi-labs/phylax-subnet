@@ -14,8 +14,9 @@ FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PHYLAX_SEED=1337
+    PIP_NO_CACHE_DIR=1
+# PHYLAX_SEED is injected per-run by the caller. Not set here — a hardcoded
+# default would break the anti-copy guarantee.
 
 # Minimal forensics tooling — strace + tcpdump for behavioural capture
 RUN apt-get update && apt-get install -y --no-install-recommends \

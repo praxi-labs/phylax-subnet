@@ -5,11 +5,11 @@ Complete walkthrough for running a Phylax miner on testnet.
 ## 1. Prerequisites
 
 - Python 3.10+
-- Docker 24+ (with rootless support if running unprivileged)
-- `btcli` ([install guide](https://docs.bittensor.com/getting-started/install-btcli))
-- 16GB RAM, 4+ CPU cores, 50GB free disk
+- Docker 24+ with rootless support if running unprivileged
+- `btcli`
+- 16 GB RAM, 4+ CPU cores, 50 GB free disk
 
-Optional but recommended:
+Optional:
 - `syft` for high-quality SBOMs
 - `bandit` for static analysis (`pip install bandit`)
 - `semgrep` for additional rules (`pip install semgrep`)
@@ -34,7 +34,7 @@ Fund the coldkey with testnet TAO from the Bittensor Discord `#faucet` channel.
 
 ```bash
 cp .env.example .env
-# Edit .env: set PHYLAX_NETUID, WALLET_NAME, WALLET_HOTKEY, SUBTENSOR_NETWORK
+# Edit .env: PHYLAX_NETUID, WALLET_NAME, WALLET_HOTKEY, SUBTENSOR_NETWORK
 ```
 
 ## 5. Build the sandbox image
@@ -61,25 +61,34 @@ python neurons/miner.py \
     --logging.debug
 ```
 
-## Monitoring
+## How the miner answers each query
 
-The miner emits structured logs to stderr. To follow them:
+| Step | Whitepaper § | Description |
+|---|---|---|
+| Receive | §5.1 | Synapse carries skill_bundle, `nonce`, round_id, deadline_unix |
+| Layer 1 | §4.1 | Static pattern scan + prompt-injection rules |
+| Layer 2 | §4.1 | SBOM + osv.dev CVE lookup + typosquat + install-hook scan |
+| Layer 3 | §4.1 | Sandbox detonation seeded by `synapse.nonce` |
+| Assemble | §3 | Build SSSA with capabilities, findings, policy, evidence pack |
+| Sign | §3 | ED25519 signature with the miner hotkey |
+| Return | §5.1 | Reply within the deadline |
 
-```bash
-tail -f ~/.bittensor/miners/miner/default/netuid$PHYLAX_NETUID/miner.log
-```
+The miner refuses to detonate if no nonce is supplied — running with the old hardcoded seed would break the subnet's anti-copy guarantee.
 
-Useful operational metrics:
-- **Scan throughput** — scans per minute
-- **Verdict distribution** — drift detector for miner pipeline bugs
-- **Sandbox failures** — usually Docker daemon issues
-- **Signing failures** — usually wallet path or hotkey permissions
+## Tuning
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `SANDBOX_TIMEOUT` | 120 | Per-detonation timeout (seconds) |
+| `PHYLAX_LOG_LEVEL` | INFO | Stdlib logger level |
+| `PHYLAX_EVIDENCE_DIR` | /tmp/... | Where evidence packs are written before hashing |
 
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `Bundle hash mismatch` | Wrong bytes downloaded | Check `bundle_url` reachability |
-| `docker: not found` | Docker CLI missing in container | Use the miner Dockerfile, not raw Python |
-| Stuck at metagraph sync | Subtensor endpoint dead | Switch with `--subtensor.network finney` |
-| Sandbox timeouts | Heavy bundles, deep profile | Bump `SANDBOX_TIMEOUT` env var |
+| `validator did not supply a nonce` | Talking to a pre-1.1.0 validator | Upgrade the validator |
+| `docker: not found` | Docker CLI missing in container | Use `Dockerfile.miner`, not raw Python |
+| Sandbox timeouts | Heavy bundles, deep profile | Bump `SANDBOX_TIMEOUT` |
+| ε scored 0 | Evidence hashes don't match validator replay | Confirm `PHYLAX_SEED` is wired through to the harness inside the sandbox |

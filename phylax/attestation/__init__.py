@@ -1,6 +1,27 @@
-"""Phylax attestation: SSSA schema validation and ed25519 signing."""
+from phylax.attestation.schema import (
+    CURRENT_SCHEMA_VERSION,
+    SUPPORTED_SCHEMA_VERSIONS,
+    export_json_schema,
+    validate_sssa,
+    write_json_schema,
+)
+from phylax.attestation.signer import (
+    AttestationSigner,
+    ValidatorCountersigner,
+    VerificationResult,
+    sha256_of_bytes,
+    verify_attestation,
+)
 
-from phylax.attestation.schema import validate_sssa
-from phylax.attestation.signer import AttestationSigner, verify_attestation
-
-__all__ = ["validate_sssa", "AttestationSigner", "verify_attestation"]
+__all__ = [
+    "AttestationSigner",
+    "CURRENT_SCHEMA_VERSION",
+    "SUPPORTED_SCHEMA_VERSIONS",
+    "ValidatorCountersigner",
+    "VerificationResult",
+    "export_json_schema",
+    "sha256_of_bytes",
+    "validate_sssa",
+    "verify_attestation",
+    "write_json_schema",
+]

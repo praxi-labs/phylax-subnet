@@ -1,90 +1,88 @@
 # Scoring Algorithm
 
-How validators turn an SSSA into a Bittensor weight.
+How a validator turns an SSSA into a Bittensor weight. Mirrors whitepaper §5.3 exactly.
 
-## Overview
+## Composite
 
-Each miner response is scored on four independent axes. Each axis returns
-a value in `[0.0, 1.0]`. The axes are combined via a **weighted harmonic
-mean** to produce a single score.
+For each (miner, task) pair the validator computes:
 
 ```
-TS = sum(w_i) / sum(w_i / (s_i + ε))
+Q(m_i, S) = w_α·α + w_ε·ε + w_π·π + w_η·η         Σ w_k = 1
 ```
 
-The harmonic mean is chosen deliberately: it **collapses toward the
-weakest axis**. A miner with 100% detection accuracy but 0% evidence
-integrity scores near zero — gaming one axis cannot mask negligence in
-another.
-
-## The four axes
-
-| Axis | Weight | What it rewards | Anti-gaming target |
+| Axis | Symbol | Weight | What it measures |
 |---|---|---|---|
-| Detection accuracy   | 45% | Correct verdict + correct risk score | Blanket ALLOW or blanket BLOCK |
-| Evidence integrity   | 25% | Verifiable, hashable evidence trail | Claims without proof |
-| Policy effectiveness | 20% | Least-privilege policy that still works | "Deny everything" policies |
-| Efficiency           | 10% | Latency and resource economy | Slow, wasteful scans |
+| Detection accuracy   | α | 0.45 | Correct ALLOW / WARN / BLOCK with asymmetric FN penalty |
+| Evidence integrity   | ε | 0.30 | Hash equality of N/F/P/K traces vs validator replay |
+| Policy effectiveness | π | 0.20 | Precision-weighted F0.5 over the policy constraint set |
+| Efficiency           | η | 0.05 | Validator-measured submission latency vs τ_min / τ_max |
 
-### Axis 1 — Detection accuracy (45%)
+The aggregation is a **weighted linear sum**. A harmonic-mean variant is available as `compute_harmonic_score` for diagnostic dashboards but does not drive emissions.
 
-Penalises the miner on two sub-axes:
+## Axis 1 — Detection accuracy (α)
 
-- **Verdict distance** (70% of axis) — the categorical gap between
-  predicted and ground-truth verdict.
-  - ALLOW↔WARN, WARN↔BLOCK: 40% penalty
-  - ALLOW↔BLOCK: 100% penalty (catastrophic)
-- **Risk-score MSE** (30% of axis) — normalised squared error.
+```
+α(m_i, S) = 1 − λ · |V(verdict_i) − V(verdict*)| / 2
+```
 
-### Axis 2 — Evidence integrity (25%)
+`V` maps ALLOW→0, WARN→1, BLOCK→2.
 
-The validator checks:
+- **False negatives** (predicting weaker than truth, e.g. ALLOW for a BLOCK task) — λ = 1.0.
+- **False positives** (predicting stronger than truth) — λ = 0.4.
 
-- Are all expected evidence hashes present? (`network_trace_hash`,
-  `fs_trace_hash`, `process_trace_hash`, `secrets_trace_hash`,
-  `sandbox_log_hash`)
-- Do per-finding `evidence.trace_hash` references exist?
-- Are hash strings well-formed (`sha256:<64 hex>`)?
+Risk-score calibration further scales α by up to 10% when the verdict is correct, rewarding well-tuned `risk_score` values without ever rescuing a wrong verdict.
 
-A future iteration will fully replay the sandbox on the validator side
-and require byte-equal hashes; for now we score format + presence.
+## Axis 2 — Evidence integrity (ε)
 
-### Axis 3 — Policy effectiveness (20%)
+```
+ε_j(m_i, S) = 𝟙[ H_j(m_i) = H_j*(S, η_i) ]    for j ∈ {N, F, P, K}
+ε(m_i, S)   = (1/4) · Σ_j ε_j
+```
 
-Compares the miner's `recommended_policy` to the task's
-`expected_policy`:
+`H_j*` is produced by the validator running the same pipeline under the per-miner nonce `η_i`. Hash equality is byte-exact. When the validator cannot replay (offline / corpus-only mode) the axis is capped at 0.5 so it never preferred over real replay.
 
-- Jaccard similarity on egress allowlist
-- Exact match on `shell_access`
-- Envelope match on memory + timeout (within 2× is fine)
+## Axis 3 — Policy effectiveness (π)
 
-### Axis 4 — Efficiency (10%)
+Policies are flattened into a set of typed constraints `(kind, value)` and compared via F-β:
 
-Target durations per profile:
+```
+Precision_π = |C_i ∩ C*| / |C_i|
+Recall_π    = |C_i ∩ C*| / |C*|
+π = (1+β²) · P·R / (β²·P + R)              β = 0.5
+```
 
-| Profile | Target |
+Precision is weighted higher than recall — overly permissive policies are more dangerous than overly restrictive ones. A mild envelope penalty (±20% max) tolerates memory/timeout values within 2× of the expected range.
+
+## Axis 4 — Efficiency (η)
+
+```
+η = 0                                          if τ_i < τ_min
+η = 1 − (τ_i − μ_τ) / (τ_max − μ_τ)             if τ_i ≥ τ_min
+```
+
+- `τ_i` is the **validator-measured** submission latency. The miner's self-reported `analysis_duration_ms` is only used as a fallback (capped at 0.7).
+- `τ_min` per profile: fast 200 ms, standard 2 s, deep 10 s.
+- `τ_max` per profile: fast 30 s, standard 180 s, deep 900 s.
+- `μ_τ` is the round-median latency across all miners.
+
+A submission faster than `τ_min` scores zero and is logged for pipeline-integrity review.
+
+## Epoch aggregation (§5.4)
+
+```
+Q̄(m_i) = (1/n) · Σ_j Q(m_i, S_j)
+```
+
+The per-round vector is blended into the running `self.scores` via EMA with α = 0.2 (default; tune via `EMA_ALPHA`). The smoothed vector is normalised to sum=1 and pushed on-chain every `WEIGHT_UPDATE_INTERVAL` blocks (default 100).
+
+## Anti-gaming summary
+
+| Strategy | Why it fails |
 |---|---|
-| fast | 5s |
-| standard | 60s |
-| deep | 5min |
+| Block-all  | Known-Good / Near-Miss tasks drop α; over-deny policies tank π. |
+| Allow-all  | Known-Bad tasks drop α catastrophically (FN λ = 1.0). |
+| Copy another miner's SSSA | Nonce η_i differs per miner ⇒ evidence hashes differ ⇒ ε = 0. Validator also rejects on hotkey mismatch in the signature check. |
+| Skip sandbox / fake hashes | ε = 0 (no replay match); η = 0 if submitted under τ_min. |
+| Overfit public corpus | Synthetic + canary families inject novel tasks per round. |
 
-Within target → 1.0. Beyond target → exponential decay.
-
-## EMA smoothing
-
-Per-round scores are blended into the running score via exponential
-moving average with `alpha=0.1`. A single bad round won't tank a miner;
-a sustained pattern will.
-
-## Weight push
-
-Every `WEIGHT_UPDATE_INTERVAL` blocks (default 100, ~20 minutes), the
-running score vector is normalised and pushed on-chain via
-`subtensor.set_weights`. The chain's Yuma Consensus then determines TAO
-emissions.
-
-## Why no per-axis hard floors
-
-We considered adding hard floors (e.g. axis_score < 0.2 ⇒ total = 0)
-but the harmonic mean already produces this behaviour smoothly without a
-discontinuity that miners could probe.
+See `tests/test_whitepaper_conformance.py` for the executable form of these guarantees.

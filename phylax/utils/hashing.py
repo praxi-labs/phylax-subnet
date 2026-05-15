@@ -1,13 +1,3 @@
-"""
-phylax/utils/hashing.py
-
-Content-addressed hashing helpers used throughout the codebase.
-
-Every artifact reference Phylax emits — bundle hash, SBOM hash, evidence
-hashes, finding evidence — uses the form "sha256:<hex>" so downstream
-consumers can verify integrity in a single, uniform way.
-"""
-
 from __future__ import annotations
 
 import hashlib

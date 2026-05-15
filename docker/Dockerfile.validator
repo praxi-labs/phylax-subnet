@@ -1,0 +1,40 @@
+# Phylax validator runtime.
+#
+# The validator runs its own baseline pipeline, so this image bundles the
+# Phylax package, syft for SBOM generation, and the Docker CLI (the
+# validator shells out to docker to launch the phylax-sandbox image).
+# Kept separate from Dockerfile.miner so the images can diverge later.
+
+FROM python:3.11-slim AS base
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PHYLAX_HOME=/opt/phylax
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl ca-certificates git build-essential \
+        && rm -rf /var/lib/apt/lists/*
+
+RUN curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
+        | sh -s -- -b /usr/local/bin
+
+RUN install -m 0755 -d /etc/apt/keyrings \
+ && curl -fsSL https://download.docker.com/linux/debian/gpg \
+        -o /etc/apt/keyrings/docker.asc \
+ && chmod a+r /etc/apt/keyrings/docker.asc \
+ && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
+         https://download.docker.com/linux/debian bookworm stable" \
+        > /etc/apt/sources.list.d/docker.list \
+ && apt-get update && apt-get install -y --no-install-recommends docker-ce-cli \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR ${PHYLAX_HOME}
+COPY requirements.txt ./
+RUN pip install --upgrade pip && pip install -r requirements.txt
+
+COPY . .
+RUN pip install -e .
+
+EXPOSE 8080
+CMD ["python", "neurons/validator.py"]

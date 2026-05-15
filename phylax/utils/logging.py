@@ -1,13 +1,3 @@
-"""
-phylax/utils/logging.py
-
-Structured logging helpers shared across the miner, validator, and pipeline.
-
-We intentionally use the stdlib `logging` module rather than wrapping
-bittensor's logger — bt.logging is used at neuron boundaries, while
-phylax internals stay portable and testable without a bittensor dependency.
-"""
-
 from __future__ import annotations
 
 import logging

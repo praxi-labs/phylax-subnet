@@ -1,6 +1,6 @@
 # Core
 bittensor
-pydantic
+pydantic>=2.0
 torch
 numpy
 
@@ -16,6 +16,14 @@ PyNaCl
 
 # Networking / HTTP
 requests
+httpx
+
+# REST API surface (validator side)
+fastapi
+uvicorn[standard]
+
+# Attestation registry persistence
+sqlalchemy
 
 # TOML parsing on py3.10 (3.11+ has tomllib built in)
 tomli ; python_version < "3.11"

@@ -1,0 +1,29 @@
+{
+  "name": "install-hook-backdoor",
+  "description": "Skill bundle whose setup.py runs an attacker payload at install time. Tests Layer 2 supply-chain detection (whitepaper §4.1).",
+  "bundle_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000005",
+  "bundle_url": "https://example.org/phylax-corpora/install_hook_backdoor.zip",
+  "metadata": {
+    "name": "helpful-helper",
+    "version": "0.1.0",
+    "permissions": []
+  },
+  "test_profile": "standard",
+  "expected_verdict": "BLOCK",
+  "expected_risk_score": 88,
+  "expected_capabilities": {
+    "process": { "shell_exec": true },
+    "network": { "egress": true }
+  },
+  "expected_policy": {
+    "egress_allowlist": [],
+    "shell_access": false,
+    "env_allowlist": [],
+    "max_memory_mb": 256,
+    "timeout_seconds": 30
+  },
+  "expected_findings": [
+    { "title_contains": "install hook", "minimum_severity": "HIGH" }
+  ],
+  "tags": ["supply-chain", "install-hook"]
+}

@@ -1,9 +1,8 @@
 # SSSA Schema Reference
 
-Field-by-field reference for the Signed Skill Safety Attestation.
+Field-by-field reference for the Signed Skill Safety Attestation (schema version 1.1.0).
 
-The canonical schema is defined in [`phylax/protocol.py`](../phylax/protocol.py).
-This document is the human-readable counterpart.
+Canonical schema source: [`phylax/protocol.py`](../phylax/protocol.py).
 
 ## Top-level
 
@@ -16,8 +15,9 @@ This document is the human-readable counterpart.
 | `dependencies` | object | no | SBOM + supply-chain results |
 | `recommended_policy` | object | no | Enforceable runtime policy |
 | `evidence` | object | no | Content-addressed evidence hashes |
-| `run_metadata` | object | no | Tooling versions + timing |
-| `attestation` | object | yes (signed) | Hotkey + signature |
+| `run_metadata` | object | no | Tooling versions + timing + determinism seed (validator nonce) |
+| `attestation` | object | required for signed SSSA | Miner ed25519 signature |
+| `countersignature` | object | optional | Validator countersignature on consensus SSSAs (§6.2) |
 
 ## `skill`
 
@@ -42,31 +42,32 @@ This document is the human-readable counterpart.
 
 ## `capabilities`
 
-Four nested groups. Empty groups indicate "no observed capability of
-this kind".
-
 ### `capabilities.filesystem`
+
 `reads[]`, `writes[]`, `deletes[]` — absolute or repo-relative paths.
 
 ### `capabilities.network`
-- `egress: bool` — did the skill open any outbound connection?
-- `observed_domains[]` — domains contacted
-- `observed_ips[]` — IPs contacted (for direct-IP traffic)
-- `allowlist_suggestion[]` / `denylist_suggestion[]` — miner's curated picks
+
+- `egress: bool`
+- `observed_domains[]`
+- `observed_ips[]`
+- `observed_ports[]`
+- `persistent_connections: int` — count of long-lived flows (new in 1.1.0)
+- `allowlist_suggestion[]` / `denylist_suggestion[]`
 
 ### `capabilities.process`
-- `spawns: bool` — did the skill spawn child processes?
-- `shell_exec: bool` — did it invoke a shell?
-- `observed_commands[]` — command lines observed
+
+- `spawns: bool`
+- `shell_exec: bool`
+- `observed_commands[]`
 
 ### `capabilities.secrets`
+
 - `env_access: bool`
 - `observed_vars[]`
 - `keychain_access: bool`
 
 ## `findings`
-
-Each finding has:
 
 | Field | Type | Notes |
 |---|---|---|
@@ -84,7 +85,7 @@ Each finding has:
 |---|---|---|
 | `sbom_hash` | string? | `sha256:<hex>` of the SBOM |
 | `high_risk_packages` | string[] | Typosquats, malware names |
-| `known_vulns` | string[] | CVE IDs |
+| `known_vulns` | string[] | CVE / GHSA IDs from osv.dev |
 | `install_hooks` | string[] | Paths to detected install-time code |
 
 ## `recommended_policy`
@@ -107,11 +108,12 @@ Each value is `sha256:<hex>` of an analysis artifact:
 
 | Field | Of what |
 |---|---|
-| `network_trace_hash` | pcap or summarised network log |
-| `fs_trace_hash` | filesystem-access journal |
-| `process_trace_hash` | process spawning log |
-| `secrets_trace_hash` | env/keychain probe log |
+| `network_trace_hash` | `H(N(S))` — network egress log |
+| `fs_trace_hash` | `H(F(S))` — filesystem-access journal |
+| `process_trace_hash` | `H(P(S))` — process tree log |
+| `secrets_trace_hash` | `H(K(S))` — env/keychain probe log |
 | `sandbox_log_hash` | full sandbox stdout+stderr |
+| `pcap_hash` | optional PCAP capture (Appendix A) |
 
 ## `run_metadata`
 
@@ -119,35 +121,37 @@ Each value is `sha256:<hex>` of an analysis artifact:
 |---|---|---|
 | `tools` | object | `{tool_name: version}` map |
 | `runtime_image` | string? | sha256 of sandbox image |
-| `determinism_seed` | int | Seed used for any randomness |
-| `analysis_duration_ms` | int | Wall time for the full pipeline |
-| `schema_version` | string | Schema version (currently `"1.0.0"`) |
+| `determinism_seed` | int | The per-task nonce η_i the validator supplied (§5.1) |
+| `analysis_duration_ms` | int | Wall time for the full pipeline (not authoritative — validator measures latency itself) |
+| `schema_version` | string | `1.1.0` |
 
 ## `attestation`
 
 | Field | Type | Notes |
 |---|---|---|
 | `miner_hotkey` | string | ss58-encoded |
-| `signature` | string | `ed25519:<hex>` of `signing_hash()` |
+| `signature` | string | `ed25519:<hex>` over `SSSA.signing_hash()` |
 | `timestamp` | string | ISO 8601 UTC |
-| `schema_version` | string | Should match `run_metadata.schema_version` |
+| `schema_version` | string | Must match `run_metadata.schema_version` |
+
+## `countersignature` (new in 1.1.0)
+
+| Field | Type | Notes |
+|---|---|---|
+| `validator_hotkey` | string | ss58-encoded |
+| `signature` | string | `ed25519:<hex>` over `SSSA.consensus_signing_bytes(round_id)` |
+| `timestamp` | string | ISO 8601 UTC |
+| `round_id` | string | Bound to the consensus round; prevents replay onto a different round |
+| `quality_score` | float 0–1 | Winning miner's composite Q at the time of consensus |
 
 ## Canonical JSON for signing
 
-The signature is computed over the SHA-256 of the canonical JSON form of
-the SSSA **with the `attestation` field omitted**. Use
-[`SSSA.canonical_json()`](../phylax/protocol.py) to produce the exact
-bytes; the canonical form sorts keys and uses `(",", ":")` separators.
+`SSSA.canonical_json()` returns sorted-key, compact-separator JSON with both `attestation` and `countersignature` stripped. The miner signs this. For the validator countersignature, `SSSA.consensus_signing_bytes(round_id)` binds in the miner signature, the miner hotkey and the round_id.
 
 ## Versioning policy
 
-The schema follows semver:
+- patch: docs / additive optional fields
+- minor: new optional fields
+- major: renamed or removed fields (incompatible)
 
-- **patch** (`1.0.x`): documentation-only or backward-compatible field
-  additions
-- **minor** (`1.x.0`): new optional fields
-- **major** (`x.0.0`): renamed or removed fields — breaks compatibility
-
-Miners and validators must agree on at least the major version. The
-validator rejects SSSAs whose `schema_version` isn't in
-`SUPPORTED_SCHEMA_VERSIONS`.
+Validators reject SSSAs whose `schema_version` is not in `SUPPORTED_SCHEMA_VERSIONS`. The 1.0.0 → 1.1.0 bump added `nonce` to the synapse, `countersignature` to the SSSA, and `persistent_connections` to network capabilities.

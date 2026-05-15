@@ -1,9 +1,14 @@
 # Local development stack for Phylax.
 #
-# Brings up:
-#   - a miner against testnet
-#   - a validator against testnet
-#   - a local subtensor (optional, commented out — uncomment to run fully offline)
+# Services:
+#   miner       — runs the 3-layer pipeline against incoming validator queries
+#   validator   — runs its own baseline pipeline, scores miners, sets weights,
+#                 publishes consensus SSSAs to the registry
+#   api         — exposes the validator's registry over REST (POST /v1/scan,
+#                 GET /v1/attestation/{hash})
+#
+# Both miner and validator require the host Docker socket because they
+# shell out to docker to launch the phylax-sandbox image for detonation.
 #
 # Usage:
 #   docker compose -f docker/docker-compose.yml up --build
@@ -20,8 +25,6 @@ services:
     environment:
       - PHYLAX_LOG_LEVEL=DEBUG
     volumes:
-      # The miner shells out to docker to launch the sandbox image,
-      # so it needs access to the host docker socket.
       - /var/run/docker.sock:/var/run/docker.sock
       - ../:/opt/phylax
     ports:
@@ -38,14 +41,18 @@ services:
   validator:
     build:
       context: ..
-      dockerfile: docker/Dockerfile.miner   # validator reuses the miner image
-    image: phylax-miner:dev
+      dockerfile: docker/Dockerfile.validator
+    image: phylax-validator:dev
     container_name: phylax-validator
     env_file: ../.env
     environment:
       - PHYLAX_LOG_LEVEL=DEBUG
+      - PHYLAX_REGISTRY_PATH=/opt/phylax/state/phylax_registry.sqlite3
+      - PHYLAX_SANDBOX_IMAGE=phylax-sandbox:latest
     volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
       - ../:/opt/phylax
+      - phylax-state:/opt/phylax/state
     depends_on:
       - miner
     command: >
@@ -56,10 +63,27 @@ services:
       --wallet.hotkey ${WALLET_HOTKEY:-default}
       --logging.debug
 
-  # Uncomment to run a fully offline local subtensor:
-  # subtensor:
-  #   image: opentensorfdn/subtensor:latest
-  #   container_name: phylax-subtensor
-  #   ports:
-  #     - "9944:9944"
-  #     - "9945:9945"
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.validator
+    image: phylax-validator:dev
+    container_name: phylax-api
+    env_file: ../.env
+    environment:
+      - PHYLAX_LOG_LEVEL=INFO
+      - PHYLAX_REGISTRY_PATH=/opt/phylax/state/phylax_registry.sqlite3
+      - PHYLAX_API_HOST=0.0.0.0
+      - PHYLAX_API_PORT=8080
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ../:/opt/phylax
+      - phylax-state:/opt/phylax/state
+    depends_on:
+      - validator
+    ports:
+      - "8080:8080"
+    command: python -m phylax.api.server
+
+volumes:
+  phylax-state:

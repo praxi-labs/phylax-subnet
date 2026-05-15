@@ -14,9 +14,9 @@ if [ ! -f .env ]; then
     exit 1
 fi
 
-# Build sandbox image first — miner shells out to it
+# Build the sandbox image first — both miner and validator shell out to it.
 echo "→ Building phylax-sandbox image…"
 docker build -f docker/Dockerfile.sandbox -t phylax-sandbox:latest .
 
-echo "→ Starting docker compose stack…"
+echo "→ Starting docker compose stack (miner + validator + api)…"
 docker compose -f docker/docker-compose.yml up --build

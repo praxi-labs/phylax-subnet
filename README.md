@@ -7,101 +7,109 @@
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-green)](https://python.org)
 [![Status: Pre-launch](https://img.shields.io/badge/Status-Pre--launch-orange)]()
 
-Phylax is a Bittensor subnet that transforms untrusted AI agent skill bundles into Signed Skill Safety Attestations (SSSAs): portable, verifiable, cryptographically-signed artifacts with enforceable execution policies.
+Phylax is a Bittensor subnet that turns untrusted AI agent skill bundles into Signed Skill Safety Attestations (SSSAs) — portable, verifiable, cryptographically-signed artifacts with enforceable execution policies.
 
 ## The Problem
 
-Agent ecosystems scale through composable skills. That same extensibility creates a significant attack surface. A malicious skill can steal API keys, exfiltrate data, establish persistence, or hijack agent behavior through prompt injection.
+Agent ecosystems scale through composable skills. The same extensibility creates a large attack surface: a malicious skill can steal API keys, exfiltrate data, establish persistence, or hijack agent behaviour through prompt injection.
 
-Existing approaches rely on language models as the scanner, producing plain text reports. They are fast to build, but fundamentally limited. The model itself is a vulnerability surface that can be prompt-injected. Without real execution, evasion is trivial through obfuscated or delayed payloads. The output is a text report rather than an enforceable contract, and the whole system is centralized and unscalable.
+Existing approaches use an LLM as the scanner. They are fast to build but fundamentally limited: the model itself is prompt-injectable, evasion via obfuscation is trivial without real execution, and the output is plain text rather than an enforceable contract.
 
 ## The Phylax Approach
 
-Phylax runs a decentralized competition where miners perform real behavioral sandbox detonation, produce cryptographically-signed evidence packs, and emit machine-readable policies that runtimes can enforce automatically. Claims without evidence earn zero emissions.
+Phylax runs a decentralized competition in which miners perform real behavioural sandbox detonation, produce cryptographically-signed evidence packs, and emit machine-readable policies that runtimes can enforce automatically. Validators independently replay the same pipeline under a per-miner nonce and score on hash equality — claims without matching evidence earn zero.
 
 | | Traditional Scanners | Phylax |
 |---|---|---|
-| **Analysis method** | LLM text analysis | Real sandbox detonation |
-| **Evasion resistance** | Low (prompt-injectable) | High (behavioral observation) |
-| **Output** | Text report | Signed, enforceable contract |
-| **Verification** | None | Content-addressed evidence hashes |
-| **Scale** | Centralized | Decentralized competition |
-| **Incentive** | None | Bittensor TAO emissions |
+| Analysis method | LLM text analysis | Real sandbox detonation |
+| Evasion resistance | Low (prompt-injectable) | High (behavioural observation) |
+| Output | Text report | Signed, enforceable contract |
+| Verification | None | Validator-replayed evidence hashes |
+| Scale | Centralized | Decentralized competition |
+| Incentive | None | Bittensor TAO emissions |
 
-## How It Works
+## How it works
 
-Each skill bundle submitted to Phylax passes through a three-layer miner pipeline before producing a signed attestation.
+Each skill bundle submitted to Phylax passes through a three-layer miner pipeline (whitepaper §4.1) before producing a signed attestation.
 
-**Layer 1: Static Analysis**
-Scans code structure, dangerous API patterns, and permission surface without executing anything.
+**Layer 1 — Static Analysis.** Scans code structure, dangerous API patterns, permission discrepancies, and **prompt-injection / network-persistence** patterns.
 
-**Layer 2: Supply-Chain and SBOM**
-Generates a full dependency graph, cross-references CVE databases, detects typosquatting, and flags malicious install hooks.
+**Layer 2 — Supply-Chain + SBOM.** Generates a full dependency graph, cross-references the [osv.dev](https://osv.dev) CVE database, detects typosquatting, flags malicious install hooks.
 
-**Layer 3: Behavioral Sandbox Detonation**
-Executes the skill in a locked container with full observability, including network egress monitoring, filesystem access tracing, process spawning observation, and secrets/environment access detection.
+**Layer 3 — Behavioural Sandbox.** Executes the skill in a locked container seeded by the validator's per-miner nonce. Records network egress (with DNS), filesystem access, process spawning, and secrets access (all three Python idioms: `os.environ.get`, `os.environ[K]`, `os.getenv`).
+
+The validator runs the **same three layers** to produce ground truth and scores miners on byte-equal hash equality (whitepaper §5.2).
 
 ## The Signed Skill Safety Attestation (SSSA)
 
-The SSSA is the primary output of the Phylax subnet: a machine-readable, cryptographically signed artifact. See [docs/sssa_schema.md](docs/sssa_schema.md) for the full field reference.
-
-```
+```text
 verdict:              ALLOW | WARN | BLOCK
 risk_score:           0 - 100
 capabilities:         { network, fs, process, secrets }
 findings:             [ { severity, evidence, fix } ]
 recommended_policy:   { enforceable JSON }
-evidence:             { hashed logs, traces, pcap }
-signature:            ed25519:miner_hotkey
+evidence:             { sha256 hashes of N, F, P, K traces }
+attestation:          ed25519:miner_hotkey
+countersignature:     ed25519:validator_hotkey (consensus rounds, §6.2)
 ```
+
+Full reference: [docs/sssa_schema.md](docs/sssa_schema.md).
 
 ## Scoring
 
-Miners are evaluated on four axes per epoch. Scoring uses a harmonic mean, so a weak axis cannot be offset by strength elsewhere. A miner with perfect detection but no evidence integrity scores near zero.
+Each (miner, task) submission is scored on four axes that combine via a **weighted linear sum** (whitepaper §5.3):
 
-| Axis | Weight | What It Measures |
+| Axis | Weight | Measures |
 |---|---|---|
-| Detection Accuracy | 45% | Correct ALLOW / WARN / BLOCK decision and risk score calibration |
-| Evidence Integrity | 25% | Findings backed by verifiable, replayable traces |
-| Policy Effectiveness | 20% | Policy reduces risk without overreach or blanket denial |
-| Efficiency | 10% | Latency and resource cost per scan |
+| Detection accuracy α | 0.45 | Correct verdict with asymmetric FN penalty (λ_FN = 1.0, λ_FP = 0.4) |
+| Evidence integrity ε | 0.30 | Hash equality of N/F/P/K traces vs validator replay |
+| Policy effectiveness π | 0.20 | Precision-weighted F0.5 over the policy constraint set |
+| Efficiency η | 0.05 | Validator-measured submission latency with τ_min floor |
 
-```
-Total Score = harmonic_mean(
-    0.45 * S_detection,
-    0.25 * S_evidence,
-    0.20 * S_policy,
-    0.10 * S_efficiency
-)
+```text
+Q(m, S) = 0.45·α + 0.30·ε + 0.20·π + 0.05·η
 ```
 
-See [docs/scoring.md](docs/scoring.md) for full details.
+A harmonic-mean variant is available as a diagnostic. Epoch aggregation, EMA smoothing, and on-chain weight pushes are documented in [docs/scoring.md](docs/scoring.md).
 
-## Anti-Gaming Design
+## Anti-Gaming
 
-Phylax is built on the assumption that miners will attempt to game benchmarks. Several mechanisms are in place to prevent this.
+| Strategy | Failure mode |
+|---|---|
+| Block-all | Known-Good / Near-Miss tasks crater α; π collapses on deny-all policies |
+| Allow-all | Known-Bad tasks crater α via the asymmetric FN penalty |
+| Copy another miner's SSSA | Per-miner nonce η_i ⇒ unique evidence hashes ⇒ ε = 0; signature/hotkey check also fails |
+| Fabricate hashes / skip detonation | Validator replay produces different H_j*; ε = 0; η = 0 if under τ_min |
+| Overfit public corpus | Synthetic + canary tasks injected per round; corpus is unbounded |
 
-**Canary skills** are hidden tasks with behaviors that only trigger under specific conditions and are not included in any public corpus.
+Conformance tests live in `tests/test_whitepaper_conformance.py` and `tests/test_nonce_anticopy.py`.
 
-**Near-miss benign samples** are safe code that superficially resembles dangerous patterns. Miners who over-block are penalized, not rewarded.
+## Architecture
 
-**Adversarial variants** include obfuscated malware, delayed triggers, and prompt-activated branches designed to defeat naive detectors.
+See [docs/architecture.md](docs/architecture.md) for the full module map. Key new packages:
 
-**Consensus cross-checking** compares miner outputs on identical inputs. Outliers are reviewed and penalized.
+- `phylax.validator.baseline` — runs the same pipeline as miners to produce ground truth (§5.2)
+- `phylax.validator.consensus` — quality-weighted argmax verdict (§6.2)
+- `phylax.validator.registry` — SQLite content-addressed attestation store (§6.3)
+- `phylax.validator.corpus` — loads all seven corpus families
+- `phylax.validator.synth` — per-round synthetic challenge generator (§7.3)
+- `phylax.api.server` — POST /scan, GET /attestation, /verify, /invalidate, /health (Appendix A)
+- `phylax.client` + `phylax.cli` — runtime SDK and CI gate (§9)
 
-**Evidence-gated scoring** means a miner cannot earn evidence score through claims alone. Submitted hashes must match replayed detonation results.
-
-## Getting Started
+## Getting started
 
 ```bash
 git clone https://github.com/praxi-labs/phylax-subnet.git
 cd phylax-subnet
 pip install -e .
+docker build -f docker/Dockerfile.sandbox -t phylax-sandbox:latest .
 ```
 
-- [Miner Setup Guide](docs/miner_setup.md)
-- [Validator Setup Guide](docs/validator_setup.md)
+- [Miner setup](docs/miner_setup.md)
+- [Validator setup](docs/validator_setup.md) — **note: validators now require Docker**
+- [REST API](docs/api.md)
+- [Runtime integration](docs/integration.md)
 
-## Integration
+## Status
 
-Phylax SSSAs are designed to be consumed directly by agent runtimes and skill marketplaces. See [docs/integration.md](docs/integration.md) for the full runtime integration guide.
+Whitepaper v1.1 alignment is implemented end-to-end. The 9,350-skill corpus referenced in the whitepaper is roadmap; the repo ships representative samples and a runtime synthetic generator until the labelled dataset is published.

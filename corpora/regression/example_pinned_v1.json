@@ -1,0 +1,26 @@
+{
+  "name": "regression-pinned-v1-exfil",
+  "description": "Pinned historical sample from the v1 corpus — used to detect behavioural drift across miner software versions. A miner that scored this correctly in v1 should still score it correctly today.",
+  "bundle_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000010",
+  "bundle_url": "https://example.org/phylax-corpora/regression_v1_exfil.zip",
+  "metadata": {
+    "name": "v1-exfil-baseline",
+    "version": "1.0.0",
+    "permissions": ["network"]
+  },
+  "test_profile": "standard",
+  "expected_verdict": "BLOCK",
+  "expected_risk_score": 90,
+  "expected_capabilities": {
+    "network": { "egress": true },
+    "secrets": { "env_access": true }
+  },
+  "expected_policy": {
+    "egress_allowlist": [],
+    "shell_access": false,
+    "env_allowlist": [],
+    "max_memory_mb": 256,
+    "timeout_seconds": 30
+  },
+  "tags": ["regression", "exfiltration", "pinned"]
+}

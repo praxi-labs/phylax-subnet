@@ -1,62 +1,51 @@
-"""
-phylax/scoring/rewards.py
-
-Aggregate per-axis scores into a single miner reward in [0, 1].
-
-Uses the weighted harmonic mean to punish miners with any near-zero axis.
-A miner with 100% detection but 0% evidence integrity scores ~0 — the
-harmonic mean refuses to average away a weakness.
-"""
-
 from __future__ import annotations
+
+from typing import Iterable
 
 from phylax.scoring.metrics import AxisScores
 
-# Axis weights — must sum to 1.0
-W_DETECTION  = 0.45
-W_EVIDENCE   = 0.25
-W_POLICY     = 0.20
-W_EFFICIENCY = 0.10
 
-EPS = 1e-6  # avoid div-by-zero in harmonic mean
+W_DETECTION = 0.45
+W_EVIDENCE = 0.30
+W_POLICY = 0.20
+W_EFFICIENCY = 0.05
 
 
 def compute_total_score(axes: AxisScores) -> float:
-    """
-    Weighted harmonic mean of the four axes.
+    """Weighted linear sum. This is the value that drives emissions."""
+    d = _clip01(axes.detection)
+    e = _clip01(axes.evidence)
+    p = _clip01(axes.policy)
+    f = _clip01(axes.efficiency)
+    return W_DETECTION * d + W_EVIDENCE * e + W_POLICY * p + W_EFFICIENCY * f
 
-    Formula:
-        TS = sum(weights) / sum(w_i / (s_i + eps))
 
-    Properties:
-        - Each axis in [0,1] ⇒ output in [0,1]
-        - Any axis at zero collapses the whole score toward zero
-        - All axes at 1.0 ⇒ output 1.0
-    """
-    s_d = max(0.0, min(1.0, axes.detection))
-    s_e = max(0.0, min(1.0, axes.evidence))
-    s_p = max(0.0, min(1.0, axes.policy))
-    s_f = max(0.0, min(1.0, axes.efficiency))
-
-    numerator   = W_DETECTION + W_EVIDENCE + W_POLICY + W_EFFICIENCY
-    denominator = (
-        W_DETECTION  / (s_d + EPS) +
-        W_EVIDENCE   / (s_e + EPS) +
-        W_POLICY     / (s_p + EPS) +
-        W_EFFICIENCY / (s_f + EPS)
+def compute_harmonic_score(axes: AxisScores) -> float:
+    """Diagnostic harmonic mean. Useful for spotting single-axis collapses."""
+    d = _clip01(axes.detection)
+    e = _clip01(axes.evidence)
+    p = _clip01(axes.policy)
+    f = _clip01(axes.efficiency)
+    eps = 1e-6
+    weights = W_DETECTION + W_EVIDENCE + W_POLICY + W_EFFICIENCY
+    denom = (
+        W_DETECTION / (d + eps)
+        + W_EVIDENCE / (e + eps)
+        + W_POLICY / (p + eps)
+        + W_EFFICIENCY / (f + eps)
     )
-    return numerator / denominator
+    return weights / denom
 
 
-def compute_weighted_arithmetic_score(axes: AxisScores) -> float:
-    """
-    Alternative scorer (less punitive): weighted arithmetic mean.
+def aggregate_epoch(per_task_scores: Iterable[float]) -> float:
+    """Arithmetic mean over the epoch's per-task composite scores."""
+    arr = [_clip01(x) for x in per_task_scores]
+    if not arr:
+        return 0.0
+    return sum(arr) / len(arr)
 
-    Provided for diagnostic comparison only — NOT used to set weights.
-    """
-    return (
-        W_DETECTION  * axes.detection  +
-        W_EVIDENCE   * axes.evidence   +
-        W_POLICY     * axes.policy     +
-        W_EFFICIENCY * axes.efficiency
-    )
+
+def _clip01(x: float) -> float:
+    if x != x:  # NaN guard
+        return 0.0
+    return max(0.0, min(1.0, float(x)))

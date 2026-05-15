@@ -1,19 +1,3 @@
-"""
-neurons/miner.py
-
-Phylax subnet miner — runs the 3-layer analysis pipeline on submitted
-skill bundles and returns a Signed Skill Safety Attestation (SSSA).
-
-Run with:
-    python neurons/miner.py \
-        --netuid <NETUID> \
-        --subtensor.network test \
-        --wallet.name miner \
-        --wallet.hotkey default \
-        --axon.port 8091 \
-        --logging.debug
-"""
-
 import asyncio
 import hashlib
 import os
@@ -34,7 +18,7 @@ from phylax.utils.logging import get_logger
 logger = get_logger(__name__)
 
 
-class PhylaxMiner(bt.BaseNeuron):
+class PhylaxMiner(bt.BaseNeuron if hasattr(bt, "BaseNeuron") else object):
     """
     Phylax miner neuron.
 
@@ -104,17 +88,20 @@ class PhylaxMiner(bt.BaseNeuron):
                 self.sbom_analyzer.analyze, bundle_path
             )
 
-            # ------------------------------------------------------------------
-            # Layer 3: Behavioral sandbox detonation
-            # (only for standard and deep profiles)
-            # ------------------------------------------------------------------
+            # Layer 3: sandbox detonation (standard + deep profiles only).
+            # The seed is synapse.nonce — without it, evidence hashes would
+            # not be miner-unique, so we refuse to detonate.
             sandbox_result = None
             if bundle.test_profile.value in ("standard", "deep"):
-                bt.logging.debug("Running Layer 3: Sandbox detonation…")
+                if not synapse.nonce:
+                    raise ValueError("validator did not supply a nonce; refusing to detonate")
+                bt.logging.debug(
+                    f"Running Layer 3: Sandbox detonation (seed={synapse.nonce})…"
+                )
                 sandbox_result = await asyncio.to_thread(
                     self.sandbox.detonate,
                     bundle_path,
-                    seed=1337,
+                    seed=int(synapse.nonce),
                     extended=(bundle.test_profile.value == "deep"),
                 )
 
@@ -148,6 +135,7 @@ class PhylaxMiner(bt.BaseNeuron):
                 policy=policy,
                 evidence_pack=evidence_pack,
                 duration_ms=duration_ms,
+                nonce=int(synapse.nonce or 0),
             )
 
             # ------------------------------------------------------------------
@@ -155,7 +143,7 @@ class PhylaxMiner(bt.BaseNeuron):
             # ------------------------------------------------------------------
             signed_sssa = self.signer.sign(sssa)
 
-            synapse.attestation = signed_sssa.dict()
+            synapse.attestation = signed_sssa.model_dump(mode="json")
             bt.logging.success(
                 f"Scan complete: {bundle.bundle_hash} → {verdict.decision} "
                 f"risk={verdict.risk_score} duration={duration_ms}ms"
@@ -309,7 +297,16 @@ class PhylaxMiner(bt.BaseNeuron):
             f"[{severity_names[f.severity]}] {f.title}" for f in (critical + high)[:3]
         ]
 
-        confidence = 0.9 if capabilities.network.egress else 0.95  # lower if sandbox skipped
+        # Confidence rises with observation surface area; sandbox runs that
+        # actually saw network/process/fs activity give us more to base the
+        # verdict on than a static-only scan.
+        observations = (
+            int(capabilities.network.egress)
+            + int(capabilities.process.spawns)
+            + int(capabilities.secrets.env_access)
+            + int(bool(capabilities.filesystem.reads or capabilities.filesystem.writes))
+        )
+        confidence = round(min(0.99, 0.70 + 0.07 * observations), 2)
 
         summary = (
             f"Verdict {decision.value}: risk_score={risk_score}. "
@@ -326,7 +323,7 @@ class PhylaxMiner(bt.BaseNeuron):
         )
 
     def _assemble_sssa(self, bundle, sbom_result, verdict, capabilities,
-                       findings, policy, evidence_pack, duration_ms) -> SSSA:
+                       findings, policy, evidence_pack, duration_ms, nonce) -> SSSA:
         from phylax.protocol import (
             SSSA, SkillIdentity, DependencyInfo, RunMetadata
         )
@@ -356,7 +353,7 @@ class PhylaxMiner(bt.BaseNeuron):
                     "syft": "1.0.0",
                     "cyclonedx-bom": "4.3.0",
                 },
-                determinism_seed=1337,
+                determinism_seed=int(nonce),
                 analysis_duration_ms=duration_ms,
             ),
         )

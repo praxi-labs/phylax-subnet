@@ -1,18 +1,3 @@
-"""
-phylax/pipeline/sandbox.py
-
-Layer 3: Behavioral sandbox detonation.
-
-Executes the skill bundle inside a locked Docker container with:
-  - No outbound network (or restricted via iptables)
-  - Read-only filesystem except a /tmp scratch dir
-  - Process and syscall tracing (strace / eBPF where available)
-  - Network capture (tcpdump) for any egress that does occur
-
-Returns content-addressed hashes of the observed traces so validators can
-replay the same detonation and verify reproducibility.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -75,12 +60,17 @@ class SandboxDetonator:
 
     # -----------------------------------------------------------------------
 
-    def detonate(self, bundle_path: str, seed: int = 1337, extended: bool = False) -> SandboxResult:
+    def detonate(self, bundle_path: str, seed: int, extended: bool = False) -> SandboxResult:
+        """Launch the sandbox container against the bundle.
+
+        ``seed`` is the per-task determinism nonce; it is exported to the
+        in-container harness as ``PHYLAX_SEED`` so randomness and trace
+        ordering are reproducible. Callers must pass a real seed — a
+        hardcoded default would break the anti-copy property.
         """
-        Launch the sandbox container against the bundle.
-        Returns a SandboxResult with hashes of all captured artifacts.
-        """
-        run_id      = uuid.uuid4().hex[:12]
+        if seed is None or seed < 0:
+            raise ValueError("SandboxDetonator.detonate requires a non-negative seed")
+        run_id = uuid.uuid4().hex[:12]
         run_dir     = Path(self.evidence_dir) / f"phylax_run_{run_id}"
         run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -111,20 +101,18 @@ class SandboxDetonator:
         # Parse trace files written by the sandbox harness inside the container
         self._parse_traces(run_dir, result)
 
-        # Hash all evidence artifacts
+        # Hash the full container log (stdout + stderr).
         log_path = run_dir / "log.txt"
         log_path.write_text(stdout + "\n--- stderr ---\n" + stderr, encoding="utf-8")
         result.log_hash = self._hash_file(log_path)
 
-        for fname, attr in [
-            ("network.trace", "network_trace_hash"),
-            ("fs.trace",      "fs_trace_hash"),
-            ("process.trace", "process_trace_hash"),
-            ("secrets.trace", "secrets_trace_hash"),
-        ]:
-            fpath = run_dir / fname
-            if fpath.exists():
-                setattr(result, attr, self._hash_file(fpath))
+        # Hash the normalized record set (sorted, volatile fields stripped),
+        # not the raw JSONL bytes, so two honest miners on the same nonce
+        # produce byte-equal hashes regardless of hook firing order.
+        result.network_trace_hash = self._canonical_hash(run_dir / "network.jsonl", _NORM_NET)
+        result.fs_trace_hash = self._canonical_hash(run_dir / "fs.jsonl", _NORM_FS)
+        result.process_trace_hash = self._canonical_hash(run_dir / "process.jsonl", _NORM_PROC)
+        result.secrets_trace_hash = self._canonical_hash(run_dir / "secrets.jsonl", _NORM_SECRETS)
 
         return result
 
@@ -226,3 +214,78 @@ class SandboxDetonator:
     def _write_and_hash(path: Path, content: str) -> str:
         path.write_text(content, encoding="utf-8")
         return SandboxDetonator._hash_file(path)
+
+    @staticmethod
+    def _canonical_hash(path: Path, normaliser) -> Optional[str]:
+        """
+        Hash the canonical (normalised + sorted) form of a JSONL trace.
+
+        Two miners running the same skill under the same nonce should
+        produce byte-equal hashes here. The validator's replay engine
+        applies the identical pipeline to compute its ground-truth hash.
+        Returns None when the trace file doesn't exist (so the SSSA carries
+        an explicit null rather than a fake hash of empty bytes).
+        """
+        if not path.exists():
+            return None
+        records: list[dict] = []
+        for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            norm = normaliser(rec)
+            if norm is not None:
+                records.append(norm)
+        # Canonical ordering: sort by stable JSON representation of each record.
+        records.sort(key=lambda r: json.dumps(r, sort_keys=True, separators=(",", ":")))
+        canon = json.dumps(records, sort_keys=True, separators=(",", ":"))
+        return "sha256:" + hashlib.sha256(canon.encode("utf-8")).hexdigest()
+
+
+# Per-component normalisers drop nondeterministic fields (timestamps, pids)
+# and keep only the behavioural facts that go into the canonical hash.
+
+def _NORM_NET(rec: dict) -> Optional[dict]:
+    if not isinstance(rec, dict):
+        return None
+    out = {
+        "domain": rec.get("domain"),
+        "ip": rec.get("ip"),
+        "port": rec.get("port"),
+        "bytes": rec.get("bytes"),
+    }
+    if not any(out.values()):
+        return None
+    return out
+
+
+def _NORM_FS(rec: dict) -> Optional[dict]:
+    if not isinstance(rec, dict):
+        return None
+    op = rec.get("op")
+    path = rec.get("path")
+    if not op or not path:
+        return None
+    return {"op": op, "path": path}
+
+
+def _NORM_PROC(rec: dict) -> Optional[dict]:
+    if not isinstance(rec, dict):
+        return None
+    cmd = rec.get("cmd")
+    if not cmd:
+        return None
+    return {"cmd": cmd, "uid": rec.get("uid")}
+
+
+def _NORM_SECRETS(rec: dict) -> Optional[dict]:
+    if not isinstance(rec, dict):
+        return None
+    var = rec.get("var") or rec.get("key")
+    if not var:
+        return None
+    return {"var": var}

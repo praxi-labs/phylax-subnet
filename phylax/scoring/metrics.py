@@ -1,193 +1,204 @@
-"""
-phylax/scoring/metrics.py
-
-Per-axis scoring functions for an SSSA against ground-truth task metadata.
-
-Four axes:
-    1. Detection accuracy    (45%)
-    2. Evidence integrity    (25%)
-    3. Policy effectiveness  (20%)
-    4. Efficiency            (10%)
-
-Each axis returns a float in [0.0, 1.0]. Axis weights are applied later
-in phylax.scoring.rewards.compute_total_score.
-"""
-
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Optional
+from typing import Iterable, Optional
 
 from phylax.protocol import SSSA, Verdict
 
 
 @dataclass
 class AxisScores:
-    detection:  float
-    evidence:   float
-    policy:     float
+    detection: float
+    evidence: float
+    policy: float
     efficiency: float
 
+    def as_tuple(self) -> tuple[float, float, float, float]:
+        return (self.detection, self.evidence, self.policy, self.efficiency)
 
-# ---------------------------------------------------------------------------
-# Axis 1 — Detection accuracy
-# ---------------------------------------------------------------------------
 
-VERDICT_DISTANCE = {
-    # Distance between predicted and true verdict, normalised to [0, 1]
-    ("ALLOW", "ALLOW"): 0.0,
-    ("WARN",  "WARN"):  0.0,
-    ("BLOCK", "BLOCK"): 0.0,
-    ("ALLOW", "WARN"):  0.4,
-    ("WARN",  "ALLOW"): 0.4,
-    ("WARN",  "BLOCK"): 0.4,
-    ("BLOCK", "WARN"):  0.4,
-    ("ALLOW", "BLOCK"): 1.0,
-    ("BLOCK", "ALLOW"): 1.0,
-}
+_V_RANK = {Verdict.ALLOW: 0, Verdict.WARN: 1, Verdict.BLOCK: 2}
+
+# False negatives (under-blocking a real threat) cost more than false
+# positives (over-blocking a benign skill), so the lambdas are asymmetric.
+LAMBDA_FALSE_NEGATIVE = 1.0
+LAMBDA_FALSE_POSITIVE = 0.4
+
+
+def _verdict_rank(v: str | Verdict) -> int:
+    if isinstance(v, str):
+        v = Verdict(v.upper())
+    return _V_RANK[v]
 
 
 def score_detection(sssa: SSSA, task: dict) -> float:
-    """
-    1.0  if predicted verdict matches ground truth and risk_score is close
-    0.0  if catastrophically wrong (BLOCK vs ALLOW)
+    predicted = _verdict_rank(sssa.verdict.decision)
+    truth = _verdict_rank(task.get("expected_verdict", "ALLOW"))
 
-    Penalty is the weighted sum of verdict-distance and risk-score-distance.
-    """
-    truth = task.get("expected_verdict", "ALLOW").upper()
-    pred  = sssa.verdict.decision.value
-    truth_risk = task.get("expected_risk_score", 0)
-    pred_risk  = sssa.verdict.risk_score
+    distance = abs(predicted - truth)
+    if distance == 0:
+        return 1.0
 
-    verdict_penalty = VERDICT_DISTANCE.get((pred, truth), 1.0)
-    # Risk-score MSE (normalised by 100^2)
-    risk_penalty = ((pred_risk - truth_risk) / 100.0) ** 2
+    lam = LAMBDA_FALSE_POSITIVE if predicted > truth else LAMBDA_FALSE_NEGATIVE
+    base = max(0.0, 1.0 - lam * distance / 2.0)
 
-    # 70% verdict, 30% risk-score
-    penalty = 0.7 * verdict_penalty + 0.3 * risk_penalty
-    return max(0.0, 1.0 - penalty)
+    # Risk-score calibration is a soft secondary signal that can shave at
+    # most 10% off a correct-verdict score; it can't rescue a wrong verdict.
+    expected_risk = task.get("expected_risk_score")
+    if expected_risk is not None and distance == 0:
+        delta = abs(sssa.verdict.risk_score - int(expected_risk)) / 100.0
+        base *= max(0.9, 1.0 - 0.1 * delta)
+    return base
 
-
-# ---------------------------------------------------------------------------
-# Axis 2 — Evidence integrity
-# ---------------------------------------------------------------------------
 
 def score_evidence(sssa: SSSA, task: dict) -> float:
-    """
-    Reward miners who back claims with verifiable evidence hashes.
+    miner_hashes = sssa.evidence.component_hashes()
+    truth = task.get("ground_truth_evidence") or {}
 
-    Heuristic (full validators perform replay verification):
-      - All evidence hashes present → 1.0
-      - Each missing hash subtracts 0.2
-      - Hash format invalid → 0.0
-    """
-    ev = sssa.evidence
-    expected_hashes = [
-        ev.network_trace_hash,
-        ev.fs_trace_hash,
-        ev.process_trace_hash,
-        ev.secrets_trace_hash,
-        ev.sandbox_log_hash,
-    ]
+    if truth:
+        matches = sum(
+            1
+            for k in ("N", "F", "P", "K")
+            if miner_hashes.get(k) is not None and miner_hashes[k] == truth.get(k)
+        )
+        return matches / 4.0
 
-    # Findings should also carry trace_hash references
-    findings_with_hashes = sum(
-        1 for f in sssa.findings if f.evidence and f.evidence.trace_hash
-    )
-    findings_total = max(1, len(sssa.findings))
-
-    present_score = sum(1 for h in expected_hashes if h) / len(expected_hashes)
-
-    bad_format = any(
-        h and not h.startswith("sha256:") for h in expected_hashes
-    )
-    if bad_format:
+    # Degraded mode: presence + format only. Capped well below 1.0 so
+    # running without a replay validator is never preferable.
+    components = [miner_hashes[k] for k in ("N", "F", "P", "K")]
+    if any(h is None for h in components):
         return 0.0
-
-    finding_score = findings_with_hashes / findings_total
-
-    # 70% from trace hashes, 30% from per-finding evidence
-    return 0.7 * present_score + 0.3 * finding_score
+    if any(not _is_sha256_ref(h) for h in components):
+        return 0.0
+    return 0.5
 
 
-# ---------------------------------------------------------------------------
-# Axis 3 — Policy effectiveness
-# ---------------------------------------------------------------------------
+def _is_sha256_ref(s: Optional[str]) -> bool:
+    return bool(s) and s.startswith("sha256:") and len(s) == 71
+
+
+# F-beta = 0.5 weights precision over recall — over-permissive policies
+# are more dangerous than over-restrictive ones.
+POLICY_BETA = 0.5
+
+
+def _policy_constraint_set(policy: dict | object) -> set[tuple[str, str]]:
+    if hasattr(policy, "model_dump"):
+        p = policy.model_dump()
+    elif hasattr(policy, "dict"):
+        p = policy.dict()
+    elif isinstance(policy, dict):
+        p = policy
+    else:
+        p = {}
+
+    out: set[tuple[str, str]] = set()
+    for dom in p.get("egress_allowlist", []) or []:
+        out.add(("egress", dom))
+    for dom in p.get("egress_denylist", []) or []:
+        out.add(("deny_egress", dom))
+    for env in p.get("env_allowlist", []) or []:
+        out.add(("env", env))
+    fs = p.get("filesystem") or {}
+    for path in fs.get("read_only", []) or []:
+        out.add(("fs_read", path))
+    for path in fs.get("restricted_write", []) or []:
+        out.add(("fs_write", path))
+    out.add(("shell_access", str(bool(p.get("shell_access", False)))))
+    return out
+
 
 def score_policy(sssa: SSSA, task: dict) -> float:
-    """
-    A good policy reduces risk without overreach.
+    miner = _policy_constraint_set(sssa.recommended_policy)
+    expected = _policy_constraint_set(task.get("expected_policy", {}) or {})
 
-    Compare the recommended_policy against the task's expected policy.
-    Penalise:
-      - Allowing domains that should be denied (security failure)
-      - Denying domains that should be allowed (over-restriction)
-      - Enabling shell_access when the task says no
-      - Disabling shell_access when the task requires it
-    """
-    expected = task.get("expected_policy", {}) or {}
-    p = sssa.recommended_policy
+    if not miner and not expected:
+        return 1.0
+    if not miner or not expected:
+        return 0.0
 
-    expected_egress = set(expected.get("egress_allowlist", []))
-    actual_egress   = set(p.egress_allowlist)
+    intersection = len(miner & expected)
+    precision = intersection / len(miner) if miner else 0.0
+    recall = intersection / len(expected) if expected else 0.0
 
-    if expected_egress or actual_egress:
-        union = expected_egress | actual_egress
-        intersection = expected_egress & actual_egress
-        egress_score = (len(intersection) / len(union)) if union else 1.0
+    if precision == 0.0 and recall == 0.0:
+        f_beta = 0.0
     else:
-        egress_score = 1.0
+        b2 = POLICY_BETA * POLICY_BETA
+        f_beta = (1 + b2) * precision * recall / (b2 * precision + recall + 1e-9)
 
-    # Shell access alignment
-    expected_shell = expected.get("shell_access", False)
-    shell_score = 1.0 if expected_shell == p.shell_access else 0.0
+    expected_pol = task.get("expected_policy", {}) or {}
+    mem_factor = _envelope_factor(
+        sssa.recommended_policy.max_memory_mb,
+        expected_pol.get("max_memory_mb", 256),
+    )
+    to_factor = _envelope_factor(
+        sssa.recommended_policy.timeout_seconds,
+        expected_pol.get("timeout_seconds", 30),
+    )
+    envelope_penalty = (mem_factor + to_factor) / 2.0
 
-    # Memory / timeout reasonableness — within 2× of expected gets full credit
-    def _envelope(actual: int, expected_val: int) -> float:
-        if expected_val <= 0:
-            return 1.0
-        ratio = actual / expected_val
-        if 0.5 <= ratio <= 2.0:
-            return 1.0
-        return max(0.0, 1.0 - abs(math.log2(ratio)) / 4.0)
-
-    mem_score     = _envelope(p.max_memory_mb,    expected.get("max_memory_mb",    256))
-    timeout_score = _envelope(p.timeout_seconds,  expected.get("timeout_seconds",  30))
-
-    return 0.5 * egress_score + 0.2 * shell_score + 0.15 * mem_score + 0.15 * timeout_score
+    return max(0.0, min(1.0, f_beta * (0.8 + 0.2 * envelope_penalty)))
 
 
-# ---------------------------------------------------------------------------
-# Axis 4 — Efficiency
-# ---------------------------------------------------------------------------
+def _envelope_factor(actual: int, expected: int) -> float:
+    if expected <= 0:
+        return 1.0
+    ratio = max(actual, 1) / expected
+    if 0.5 <= ratio <= 2.0:
+        return 1.0
+    return max(0.0, 1.0 - abs(math.log2(ratio)) / 4.0)
 
-# Aim: 60s standard, 5min deep. Reward < target, penalise > target.
-EFFICIENCY_TARGETS_MS = {
-    "fast":     5_000,
-    "standard": 60_000,
-    "deep":     300_000,
+
+TAU_MIN_MS = {
+    "fast": 200,
+    "standard": 2_000,
+    "deep": 10_000,
+}
+TAU_MAX_MS = {
+    "fast": 30_000,
+    "standard": 180_000,
+    "deep": 900_000,
 }
 
 
 def score_efficiency(sssa: SSSA, task: dict) -> float:
     profile = task.get("test_profile", "standard")
-    target  = EFFICIENCY_TARGETS_MS.get(profile, 60_000)
-    duration = sssa.run_metadata.analysis_duration_ms or target
+    tau_min = TAU_MIN_MS.get(profile, TAU_MIN_MS["standard"])
+    tau_max = TAU_MAX_MS.get(profile, TAU_MAX_MS["standard"])
 
-    if duration <= target:
-        return 1.0
-    # Exponential decay beyond target
-    over = duration / target
-    return max(0.0, math.exp(-(over - 1.0)))
+    tau = task.get("submission_latency_ms")
+    if tau is None:
+        # Miner self-report can be forged; cap this path well below 1.0 so
+        # validators that measure latency themselves always win.
+        tau = sssa.run_metadata.analysis_duration_ms
+        cap = 0.7
+    else:
+        cap = 1.0
 
+    if tau < tau_min:
+        return 0.0
 
-# ---------------------------------------------------------------------------
+    mu_tau = float(task.get("median_latency_ms") or tau_max // 2)
+    denom = max(1.0, tau_max - mu_tau)
+    return max(0.0, min(cap, 1.0 - (tau - mu_tau) / denom))
+
 
 def score_all_axes(sssa: SSSA, task: dict) -> AxisScores:
     return AxisScores(
-        detection  = score_detection(sssa, task),
-        evidence   = score_evidence(sssa, task),
-        policy     = score_policy(sssa, task),
-        efficiency = score_efficiency(sssa, task),
+        detection=score_detection(sssa, task),
+        evidence=score_evidence(sssa, task),
+        policy=score_policy(sssa, task),
+        efficiency=score_efficiency(sssa, task),
     )
+
+
+def round_median_latency(latencies_ms: Iterable[int]) -> float:
+    arr = sorted(int(x) for x in latencies_ms if x is not None and x > 0)
+    if not arr:
+        return 0.0
+    n = len(arr)
+    if n % 2 == 1:
+        return float(arr[n // 2])
+    return (arr[n // 2 - 1] + arr[n // 2]) / 2.0
