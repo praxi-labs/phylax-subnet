@@ -49,6 +49,14 @@ services:
       - PHYLAX_LOG_LEVEL=DEBUG
       - PHYLAX_REGISTRY_PATH=/opt/phylax/state/phylax_registry.sqlite3
       - PHYLAX_SANDBOX_IMAGE=phylax-sandbox:latest
+      # ── phylax-server (control plane) ──
+      # Required for the validator to fetch tasks and call set_weights().
+      # All of these resolve from ../.env via env_file; listing them here
+      # makes the dependency obvious to anyone reading the compose file.
+      - PHYLAX_SERVER_URL=${PHYLAX_SERVER_URL:-}
+      - PHYLAX_SERVER_HOTKEY=${PHYLAX_SERVER_HOTKEY:-}
+      - PHYLAX_VALIDATOR_LABEL=${PHYLAX_VALIDATOR_LABEL:-}
+      - PHYLAX_OFFLINE_FALLBACK=${PHYLAX_OFFLINE_FALLBACK:-false}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ../:/opt/phylax

@@ -47,7 +47,23 @@ btcli stake add \
     --amount 1000
 ```
 
-## 5. Run
+## 5. Configure phylax-server access
+
+The validator pulls its task batch from the phylax-server control plane and **cannot push weights on-chain without a fresh server-issued attestation**. The operator running phylax-server must add your hotkey to its allowlist; you then point at the server URL via env vars:
+
+```bash
+# In .env (see .env.example)
+PHYLAX_SERVER_URL=https://your-phylax-server.example
+PHYLAX_SERVER_HOTKEY=<32-byte ed25519 pubkey hex from /v1/server-identity>
+PHYLAX_VALIDATOR_LABEL=my-org-validator
+PHYLAX_OFFLINE_FALLBACK=false
+```
+
+`PHYLAX_SERVER_HOTKEY` pins the server identity. Fetch it once with `curl <server>/v1/server-identity` and bake it into `.env` — the client will then refuse any server that presents a different key, defending against a rogue impersonator.
+
+`PHYLAX_OFFLINE_FALLBACK=true` lets the validator keep scoring against the local corpus when the server is unreachable, but weights stay blocked because no fresh attestation can be issued. Default is `false` (skip the round entirely).
+
+## 6. Run
 
 ```bash
 python neurons/validator.py \
@@ -58,7 +74,7 @@ python neurons/validator.py \
     --logging.debug
 ```
 
-Optionally, expose the REST API in a second process so runtimes can query attestations:
+Optionally, expose the local REST API in a second process so runtimes can query attestations directly (this is the **subnet-side** API — separate from phylax-server's public registry):
 
 ```bash
 python -m phylax.api.server
@@ -66,29 +82,36 @@ python -m phylax.api.server
 
 ## What the validator does each round
 
-| Step | Whitepaper § | Description |
-|---|---|---|
-| Sample tasks | §7 | Stratified pick across the seven corpus families + synthetic |
-| Per-miner nonce | §5.1 | Generate η_i for every miner; broadcast (S, η_i, deadline) |
-| Run baseline | §5.2 | Validator locally runs the same pipeline under each η_i to get GT(S, η_i) |
-| Score | §5.3 | Compute α, ε, π, η per miner and the composite Q |
-| Consensus | §6.2 | Quality-weighted argmax verdict; countersign the winning SSSA |
-| Publish | §6.3 | Write consensus SSSA to the content-addressed registry |
-| Aggregate | §5.4 | Epoch average → EMA → set_weights on chain |
+| Step | Description |
+|---|---|
+| Fetch task batch | `POST /v1/tasks/batch` to phylax-server — every validator gets a comparable curated batch |
+| Add local synthetic | Validator generates its own private synthetic challenges on top of the curated batch |
+| Per-miner nonce | Generate η_i for every miner; broadcast (S, η_i, deadline) over dendrite |
+| Run baseline | Validator locally runs the same three-layer pipeline under each η_i to get ground truth |
+| Score | Compute α, ε, π, η per miner and the composite Q |
+| Consensus | Quality-weighted argmax verdict; countersign the winning SSSA |
+| Publish | Write consensus SSSA locally and push to phylax-server's public registry |
+| Push results | `POST /v1/rounds/{round_id}/results` so the server can validate the next weight push |
+| Request weight attestation | `POST /v1/weights/report` → server signs a short-TTL `WeightAttestation` |
+| set_weights | On-chain push — only happens if the local attestation verifier passes |
 
 ## Tuning
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `TASKS_PER_ROUND` | 8 | Corpus tasks sampled per round |
-| `SYNTHETIC_TASKS_PER_ROUND` | 2 | Synthetic challenges injected per round |
-| `QUERY_TIMEOUT` | 180 | Seconds to wait per miner |
-| `WEIGHT_UPDATE_INTERVAL` | 100 | Blocks between set_weights pushes |
-| `EMA_ALPHA` | 0.2 | Per-round smoothing factor |
-| `SANDBOX_TIMEOUT` | 120 | Per-detonation timeout (seconds) |
-| `PHYLAX_REGISTRY_PATH` | `./phylax_registry.sqlite3` | Where the attestation registry lives |
-| `PHYLAX_SANDBOX_IMAGE` | `phylax-sandbox:latest` | Image tag the baseline runner launches |
-| `PHYLAX_API_ADMIN_TOKEN` | _empty_ | Required for the /v1/attestation/{hash}/invalidate endpoint |
+| `PHYLAX_SERVER_URL` | _empty_ | **Required.** Base URL of the phylax-server control plane. |
+| `PHYLAX_SERVER_HOTKEY` | _empty_ | **Recommended.** Pinned server signing key; defends against impersonators. |
+| `PHYLAX_VALIDATOR_LABEL` | _empty_ | Friendly label shown in server dashboards. |
+| `PHYLAX_OFFLINE_FALLBACK` | `false` | If `true`, score against local corpus when server unreachable (weights still blocked). |
+| `TASKS_PER_ROUND` | 8 | Curated tasks requested from phylax-server each round. |
+| `SYNTHETIC_TASKS_PER_ROUND` | 2 | Local synthetic challenges injected per round. |
+| `QUERY_TIMEOUT` | 180 | Seconds to wait per miner. |
+| `WEIGHT_UPDATE_INTERVAL` | 100 | Blocks between set_weights pushes. |
+| `EMA_ALPHA` | 0.2 | Per-round smoothing factor. |
+| `SANDBOX_TIMEOUT` | 120 | Per-detonation timeout (seconds). |
+| `PHYLAX_REGISTRY_PATH` | `./phylax_registry.sqlite3` | Local attestation registry cache. |
+| `PHYLAX_SANDBOX_IMAGE` | `phylax-sandbox:latest` | Image tag the baseline runner launches. |
+| `PHYLAX_API_ADMIN_TOKEN` | _empty_ | Required for `phylax.api.server`'s local `/v1/attestation/{hash}/invalidate` endpoint. **Not** the same as the phylax-server admin token — that one lives on the control-plane host, not here. |
 
 ## Adding canary tasks
 
@@ -101,4 +124,7 @@ Canaries are private — never committed to the public repo (whitepaper §7.3 / 
 | `validator did not supply a nonce` from a miner | Old miner build | Tell the operator to upgrade — pre-1.1.0 miners are incompatible |
 | Empty `ground_truth_evidence` in score logs | Bundle URL unreachable | Inline `bundle_bytes_b64` into the task, or host the URL |
 | `set_weights returned False` | Stake too low for permit | Stake more TAO |
+| `set_weights: phylax-server client not initialised` | `PHYLAX_SERVER_URL` not set | Add it to `.env` and restart |
+| `set_weights: phylax-server refused to issue a weight attestation` | Your hotkey is not on the server's allowlist (or was revoked) | Contact the server operator |
+| `phylax-server identity mismatch` | The server's signing key changed, or `PHYLAX_SERVER_HOTKEY` is wrong | Re-fetch `/v1/server-identity` and update `.env` |
 | Registry not growing | Consensus aggregator never produces a winner | Inspect miner verdict diversity in logs |

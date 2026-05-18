@@ -83,9 +83,14 @@ class PhylaxValidator(bt.BaseNeuron if hasattr(bt, "BaseNeuron") else object):
 
         # phylax-server integration (control plane)
         server_url = os.getenv("PHYLAX_SERVER_URL", "")
+        expected_server_hotkey = os.getenv("PHYLAX_SERVER_HOTKEY", "").strip() or None
         self.server_client: Optional[PhylaxServerClient] = None
         if server_url and hasattr(self, "wallet") and self.wallet is not None:
-            self.server_client = PhylaxServerClient(base_url=server_url, wallet=self.wallet)
+            self.server_client = PhylaxServerClient(
+                base_url=server_url,
+                wallet=self.wallet,
+                expected_server_hotkey=expected_server_hotkey,
+            )
             try:
                 self.server_client.register(label=os.getenv("PHYLAX_VALIDATOR_LABEL", ""))
                 bt.logging.success(
@@ -472,15 +477,14 @@ class PhylaxValidator(bt.BaseNeuron if hasattr(bt, "BaseNeuron") else object):
                 return base64.b64decode(task.bundle_bytes_b64)
             except Exception:  # noqa: BLE001
                 return None
-        if task.bundle_url and task.bundle_url.startswith(("http://", "https://")):
-            try:
-                import httpx
+        if task.bundle_url:
+            # Defense-in-depth against a compromised server feeding us a URL
+            # that points at cloud-metadata or LAN services. ``safe_get_bytes``
+            # rejects private-IP hosts on the initial request and on every
+            # redirect, and caps body size.
+            from phylax.utils.safe_http import safe_get_bytes
 
-                r = await asyncio.to_thread(httpx.get, task.bundle_url, follow_redirects=True, timeout=15)
-                if r.status_code == 200:
-                    return r.content
-            except Exception:  # noqa: BLE001
-                return None
+            return await asyncio.to_thread(safe_get_bytes, task.bundle_url)
         return None
 
     # ------------------------------------------------------------------
