@@ -1,0 +1,38 @@
+name: Lint
+
+# Every push and PR runs ruff with the security rules enabled. The rule
+# that actually matters here is S608 — hardcoded SQL — which makes the
+# parameterized-query convention in phylax/validator/registry.py
+# enforceable rather than aspirational.
+#
+# See pyproject.toml [tool.ruff.lint] for the full rule set and the
+# reasons each ignore is on the list.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: lint-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ruff:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ruff
+        run: pip install --quiet "ruff==0.6.9"
+
+      - name: Lint
+        run: ruff check .

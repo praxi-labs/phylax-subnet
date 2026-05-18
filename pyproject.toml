@@ -47,5 +47,29 @@ line-length = 100
 target-version = "py310"
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "B", "UP"]
-ignore = ["E501"]  # long lines OK in docstrings
+# Bandit-style "S" rules guard the subnet against regressions on the
+# same security invariants the codebase already holds:
+#   S608 — hardcoded SQL (registry.py uses raw sqlite3 with parameter
+#          binding; this rule fails the build if anyone introduces an
+#          f-string SQL query)
+#   S301 — unsafe deserialization formats
+#   S324 — weak hashes for security
+#   S605 — starting a process with a shell (real shell-injection guard)
+#   S701 — Jinja autoescape off
+select = ["E", "F", "W", "I", "B", "UP", "S"]
+ignore = [
+    "E501",  # long lines OK in docstrings
+    "S101",  # assert is fine in tests
+    "S104",  # binding 0.0.0.0 inside the axon container is intentional
+    "S311",  # `random` is OK for non-crypto sampling (corpus / synth)
+    "S603",  # subprocess without shell=True is the safe form (validator
+             # baseline calls `docker run` with a list of args)
+    "S607",  # partial-path tool invocation (`docker`, `syft`) is fine —
+             # we rely on PATH and trust the host
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests deliberately exercise edge cases that look suspicious to ruff,
+# and corpora/ examples contain literal adversarial code snippets.
+"tests/**" = ["S105", "S106", "S108"]
+"corpora/**" = ["S105", "S106", "S108"]
