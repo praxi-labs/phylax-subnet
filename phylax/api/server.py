@@ -1,26 +1,24 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 import os
 import secrets
-import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
-from fastapi import Body, FastAPI, HTTPException, Path as ApiPath
+from fastapi import Body, FastAPI, HTTPException
+from fastapi import Path as ApiPath
 from pydantic import BaseModel, Field
 
 from phylax.attestation import sha256_of_bytes, verify_attestation
 from phylax.protocol import (
     SCHEMA_VERSION,
+    SSSA,
     RunMetadata,
     SkillIdentity,
-    SSSA,
 )
 from phylax.validator.baseline import BaselineRunner, GroundTruth
 from phylax.validator.registry import AttestationRegistry
-
 
 # ---------------------------------------------------------------------------
 # Models
@@ -28,8 +26,8 @@ from phylax.validator.registry import AttestationRegistry
 
 
 class ScanRequest(BaseModel):
-    bundle_url: Optional[str] = None
-    bundle_bytes: Optional[str] = Field(
+    bundle_url: str | None = None
+    bundle_bytes: str | None = Field(
         default=None, description="Base64-encoded bundle bytes"
     )
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -38,7 +36,7 @@ class ScanRequest(BaseModel):
 
 class ScanResponse(BaseModel):
     attestation: dict
-    evidence_refs: dict[str, Optional[str]]
+    evidence_refs: dict[str, str | None]
     from_cache: bool
 
 
@@ -55,9 +53,9 @@ class HealthResponse(BaseModel):
 
 def create_app(
     *,
-    registry: Optional[AttestationRegistry] = None,
-    baseline: Optional[BaselineRunner] = None,
-    wallet: Optional[Any] = None,
+    registry: AttestationRegistry | None = None,
+    baseline: BaselineRunner | None = None,
+    wallet: Any | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Phylax", version=SCHEMA_VERSION)
     state = _ApiState(
@@ -159,7 +157,7 @@ class _ApiState:
         *,
         registry: AttestationRegistry,
         baseline: BaselineRunner,
-        wallet: Optional[Any],
+        wallet: Any | None,
         admin_token: str,
     ):
         self.registry = registry

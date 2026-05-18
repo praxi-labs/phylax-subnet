@@ -8,10 +8,8 @@ import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
 
 from phylax.protocol import Finding, FindingEvidence, Severity
-
 
 # OSV.dev CVE lookup. Responses cached on disk for 24h.
 
@@ -60,7 +58,7 @@ def _osv_cache_key(ecosystem: str, name: str, version: str) -> Path:
     return OSV_CACHE_DIR / f"{digest}.json"
 
 
-def _osv_cache_get(ecosystem: str, name: str, version: str) -> Optional[list[str]]:
+def _osv_cache_get(ecosystem: str, name: str, version: str) -> list[str] | None:
     path = _osv_cache_key(ecosystem, name, version)
     if not path.exists():
         return None
@@ -87,12 +85,12 @@ def _osv_cache_put(ecosystem: str, name: str, version: str, ids: list[str]) -> N
 
 @dataclass
 class SBOMResult:
-    sbom_hash:          Optional[str]   = None
-    packages:           List[dict]      = field(default_factory=list)
-    high_risk_packages: List[str]       = field(default_factory=list)
-    known_vulns:        List[str]       = field(default_factory=list)  # CVE IDs
-    install_hooks:      List[str]       = field(default_factory=list)
-    findings:           List[Finding]   = field(default_factory=list)
+    sbom_hash:          str | None   = None
+    packages:           list[dict]      = field(default_factory=list)
+    high_risk_packages: list[str]       = field(default_factory=list)
+    known_vulns:        list[str]       = field(default_factory=list)  # CVE IDs
+    install_hooks:      list[str]       = field(default_factory=list)
+    findings:           list[Finding]   = field(default_factory=list)
 
 
 class SBOMAnalyzer:
@@ -137,7 +135,7 @@ class SBOMAnalyzer:
                 return sbom
         return self._manual_manifest_parse(root)
 
-    def _syft(self, root: Path) -> Optional[list[dict]]:
+    def _syft(self, root: Path) -> list[dict] | None:
         try:
             proc = subprocess.run(
                 ["syft", "scan", str(root), "-o", "cyclonedx-json", "-q"],
@@ -174,9 +172,9 @@ class SBOMAnalyzer:
         for pyproj in root.rglob("pyproject.toml"):
             try:
                 try:
-                    import tomllib                  # py3.11+
+                    import tomllib  # py3.11+
                 except ImportError:
-                    import tomli as tomllib         # type: ignore
+                    import tomli as tomllib  # type: ignore
                 data = tomllib.loads(pyproj.read_text(encoding="utf-8", errors="ignore"))
                 for dep in data.get("project", {}).get("dependencies", []):
                     m = re.match(r"^([A-Za-z0-9_\-.]+)", dep)
@@ -229,7 +227,7 @@ class SBOMAnalyzer:
             ))
 
     @staticmethod
-    def _typosquat_target(name: str) -> Optional[str]:
+    def _typosquat_target(name: str) -> str | None:
         """Return the popular package this name most resembles, if any."""
         if not name or name in POPULAR_PACKAGES:
             return None

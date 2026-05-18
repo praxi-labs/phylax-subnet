@@ -4,7 +4,6 @@ import datetime as dt
 import hashlib
 import json
 from dataclasses import dataclass
-from typing import Any, Optional
 
 
 @dataclass
@@ -63,12 +62,12 @@ class PhylaxServerClient:
     """
 
     def __init__(self, base_url: str, wallet, *, timeout: float = 10.0,
-                 expected_server_hotkey: Optional[str] = None):
+                 expected_server_hotkey: str | None = None):
         self.base_url = base_url.rstrip("/")
         self.wallet = wallet
         self.timeout = timeout
         # Pinned at first use (or supplied explicitly for tests).
-        self._server_hotkey: Optional[str] = expected_server_hotkey
+        self._server_hotkey: str | None = expected_server_hotkey
 
     # ------------------------------------------------------------------
     # Internals
@@ -79,7 +78,7 @@ class PhylaxServerClient:
         return self.wallet.hotkey.ss58_address
 
     @property
-    def server_hotkey(self) -> Optional[str]:
+    def server_hotkey(self) -> str | None:
         """The server's signing public key, pinned on first use."""
         return self._server_hotkey
 
@@ -94,7 +93,7 @@ class PhylaxServerClient:
             "Content-Type": "application/json",
         }
 
-    def _request(self, method: str, path: str, *, json_body: Optional[dict] = None,
+    def _request(self, method: str, path: str, *, json_body: dict | None = None,
                  signed: bool = True) -> dict:
         import httpx
 
@@ -149,7 +148,7 @@ class PhylaxServerClient:
         n_curated: int = 8,
         *,
         include_canaries: bool = True,
-        families: Optional[list[str]] = None,
+        families: list[str] | None = None,
     ) -> dict:
         return self._request(
             "POST",
@@ -166,7 +165,7 @@ class PhylaxServerClient:
         round_id: str,
         miner_scores: list[dict],
         *,
-        consensus_sssa: Optional[dict] = None,
+        consensus_sssa: dict | None = None,
     ) -> dict:
         return self._request(
             "POST",
@@ -208,7 +207,7 @@ class PhylaxServerClient:
 
     def request_and_verify_weight_attestation(
         self, round_id: str, weights: dict[int, float]
-    ) -> Optional[WeightAttestation]:
+    ) -> WeightAttestation | None:
         """Call /v1/weights/report and return a verified attestation, or None.
 
         Enforces three checks in order:

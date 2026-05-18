@@ -3,37 +3,35 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import shutil
 import subprocess
 import tempfile
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
 
 
 @dataclass
 class SandboxResult:
     # Observed capabilities
-    fs_reads:        List[str] = field(default_factory=list)
-    fs_writes:       List[str] = field(default_factory=list)
-    network_domains: List[str] = field(default_factory=list)
-    network_ips:     List[str] = field(default_factory=list)
-    shell_commands:  List[str] = field(default_factory=list)
-    env_vars:        List[str] = field(default_factory=list)
+    fs_reads:        list[str] = field(default_factory=list)
+    fs_writes:       list[str] = field(default_factory=list)
+    network_domains: list[str] = field(default_factory=list)
+    network_ips:     list[str] = field(default_factory=list)
+    shell_commands:  list[str] = field(default_factory=list)
+    env_vars:        list[str] = field(default_factory=list)
 
     # Evidence hashes (content-addressed)
-    network_trace_hash: Optional[str] = None
-    fs_trace_hash:      Optional[str] = None
-    process_trace_hash: Optional[str] = None
-    secrets_trace_hash: Optional[str] = None
-    log_hash:           Optional[str] = None
+    network_trace_hash: str | None = None
+    fs_trace_hash:      str | None = None
+    process_trace_hash: str | None = None
+    secrets_trace_hash: str | None = None
+    log_hash:           str | None = None
 
     # Runtime metadata
     exit_code:       int = 0
     duration_ms:     int = 0
     timed_out:       bool = False
-    container_image: Optional[str] = None
+    container_image: str | None = None
 
 
 class SandboxDetonator:
@@ -49,7 +47,7 @@ class SandboxDetonator:
                  timeout_seconds: int = 120,
                  memory_limit: str = "512m",
                  cpus: str = "1.0",
-                 evidence_dir: Optional[str] = None):
+                 evidence_dir: str | None = None):
         self.image           = image
         self.timeout         = timeout_seconds
         self.memory_limit    = memory_limit
@@ -216,7 +214,7 @@ class SandboxDetonator:
         return SandboxDetonator._hash_file(path)
 
     @staticmethod
-    def _canonical_hash(path: Path, normaliser) -> Optional[str]:
+    def _canonical_hash(path: Path, normaliser) -> str | None:
         """
         Hash the canonical (normalised + sorted) form of a JSONL trace.
 
@@ -249,7 +247,7 @@ class SandboxDetonator:
 # Per-component normalisers drop nondeterministic fields (timestamps, pids)
 # and keep only the behavioural facts that go into the canonical hash.
 
-def _NORM_NET(rec: dict) -> Optional[dict]:
+def _NORM_NET(rec: dict) -> dict | None:
     if not isinstance(rec, dict):
         return None
     out = {
@@ -263,7 +261,7 @@ def _NORM_NET(rec: dict) -> Optional[dict]:
     return out
 
 
-def _NORM_FS(rec: dict) -> Optional[dict]:
+def _NORM_FS(rec: dict) -> dict | None:
     if not isinstance(rec, dict):
         return None
     op = rec.get("op")
@@ -273,7 +271,7 @@ def _NORM_FS(rec: dict) -> Optional[dict]:
     return {"op": op, "path": path}
 
 
-def _NORM_PROC(rec: dict) -> Optional[dict]:
+def _NORM_PROC(rec: dict) -> dict | None:
     if not isinstance(rec, dict):
         return None
     cmd = rec.get("cmd")
@@ -282,7 +280,7 @@ def _NORM_PROC(rec: dict) -> Optional[dict]:
     return {"cmd": cmd, "uid": rec.get("uid")}
 
 
-def _NORM_SECRETS(rec: dict) -> Optional[dict]:
+def _NORM_SECRETS(rec: dict) -> dict | None:
     if not isinstance(rec, dict):
         return None
     var = rec.get("var") or rec.get("key")

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import List
-
 from phylax.protocol import (
     CapabilityMap,
     Finding,
@@ -21,7 +19,7 @@ class PolicyGenerator:
 
     def generate(self,
                  capabilities: CapabilityMap,
-                 findings: List[Finding]) -> RecommendedPolicy:
+                 findings: list[Finding]) -> RecommendedPolicy:
         """
         Construct the policy:
           - egress_allowlist  = observed domains (least-privilege)

@@ -5,7 +5,6 @@ import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 from phylax.pipeline.sandbox import SandboxDetonator, SandboxResult
 from phylax.pipeline.sbom import SBOMAnalyzer, SBOMResult
@@ -33,8 +32,8 @@ class GroundTruth:
     capabilities: CapabilityMap
     policy: RecommendedPolicy
     findings: list[Finding]
-    evidence_hashes: dict[str, Optional[str]] = field(default_factory=dict)
-    sbom_hash: Optional[str] = None
+    evidence_hashes: dict[str, str | None] = field(default_factory=dict)
+    sbom_hash: str | None = None
     duration_ms: int = 0
 
     def as_task_dict(self) -> dict:
@@ -79,7 +78,7 @@ class BaselineRunner:
 
         static_result = self.static_analyzer.analyze(bundle_path)
         sbom_result = self.sbom_analyzer.analyze(bundle_path)
-        sandbox_result: Optional[SandboxResult] = None
+        sandbox_result: SandboxResult | None = None
         try:
             sandbox_result = self.sandbox.detonate(bundle_path, seed=nonce, extended=deep)
         except ValueError:
@@ -136,7 +135,7 @@ class BaselineRunner:
 
 
 def _merge_capabilities(
-    static_result: StaticAnalysisResult, sandbox_result: Optional[SandboxResult]
+    static_result: StaticAnalysisResult, sandbox_result: SandboxResult | None
 ) -> CapabilityMap:
     fs_reads = list(set(static_result.fs_reads + (sandbox_result.fs_reads if sandbox_result else [])))
     fs_writes = list(set(static_result.fs_writes + (sandbox_result.fs_writes if sandbox_result else [])))

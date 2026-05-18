@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 from phylax.attestation import VerificationResult, verify_attestation
-from phylax.protocol import RecommendedPolicy, SSSA, Verdict
-
+from phylax.protocol import SSSA, RecommendedPolicy, Verdict
 
 # ---------------------------------------------------------------------------
 # Client
@@ -22,7 +21,7 @@ class PhylaxClient:
 
     # ------------------------------------------------------------------
 
-    def get_attestation(self, bundle_hash: str) -> Optional[SSSA]:
+    def get_attestation(self, bundle_hash: str) -> SSSA | None:
         import httpx
 
         url = f"{self.base_url}/v1/attestation/{bundle_hash}"
@@ -36,7 +35,7 @@ class PhylaxClient:
         self,
         bundle_bytes: bytes,
         *,
-        metadata: Optional[dict] = None,
+        metadata: dict | None = None,
         test_profile: str = "standard",
     ) -> SSSA:
         import base64
@@ -63,8 +62,8 @@ def fetch_and_verify(
     *,
     base_url: str = "http://localhost:8080",
     require_countersignature: bool = False,
-    max_age_seconds: Optional[int] = 86_400,
-) -> tuple[Optional[SSSA], VerificationResult]:
+    max_age_seconds: int | None = 86_400,
+) -> tuple[SSSA | None, VerificationResult]:
     """High-level entry: fetch attestation for ``bundle_bytes`` and verify it.
 
     Returns ``(sssa, verification_result)``. If the attestation does not

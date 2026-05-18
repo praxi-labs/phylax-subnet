@@ -1,18 +1,16 @@
 from __future__ import annotations
 
 import json
-from typing import Optional, Tuple
 
 from pydantic import ValidationError
 
 from phylax.protocol import SCHEMA_VERSION, SSSA
 
-
 CURRENT_SCHEMA_VERSION = SCHEMA_VERSION
 SUPPORTED_SCHEMA_VERSIONS = {"1.0.0", "1.1.0"}
 
 
-def validate_sssa(payload: dict) -> Tuple[bool, Optional[str], Optional[SSSA]]:
+def validate_sssa(payload: dict) -> tuple[bool, str | None, SSSA | None]:
     """Validate a raw dict against the SSSA schema."""
     version = (
         payload.get("run_metadata", {}).get("schema_version")

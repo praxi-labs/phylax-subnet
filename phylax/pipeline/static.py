@@ -6,10 +6,8 @@ import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List
 
 from phylax.protocol import Finding, FindingEvidence, Severity
-
 
 # --------------------------------------------------------------------------
 # Dangerous patterns
@@ -91,17 +89,17 @@ PERSISTENT_NET_PATTERNS = [
 
 @dataclass
 class StaticAnalysisResult:
-    findings: List[Finding] = field(default_factory=list)
-    fs_reads: List[str] = field(default_factory=list)
-    fs_writes: List[str] = field(default_factory=list)
-    network_domains: List[str] = field(default_factory=list)
-    shell_commands: List[str] = field(default_factory=list)
-    env_vars: List[str] = field(default_factory=list)
+    findings: list[Finding] = field(default_factory=list)
+    fs_reads: list[str] = field(default_factory=list)
+    fs_writes: list[str] = field(default_factory=list)
+    network_domains: list[str] = field(default_factory=list)
+    shell_commands: list[str] = field(default_factory=list)
+    env_vars: list[str] = field(default_factory=list)
     files_scanned: int = 0
     declared_permissions: list[str] = field(default_factory=list)
     used_capabilities: set[str] = field(default_factory=set)
 
-    def dedup(self) -> "StaticAnalysisResult":
+    def dedup(self) -> StaticAnalysisResult:
         self.fs_reads = sorted(set(self.fs_reads))
         self.fs_writes = sorted(set(self.fs_writes))
         self.network_domains = sorted(set(self.network_domains))

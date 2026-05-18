@@ -11,7 +11,7 @@ from phylax.attestation import (
     verify_attestation,
 )
 from phylax.client.runtime import fetch_and_verify
-from phylax.protocol import SSSA, Verdict
+from phylax.protocol import SSSA
 
 
 def _bundle_hash(path: Path) -> str:

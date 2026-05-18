@@ -1,7 +1,7 @@
 from phylax.protocol import (
+    SSSA,
     AttestationBlock,
     SkillIdentity,
-    SSSA,
     Verdict,
     VerdictBlock,
 )

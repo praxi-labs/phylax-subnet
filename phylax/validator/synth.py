@@ -8,7 +8,6 @@ import random
 import textwrap
 import zipfile
 from dataclasses import dataclass
-from typing import Callable
 
 
 @dataclass
@@ -177,7 +176,9 @@ class SyntheticGenerator:
             task={
                 "expected_verdict": "BLOCK",
                 "expected_risk_score": 80,
-                "expected_capabilities": {"filesystem": {"writes": ["/tmp/inj.flag"]}},
+                # noqa: S108 — this path is data describing what an adversarial
+                # skill is expected to write to, not an actual tempfile we open.
+                "expected_capabilities": {"filesystem": {"writes": ["/tmp/inj.flag"]}},  # noqa: S108
                 "expected_policy": {
                     "egress_allowlist": [],
                     "shell_access": False,

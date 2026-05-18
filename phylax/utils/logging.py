@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from typing import Optional
 
 _DEFAULT_FORMAT = (
     "%(asctime)s [%(levelname)s] %(name)s — %(message)s"
@@ -30,7 +29,7 @@ def _configure_root() -> None:
     _CONFIGURED = True
 
 
-def get_logger(name: Optional[str] = None) -> logging.Logger:
+def get_logger(name: str | None = None) -> logging.Logger:
     """Return a configured logger. Safe to call repeatedly."""
     _configure_root()
     return logging.getLogger(name or "phylax")

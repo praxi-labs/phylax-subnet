@@ -6,10 +6,8 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 from phylax.protocol import SSSA
-
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS attestations (
@@ -37,12 +35,12 @@ class RegistryEntry:
     verdict: str
     risk_score: int
     miner_hotkey: str
-    validator_hotkey: Optional[str]
-    round_id: Optional[str]
-    quality_score: Optional[float]
+    validator_hotkey: str | None
+    round_id: str | None
+    quality_score: float | None
     created_at: float
-    invalidated_at: Optional[float] = None
-    invalidation_reason: Optional[str] = None
+    invalidated_at: float | None = None
+    invalidation_reason: str | None = None
 
     @property
     def is_valid(self) -> bool:
@@ -104,7 +102,7 @@ class AttestationRegistry:
                 ),
             )
 
-    def get(self, bundle_hash: str, *, only_valid: bool = True) -> Optional[RegistryEntry]:
+    def get(self, bundle_hash: str, *, only_valid: bool = True) -> RegistryEntry | None:
         with self._lock, self._conn() as conn:
             row = conn.execute(
                 """SELECT bundle_hash, sssa_json, verdict, risk_score, miner_hotkey,

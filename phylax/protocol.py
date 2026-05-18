@@ -3,11 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 
 import bittensor as bt
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-
 
 SCHEMA_VERSION = "1.1.0"
 
@@ -45,7 +44,7 @@ class SkillIdentity(BaseModel):
     name: str
     version: str = "unknown"
     bundle_hash: str
-    sbom_hash: Optional[str] = None
+    sbom_hash: str | None = None
     entrypoints: list[str] = Field(default_factory=list)
     declared_permissions: list[str] = Field(default_factory=list)
 
@@ -54,8 +53,8 @@ class SkillBundle(BaseModel):
     """Inbound payload from validator to miner."""
 
     bundle_hash: str
-    bundle_url: Optional[str] = None
-    bundle_bytes: Optional[bytes] = None
+    bundle_url: str | None = None
+    bundle_bytes: bytes | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     test_profile: TestProfile = TestProfile.STANDARD
 
@@ -111,9 +110,9 @@ class CapabilityMap(BaseModel):
 
 
 class FindingEvidence(BaseModel):
-    trace_hash: Optional[str] = None
-    line_ref: Optional[str] = None
-    snippet: Optional[str] = None
+    trace_hash: str | None = None
+    line_ref: str | None = None
+    snippet: str | None = None
 
 
 class Finding(BaseModel):
@@ -122,12 +121,12 @@ class Finding(BaseModel):
     description: str = ""
     evidence: FindingEvidence = Field(default_factory=FindingEvidence)
     recommendation: str = ""
-    owasp_ref: Optional[str] = None
-    mitre_ref: Optional[str] = None
+    owasp_ref: str | None = None
+    mitre_ref: str | None = None
 
 
 class DependencyInfo(BaseModel):
-    sbom_hash: Optional[str] = None
+    sbom_hash: str | None = None
     high_risk_packages: list[str] = Field(default_factory=list)
     known_vulns: list[str] = Field(default_factory=list)
     install_hooks: list[str] = Field(default_factory=list)
@@ -137,7 +136,7 @@ class RecommendedPolicy(BaseModel):
     """Machine-enforceable runtime policy a consuming runtime applies before
     invoking the skill. Miners set fields to only what was observed."""
 
-    sandbox_runtime_image: Optional[str] = None
+    sandbox_runtime_image: str | None = None
     egress_allowlist: list[str] = Field(default_factory=list)
     egress_denylist: list[str] = Field(default_factory=list)
     filesystem: dict[str, Any] = Field(default_factory=dict)
@@ -145,21 +144,21 @@ class RecommendedPolicy(BaseModel):
     env_allowlist: list[str] = Field(default_factory=list)
     max_memory_mb: int = 512
     timeout_seconds: int = 30
-    rate_limit_rps: Optional[int] = None
+    rate_limit_rps: int | None = None
 
 
 class EvidencePack(BaseModel):
     """Content-addressed hashes of the detonation traces. Validators replay
     detonation with the miner's nonce and require byte-equal hashes."""
 
-    network_trace_hash: Optional[str] = None
-    fs_trace_hash: Optional[str] = None
-    process_trace_hash: Optional[str] = None
-    secrets_trace_hash: Optional[str] = None
-    sandbox_log_hash: Optional[str] = None
-    pcap_hash: Optional[str] = None
+    network_trace_hash: str | None = None
+    fs_trace_hash: str | None = None
+    process_trace_hash: str | None = None
+    secrets_trace_hash: str | None = None
+    sandbox_log_hash: str | None = None
+    pcap_hash: str | None = None
 
-    def component_hashes(self) -> dict[str, Optional[str]]:
+    def component_hashes(self) -> dict[str, str | None]:
         return {
             "N": self.network_trace_hash,
             "F": self.fs_trace_hash,
@@ -170,7 +169,7 @@ class EvidencePack(BaseModel):
 
 class RunMetadata(BaseModel):
     tools: dict[str, str] = Field(default_factory=dict)
-    runtime_image: Optional[str] = None
+    runtime_image: str | None = None
     determinism_seed: int = 0  # set per-task from validator nonce; never hardcoded
     analysis_duration_ms: int = 0
     schema_version: str = SCHEMA_VERSION
@@ -207,8 +206,8 @@ class SSSA(BaseModel):
     recommended_policy: RecommendedPolicy = Field(default_factory=RecommendedPolicy)
     evidence: EvidencePack = Field(default_factory=EvidencePack)
     run_metadata: RunMetadata = Field(default_factory=RunMetadata)
-    attestation: Optional[AttestationBlock] = None
-    countersignature: Optional[ValidatorCountersignature] = None
+    attestation: AttestationBlock | None = None
+    countersignature: ValidatorCountersignature | None = None
 
     def canonical_json(self) -> str:
         """Sorted, separator-stable JSON omitting both signatures."""
@@ -249,11 +248,11 @@ class PhylaxSynapse(bt.Synapse):
     deadline_unix: float = 0.0
 
     # Output (miner → validator)
-    attestation: Optional[dict] = None
-    evidence_refs: Optional[dict] = None
-    error: Optional[str] = None
+    attestation: dict | None = None
+    evidence_refs: dict | None = None
+    error: str | None = None
 
-    def get_sssa(self) -> Optional[SSSA]:
+    def get_sssa(self) -> SSSA | None:
         if self.attestation is None:
             return None
         return SSSA(**self.attestation)

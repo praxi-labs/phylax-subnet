@@ -3,9 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from typing import Union
 
-PathLike = Union[str, Path]
+PathLike = str | Path
 
 
 def sha256_bytes(data: bytes) -> str:

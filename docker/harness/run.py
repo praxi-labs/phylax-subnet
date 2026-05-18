@@ -71,7 +71,7 @@ def install_hooks() -> None:
 
     # --- Secrets (env access) — cover all three Python idioms -------------
     real_environ_get = os.environ.get
-    real_module_getenv = getattr(os, "getenv")
+    real_module_getenv = os.getenv
 
     def traced_environ_get(name, default=None):
         emit("secrets", {"op": "env_get", "var": name})
@@ -82,7 +82,7 @@ def install_hooks() -> None:
         return real_module_getenv(name, default)
 
     os.environ.get = traced_environ_get  # type: ignore[assignment]
-    setattr(os, "getenv", traced_getenv)
+    os.getenv = traced_getenv
 
     real_env_getitem = os.environ.__class__.__getitem__
 

@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import json
 import random
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, Optional
-
 
 FAMILIES = (
     "known_bad",
@@ -24,19 +23,19 @@ class CorpusTask:
     family: str
     path: str
     bundle_hash: str
-    bundle_url: Optional[str]
-    bundle_bytes_b64: Optional[str]
+    bundle_url: str | None
+    bundle_bytes_b64: str | None
     metadata: dict
     test_profile: str
     expected_verdict: str
-    expected_risk_score: Optional[int]
+    expected_risk_score: int | None
     expected_capabilities: dict
     expected_policy: dict
     expected_findings: list[dict] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
 
     @classmethod
-    def from_dict(cls, data: dict, *, family: str, path: str) -> "CorpusTask":
+    def from_dict(cls, data: dict, *, family: str, path: str) -> CorpusTask:
         bundle_hash = data["bundle_hash"]
         if not (bundle_hash.startswith("sha256:") and len(bundle_hash) == 71):
             raise ValueError(f"{path}: bundle_hash must be 'sha256:<64 hex>'")
@@ -83,7 +82,7 @@ class CorpusLoader:
         self.tasks: list[CorpusTask] = []
         self.errors: list[str] = []
 
-    def load(self) -> "CorpusLoader":
+    def load(self) -> CorpusLoader:
         self.tasks = []
         self.errors = []
         for family in FAMILIES:
@@ -105,7 +104,7 @@ class CorpusLoader:
             out.setdefault(t.family, []).append(t)
         return out
 
-    def sample_stratified(self, n: int, rng: Optional[random.Random] = None) -> list[CorpusTask]:
+    def sample_stratified(self, n: int, rng: random.Random | None = None) -> list[CorpusTask]:
         """Stratified sample across families, with deterministic RNG support."""
         if not self.tasks:
             return []

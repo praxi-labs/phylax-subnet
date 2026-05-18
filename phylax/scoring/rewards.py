@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from typing import Iterable
+from collections.abc import Iterable
 
 from phylax.scoring.metrics import AxisScores
-
 
 W_DETECTION = 0.45
 W_EVIDENCE = 0.30

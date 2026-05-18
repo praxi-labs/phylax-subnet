@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
 
 from phylax.protocol import SSSA, Verdict
 
@@ -19,7 +18,7 @@ class MinerSubmission:
 class ConsensusResult:
     verdict: Verdict
     quality_score: float
-    winning_submission: Optional[MinerSubmission]
+    winning_submission: MinerSubmission | None
     verdict_weights: dict[Verdict, float] = field(default_factory=dict)
     participating_miners: int = 0
 
@@ -33,7 +32,7 @@ class ConsensusResult:
 class ConsensusAggregator:
     """Compute the quality-weighted consensus over a set of miner submissions."""
 
-    def aggregate(self, submissions: list[MinerSubmission]) -> Optional[ConsensusResult]:
+    def aggregate(self, submissions: list[MinerSubmission]) -> ConsensusResult | None:
         if not submissions:
             return None
 

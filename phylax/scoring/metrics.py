@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable, Optional
 
 from phylax.protocol import SSSA, Verdict
 
@@ -74,7 +74,7 @@ def score_evidence(sssa: SSSA, task: dict) -> float:
     return 0.5
 
 
-def _is_sha256_ref(s: Optional[str]) -> bool:
+def _is_sha256_ref(s: str | None) -> bool:
     return bool(s) and s.startswith("sha256:") and len(s) == 71
 
 

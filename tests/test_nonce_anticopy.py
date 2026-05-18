@@ -1,10 +1,10 @@
 import pytest
 
 from phylax.protocol import (
+    SSSA,
     EvidencePack,
     RunMetadata,
     SkillIdentity,
-    SSSA,
     Verdict,
     VerdictBlock,
 )

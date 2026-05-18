@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import pytest
-
 from neurons.validator import PhylaxValidator
 from phylax.validator.corpus import CorpusTask
 

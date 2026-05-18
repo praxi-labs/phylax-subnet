@@ -3,16 +3,15 @@ import hashlib
 import os
 import time
 import traceback
-import typing
 
 import bittensor as bt
 
-from phylax.protocol import PhylaxSynapse, SSSA, SkillBundle
-from phylax.pipeline.static import StaticAnalyzer
-from phylax.pipeline.sbom import SBOMAnalyzer
-from phylax.pipeline.sandbox import SandboxDetonator
 from phylax.attestation.signer import AttestationSigner
+from phylax.pipeline.sandbox import SandboxDetonator
+from phylax.pipeline.sbom import SBOMAnalyzer
+from phylax.pipeline.static import StaticAnalyzer
 from phylax.policy.generator import PolicyGenerator
+from phylax.protocol import SSSA, PhylaxSynapse, SkillBundle
 from phylax.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -156,7 +155,7 @@ class PhylaxMiner(bt.BaseNeuron if hasattr(bt, "BaseNeuron") else object):
 
         return synapse
 
-    async def blacklist(self, synapse: PhylaxSynapse) -> typing.Tuple[bool, str]:
+    async def blacklist(self, synapse: PhylaxSynapse) -> tuple[bool, str]:
         """
         Reject requests from unregistered UIDs.
         Validators must be registered on the subnet to receive service.
@@ -192,7 +191,8 @@ class PhylaxMiner(bt.BaseNeuron if hasattr(bt, "BaseNeuron") else object):
         Returns a local filesystem path to the skill bundle.
         Downloads from URL if bundle_bytes not provided.
         """
-        import tempfile, zipfile
+        import tempfile
+        import zipfile
 
         tmp_dir = tempfile.mkdtemp(prefix="phylax_bundle_")
         bundle_zip = os.path.join(tmp_dir, "bundle.zip")
@@ -224,8 +224,11 @@ class PhylaxMiner(bt.BaseNeuron if hasattr(bt, "BaseNeuron") else object):
     def _merge_capabilities(self, static, sbom, sandbox) -> dict:
         """Merge capability observations from all three layers."""
         from phylax.protocol import (
-            CapabilityMap, FilesystemCapability, NetworkCapability,
-            ProcessCapability, SecretsCapability
+            CapabilityMap,
+            FilesystemCapability,
+            NetworkCapability,
+            ProcessCapability,
+            SecretsCapability,
         )
         fs_reads   = list(set(static.fs_reads + (sandbox.fs_reads if sandbox else [])))
         fs_writes  = list(set(static.fs_writes + (sandbox.fs_writes if sandbox else [])))
@@ -271,7 +274,7 @@ class PhylaxMiner(bt.BaseNeuron if hasattr(bt, "BaseNeuron") else object):
         - Exfiltration patterns → BLOCK
         - Otherwise → ALLOW
         """
-        from phylax.protocol import VerdictBlock, Verdict, Severity
+        from phylax.protocol import Severity, Verdict, VerdictBlock
 
         critical = [f for f in findings if f.severity == Severity.CRITICAL]
         high     = [f for f in findings if f.severity == Severity.HIGH]
@@ -324,9 +327,7 @@ class PhylaxMiner(bt.BaseNeuron if hasattr(bt, "BaseNeuron") else object):
 
     def _assemble_sssa(self, bundle, sbom_result, verdict, capabilities,
                        findings, policy, evidence_pack, duration_ms, nonce) -> SSSA:
-        from phylax.protocol import (
-            SSSA, SkillIdentity, DependencyInfo, RunMetadata
-        )
+        from phylax.protocol import SSSA, DependencyInfo, RunMetadata, SkillIdentity
 
         return SSSA(
             skill=SkillIdentity(

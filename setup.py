@@ -5,7 +5,7 @@ For environments still using setuptools directly. Modern installs prefer
 `pip install -e .` which reads pyproject.toml.
 """
 
-from setuptools import setup, find_packages
+from setuptools import find_packages, setup
 
 with open("requirements.txt", encoding="utf-8") as f:
     requirements = [

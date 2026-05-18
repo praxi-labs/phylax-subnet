@@ -3,7 +3,6 @@ from __future__ import annotations
 import datetime
 import hashlib
 from dataclasses import dataclass
-from typing import Optional
 
 import bittensor as bt
 
@@ -13,7 +12,6 @@ from phylax.protocol import (
     ValidatorCountersignature,
 )
 
-
 # ---------------------------------------------------------------------------
 # Signer (miner)
 # ---------------------------------------------------------------------------
@@ -22,7 +20,7 @@ from phylax.protocol import (
 class AttestationSigner:
     """Wraps a Bittensor wallet to sign SSSAs."""
 
-    def __init__(self, wallet: "bt.wallet"):
+    def __init__(self, wallet: bt.wallet):
         self.wallet = wallet
 
     @property
@@ -51,7 +49,7 @@ class AttestationSigner:
 class ValidatorCountersigner:
     """Validator-side countersignature on a consensus SSSA."""
 
-    def __init__(self, wallet: "bt.wallet"):
+    def __init__(self, wallet: bt.wallet):
         self.wallet = wallet
 
     @property
@@ -81,7 +79,7 @@ class ValidatorCountersigner:
 @dataclass
 class VerificationResult:
     ok: bool
-    reason: Optional[str] = None
+    reason: str | None = None
     miner_signature_ok: bool = False
     validator_signature_ok: bool = False
     bundle_hash_ok: bool = False
@@ -92,10 +90,10 @@ class VerificationResult:
 def verify_attestation(
     sssa: SSSA,
     *,
-    local_bundle_hash: Optional[str] = None,
-    local_sbom_hash: Optional[str] = None,
+    local_bundle_hash: str | None = None,
+    local_sbom_hash: str | None = None,
     require_countersignature: bool = False,
-    max_age_seconds: Optional[int] = None,
+    max_age_seconds: int | None = None,
 ) -> VerificationResult:
     """Verify an SSSA: bundle hash, miner signature, optional validator
     countersignature, SBOM hash, and freshness. Returns a structured result

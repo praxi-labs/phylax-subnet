@@ -66,6 +66,7 @@ ignore = [
              # baseline calls `docker run` with a list of args)
     "S607",  # partial-path tool invocation (`docker`, `syft`) is fine —
              # we rely on PATH and trust the host
+    "B008",  # FastAPI requires Depends() / Body() in argument defaults
 ]
 
 [tool.ruff.lint.per-file-ignores]
@@ -73,3 +74,11 @@ ignore = [
 # and corpora/ examples contain literal adversarial code snippets.
 "tests/**" = ["S105", "S106", "S108"]
 "corpora/**" = ["S105", "S106", "S108"]
+# The scanner pipeline is best-effort by design: a malformed dependency
+# file, a missing optional tool, or an unreadable script must never
+# crash a scan, so silent skip / continue is the contract. The
+# `# noqa: BLE001` annotations on these except blocks already document
+# the intent. S110/S112 would add noise without catching real bugs.
+"phylax/pipeline/**" = ["S110", "S112"]
+"phylax/api/server.py" = ["S110"]  # countersign best-effort
+"docker/harness/**" = ["S110"]     # entry-point probing

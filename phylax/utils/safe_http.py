@@ -12,9 +12,7 @@ from __future__ import annotations
 
 import ipaddress
 import socket
-from typing import Optional
 from urllib.parse import urljoin, urlparse
-
 
 # Cloud metadata + RFC1918 + loopback + link-local + IPv6 equivalents.
 # Any URL whose host resolves into one of these is rejected.
@@ -78,7 +76,7 @@ def safe_get_bytes(
     timeout: float = 15.0,
     max_redirects: int = 5,
     max_bytes: int = 50 * 1024 * 1024,
-) -> Optional[bytes]:
+) -> bytes | None:
     """GET ``url`` with SSRF protection and a body-size cap.
 
     Validates the initial URL and every redirect hop against the private-IP

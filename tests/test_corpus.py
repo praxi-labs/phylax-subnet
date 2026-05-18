@@ -1,8 +1,6 @@
 import json
 import random
 
-import pytest
-
 from phylax.validator.corpus import FAMILIES, CorpusLoader
 
 

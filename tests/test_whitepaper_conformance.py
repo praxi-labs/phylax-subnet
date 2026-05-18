@@ -2,12 +2,12 @@ import pytest
 
 from phylax.protocol import (
     SCHEMA_VERSION,
+    SSSA,
     EvidencePack,
     PhylaxSynapse,
     RecommendedPolicy,
     SkillBundle,
     SkillIdentity,
-    SSSA,
     Verdict,
     VerdictBlock,
 )
@@ -23,7 +23,6 @@ from phylax.scoring import (
     score_evidence,
     score_policy,
 )
-
 
 # ---------------------------------------------------------------------------
 # §3 — SSSA schema canonical JSON stability

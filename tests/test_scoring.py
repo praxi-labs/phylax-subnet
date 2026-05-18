@@ -1,11 +1,11 @@
 import pytest
 
 from phylax.protocol import (
+    SSSA,
     EvidencePack,
     RecommendedPolicy,
     RunMetadata,
     SkillIdentity,
-    SSSA,
     Verdict,
     VerdictBlock,
 )
@@ -24,7 +24,6 @@ from phylax.scoring import (
     score_evidence,
     score_policy,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

@@ -2,16 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import os
-import random
 import secrets
 import time
 import traceback
 import uuid
 from pathlib import Path
-from typing import Optional
 
 import bittensor as bt
-import numpy as np
 import torch
 
 from phylax.attestation import (
@@ -19,7 +16,7 @@ from phylax.attestation import (
     VerificationResult,
     verify_attestation,
 )
-from phylax.protocol import PhylaxSynapse, SkillBundle, SSSA, TestProfile, Verdict
+from phylax.protocol import SSSA, PhylaxSynapse, SkillBundle, TestProfile
 from phylax.scoring import (
     aggregate_epoch,
     compute_total_score,
@@ -73,7 +70,7 @@ class PhylaxValidator(bt.BaseNeuron if hasattr(bt, "BaseNeuron") else object):
         self.registry = AttestationRegistry(
             os.getenv("PHYLAX_REGISTRY_PATH", str(DEFAULT_REGISTRY_PATH))
         )
-        self.countersigner: Optional[ValidatorCountersigner] = None
+        self.countersigner: ValidatorCountersigner | None = None
         if hasattr(self, "wallet") and self.wallet is not None:
             self.countersigner = ValidatorCountersigner(wallet=self.wallet)
 
@@ -84,7 +81,7 @@ class PhylaxValidator(bt.BaseNeuron if hasattr(bt, "BaseNeuron") else object):
         # phylax-server integration (control plane)
         server_url = os.getenv("PHYLAX_SERVER_URL", "")
         expected_server_hotkey = os.getenv("PHYLAX_SERVER_HOTKEY", "").strip() or None
-        self.server_client: Optional[PhylaxServerClient] = None
+        self.server_client: PhylaxServerClient | None = None
         if server_url and hasattr(self, "wallet") and self.wallet is not None:
             self.server_client = PhylaxServerClient(
                 base_url=server_url,
@@ -123,7 +120,7 @@ class PhylaxValidator(bt.BaseNeuron if hasattr(bt, "BaseNeuron") else object):
 
         # Track the latest server-owned round so set_weights can request an
         # attestation against it. Reset to None whenever a round runs offline.
-        self.last_completed_round_id: Optional[str] = None
+        self.last_completed_round_id: str | None = None
 
     # ------------------------------------------------------------------
     # Round driver
@@ -385,7 +382,7 @@ class PhylaxValidator(bt.BaseNeuron if hasattr(bt, "BaseNeuron") else object):
         self,
         miner_uids: list[int],
         task,
-    ) -> list["MinerResponse"]:
+    ) -> list[MinerResponse]:
         """One synapse per miner, each with its own nonce. Returns ordered list."""
 
         if hasattr(task, "_synapse_bundle"):
@@ -402,7 +399,7 @@ class PhylaxValidator(bt.BaseNeuron if hasattr(bt, "BaseNeuron") else object):
         deadline_unix = time.time() + self.QUERY_TIMEOUT
         round_id = uuid.uuid4().hex
 
-        async def query_one(uid: int) -> "MinerResponse":
+        async def query_one(uid: int) -> MinerResponse:
             axon = self.metagraph.axons[uid]
             nonce = secrets.randbits(63)
             synapse = PhylaxSynapse(
@@ -458,7 +455,7 @@ class PhylaxValidator(bt.BaseNeuron if hasattr(bt, "BaseNeuron") else object):
 
     async def _baseline_for_corpus_task(
         self, task: CorpusTask, nonce: int
-    ) -> Optional[GroundTruth]:
+    ) -> GroundTruth | None:
         """Run validator baseline if bundle bytes are retrievable."""
         bundle_bytes = await self._fetch_bundle_bytes(task)
         if not bundle_bytes:
@@ -469,7 +466,7 @@ class PhylaxValidator(bt.BaseNeuron if hasattr(bt, "BaseNeuron") else object):
             bt.logging.debug(f"baseline error for {task.name}: {e}")
             return None
 
-    async def _fetch_bundle_bytes(self, task: CorpusTask) -> Optional[bytes]:
+    async def _fetch_bundle_bytes(self, task: CorpusTask) -> bytes | None:
         if task.bundle_bytes_b64:
             import base64
 
@@ -494,7 +491,7 @@ class PhylaxValidator(bt.BaseNeuron if hasattr(bt, "BaseNeuron") else object):
     async def _consense_and_publish(
         self,
         task_dict: dict,
-        responses: list["MinerResponse"],
+        responses: list[MinerResponse],
         *,
         round_id: str,
     ) -> None:
@@ -688,10 +685,10 @@ class MinerResponse:
         uid: int,
         nonce: int,
         ok: bool,
-        sssa: Optional[SSSA] = None,
+        sssa: SSSA | None = None,
         submission_latency_ms: int = 0,
         reason: str = "",
-        verification: Optional[VerificationResult] = None,
+        verification: VerificationResult | None = None,
     ):
         self.uid = uid
         self.nonce = nonce

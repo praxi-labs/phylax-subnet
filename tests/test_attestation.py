@@ -1,4 +1,3 @@
-import pytest
 
 from phylax.attestation import (
     CURRENT_SCHEMA_VERSION,
@@ -6,9 +5,8 @@ from phylax.attestation import (
     validate_sssa,
 )
 from phylax.protocol import (
-    EvidencePack,
-    SkillIdentity,
     SSSA,
+    EvidencePack,
     Verdict,
 )
 
