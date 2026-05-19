@@ -109,7 +109,3 @@ docker build -f docker/Dockerfile.sandbox -t phylax-sandbox:latest .
 - [Validator setup](docs/validator_setup.md) — **note: validators now require Docker**
 - [REST API](docs/api.md)
 - [Runtime integration](docs/integration.md)
-
-## Status
-
-Whitepaper v1.1 alignment is implemented end-to-end. The 9,350-skill corpus referenced in the whitepaper is roadmap; the repo ships representative samples and a runtime synthetic generator until the labelled dataset is published.
