@@ -29,6 +29,15 @@ esac
 REPO_RAW="https://raw.githubusercontent.com/praxi-labs/phylax-subnet/main"
 TARGET="${PHYLAX_INSTALL_DIR:-$HOME/phylax/$ROLE}"
 
+# If GITHUB_TOKEN is set, use it. Lets the bootstrap work against a private
+# repo (or rate-limited anonymous fetches). Once the repo is public this is
+# unnecessary and the operator can ignore it.
+CURL_AUTH=()
+if [ -n "${GITHUB_TOKEN:-}" ]; then
+  CURL_AUTH=(-H "Authorization: token ${GITHUB_TOKEN}")
+fi
+fetch() { curl -fsSL "${CURL_AUTH[@]}" "$@"; }
+
 echo "==> Installing phylax-$ROLE into $TARGET"
 mkdir -p "$TARGET/evidence"
 
@@ -53,7 +62,7 @@ docker compose version >/dev/null 2>&1 || {
 # Compose file — always overwrite, this is repo-authored config
 # ---------------------------------------------------------------------------
 echo "==> Fetching deploy/$ROLE/docker-compose.yml"
-curl -fsSL "$REPO_RAW/deploy/$ROLE/docker-compose.yml" -o "$TARGET/docker-compose.yml"
+fetch "$REPO_RAW/deploy/$ROLE/docker-compose.yml" -o "$TARGET/docker-compose.yml"
 
 # Validator needs a persistent SQLite file for the attestation registry; the
 # compose mount is a bind, so the host path must exist or docker will create
@@ -69,7 +78,7 @@ if [ -f "$TARGET/.env" ]; then
   echo "==> Keeping existing $TARGET/.env (delete it manually if you want to start over)"
 else
   echo "==> Seeding $TARGET/.env from .env.example"
-  curl -fsSL "$REPO_RAW/.env.example" -o "$TARGET/.env"
+  fetch "$REPO_RAW/.env.example" -o "$TARGET/.env"
 
   # Append host UID/GID so the compose file's user: directive resolves
   # correctly, and so the sandbox bind mount stays writable
