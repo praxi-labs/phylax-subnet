@@ -14,6 +14,13 @@ EVIDENCE_DIR = Path(os.getenv("PHYLAX_EVIDENCE_DIR", "/evidence"))
 SKILL_DIR = Path(os.getenv("PHYLAX_SKILL_DIR", "/skill"))
 SEED = int(os.getenv("PHYLAX_SEED", "0"))
 
+# Capture the unpatched builtins BEFORE install_hooks() replaces them. emit()
+# uses these to append JSONL records; if it used the patched `open` instead,
+# traced_open would call emit("fs", ...), which would call open(), which would
+# call traced_open() again — infinite recursion, no trace files ever produced,
+# and the evidence axis stuck at 0.0 forever.
+_REAL_OPEN = open
+
 # Monotonic step counter so JSONL records are stably ordered even if the
 # system clock skews. Validators replaying with the same seed see the same
 # sequence and therefore the same hash.
@@ -30,7 +37,7 @@ def emit(stream: str, record: dict) -> None:
     """Append a JSON record to /evidence/<stream>.jsonl with stable ordering."""
     EVIDENCE_DIR.mkdir(parents=True, exist_ok=True)
     record = {**record, "step": _next_step(), "seed": SEED}
-    with open(EVIDENCE_DIR / f"{stream}.jsonl", "a", encoding="utf-8") as f:
+    with _REAL_OPEN(EVIDENCE_DIR / f"{stream}.jsonl", "a", encoding="utf-8") as f:
         f.write(json.dumps(record, sort_keys=True) + "\n")
 
 
