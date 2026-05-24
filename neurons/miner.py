@@ -46,6 +46,10 @@ class PhylaxMiner:
         self.subtensor = subtensor if subtensor is not None else bt.Subtensor(config=config)
         self.metagraph = self.subtensor.metagraph(netuid=config.netuid)
         self.axon = bt.Axon(wallet=self.wallet, config=config)
+        # Register the PhylaxSynapse handler — without this, the axon only
+        # knows about bittensor's bare Synapse type and rejects every
+        # PhylaxSynapse query with UnknownSynapseError.
+        self.axon.attach(forward_fn=self.forward)
         self.should_exit = False
         self._build_internal_state()
 
