@@ -777,9 +777,13 @@ def main() -> None:
     bt.Subtensor.add_args(parser)
     bt.logging.add_args(parser)
     config = bt.Config(parser)
+    # The CLI default for --subtensor.chain_endpoint is the mainnet URL,
+    # and chain_endpoint wins over network inside bt.Subtensor. Overwrite
+    # it from the network name so --subtensor.network test actually lands
+    # on the test chain.
+    config.subtensor.chain_endpoint = _resolve_endpoint(config.subtensor.network)
     wallet = bt.Wallet(config=config)
-    endpoint = _resolve_endpoint(config.subtensor.network)
-    subtensor = bt.Subtensor(chain_endpoint=endpoint)
+    subtensor = bt.Subtensor(config=config)
     validator = PhylaxValidator(config=config, wallet=wallet, subtensor=subtensor)
     validator.run()
 
