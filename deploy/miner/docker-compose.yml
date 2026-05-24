@@ -24,6 +24,12 @@ services:
       # Per-scan evidence dir — also bind-mounted by the sandbox container,
       # so it must be writable to the same UID the sandbox runs as
       - ./evidence:/opt/phylax/evidence
+    environment:
+      # Force HOME so ~ expands to /root inside the container even when the
+      # process runs as a UID that has no /etc/passwd entry (--user 1000:1000).
+      # Without this, bittensor's settings.py tries to mkdir /.bittensor and
+      # crashes with PermissionError.
+      HOME: /root
     env_file:
       - .env
     command:
