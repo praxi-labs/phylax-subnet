@@ -65,7 +65,7 @@ def _metagraph_size(metagraph) -> int:
             return 0
 
 
-class PhylaxValidator(bt.BaseNeuron if hasattr(bt, "BaseNeuron") else object):
+class PhylaxValidator:
     """Phylax validator neuron."""
 
     neuron_type: str = "ValidatorNeuron"
@@ -77,44 +77,20 @@ class PhylaxValidator(bt.BaseNeuron if hasattr(bt, "BaseNeuron") else object):
     EMA_ALPHA: float = float(os.getenv("EMA_ALPHA", "0.2"))
 
     def __init__(self, config=None, wallet=None, subtensor=None):
-        if hasattr(bt, "BaseNeuron"):
-            super().__init__(config=config)
-            # BaseNeuron in 9.x rebuilds self.wallet / self.subtensor from
-            # config, which doesn't reliably honour --subtensor.network from
-            # dotted CLI args, so override with the explicit objects main()
-            # constructed (it parses argv directly).
-            if wallet is not None:
-                self.wallet = wallet
-            if subtensor is not None:
-                self.subtensor = subtensor
-                self.metagraph = self.subtensor.metagraph(netuid=config.netuid)
-        else:
-            # bittensor 10.x removed BaseNeuron — wire up the standard
-            # wallet/subtensor/metagraph/dendrite manually.
-            self.config = config
-            if callable(bt.logging):
-                bt.logging(config=config)
-            elif hasattr(bt.logging, "set_config"):
-                bt.logging.set_config(config)
-            self.wallet = wallet if wallet is not None else bt.Wallet(config=config)
-            self.subtensor = subtensor if subtensor is not None else bt.Subtensor(config=config)
-            self.metagraph = bt.Metagraph(
-                netuid=config.netuid,
-                network=self.subtensor.network,
-                lite=True,
-                sync=False,
-            )
-            try:
-                self.metagraph.sync(subtensor=self.subtensor, lite=True)
-            except Exception as e:  # noqa: BLE001
-                # Fresh testnet subnets sometimes return a WASM trap from
-                # NeuronInfoRuntimeApi while the chain warms up. Come up
-                # anyway; per-round logic re-syncs.
-                bt.logging.warning(
-                    f"initial metagraph sync failed ({e!r}); continuing with "
-                    "empty metagraph — will retry on next round"
-                )
-            self.dendrite = bt.Dendrite(wallet=self.wallet)
+        # bt.BaseNeuron does not exist in the bittensor SDK (9.x or 10.x);
+        # it's a subnet-template concept. We wire everything up ourselves
+        # from the wallet/subtensor main() built (which already resolved
+        # --subtensor.network correctly).
+        self.config = config
+        if callable(bt.logging):
+            bt.logging(config=config)
+        elif hasattr(bt.logging, "set_config"):
+            bt.logging.set_config(config)
+        self.wallet = wallet if wallet is not None else bt.Wallet(config=config)
+        self.subtensor = subtensor if subtensor is not None else bt.Subtensor(config=config)
+        self.metagraph = self.subtensor.metagraph(netuid=config.netuid)
+        self.dendrite = bt.Dendrite(wallet=self.wallet)
+        self.should_exit = False
         self.corpus = CorpusLoader(CORPORA_DIR).load()
         for err in self.corpus.errors:
             bt.logging.warning(f"corpus: {err}")
@@ -801,30 +777,9 @@ def main() -> None:
     bt.Subtensor.add_args(parser)
     bt.logging.add_args(parser)
     config = bt.Config(parser)
-
-    if hasattr(bt, "BaseNeuron"):
-        # bittensor 9.x: bt.Config promotes dotted CLI args properly, but
-        # bt.Subtensor(network=...) and bt.Subtensor(config=...) both fall
-        # through to config.subtensor.chain_endpoint, whose default is the
-        # mainnet finney URL — so --subtensor.network test ends up on
-        # finney every time. Resolve the endpoint ourselves and pass it
-        # via chain_endpoint.
-        wallet = bt.Wallet(config=config)
-        endpoint = _resolve_endpoint(config.subtensor.network)
-        subtensor = bt.Subtensor(chain_endpoint=endpoint)
-    else:
-        # bittensor 10.x: bt.Config doesn't reliably promote dotted CLI
-        # args, so parse argparse directly and build explicitly. The
-        # network kwarg in 10.x accepts a known name ("test", "finney")
-        # or a full WebSocket URL, so chain_endpoint folds into it.
-        args, _ = parser.parse_known_args()
-        wallet_name = getattr(args, "wallet.name", None) or "default"
-        wallet_hotkey = getattr(args, "wallet.hotkey", None) or "default"
-        network = getattr(args, "subtensor.network", None) or "finney"
-        chain_endpoint = getattr(args, "subtensor.chain_endpoint", None) or None
-        wallet = bt.Wallet(name=wallet_name, hotkey=wallet_hotkey)
-        subtensor = bt.Subtensor(network=chain_endpoint or network)
-
+    wallet = bt.Wallet(config=config)
+    endpoint = _resolve_endpoint(config.subtensor.network)
+    subtensor = bt.Subtensor(chain_endpoint=endpoint)
     validator = PhylaxValidator(config=config, wallet=wallet, subtensor=subtensor)
     validator.run()
 
