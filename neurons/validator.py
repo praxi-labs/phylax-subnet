@@ -66,7 +66,22 @@ class PhylaxValidator(bt.BaseNeuron if hasattr(bt, "BaseNeuron") else object):
                 bt.logging.set_config(config)
             self.wallet = bt.Wallet(config=config)
             self.subtensor = bt.Subtensor(config=config)
-            self.metagraph = self.subtensor.metagraph(netuid=config.netuid)
+            self.metagraph = bt.Metagraph(
+                netuid=config.netuid,
+                network=self.subtensor.network,
+                lite=True,
+                sync=False,
+            )
+            try:
+                self.metagraph.sync(subtensor=self.subtensor, lite=True)
+            except Exception as e:  # noqa: BLE001
+                # Fresh testnet subnets sometimes return a WASM trap from
+                # NeuronInfoRuntimeApi while the chain warms up. Come up
+                # anyway; per-round logic re-syncs.
+                bt.logging.warning(
+                    f"initial metagraph sync failed ({e!r}); continuing with "
+                    "empty metagraph — will retry on next round"
+                )
             self.dendrite = bt.Dendrite(wallet=self.wallet)
         self.corpus = CorpusLoader(CORPORA_DIR).load()
         for err in self.corpus.errors:

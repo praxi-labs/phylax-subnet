@@ -45,7 +45,22 @@ class PhylaxMiner(bt.BaseNeuron if hasattr(bt, "BaseNeuron") else object):
                 bt.logging.set_config(config)
             self.wallet = bt.Wallet(config=config)
             self.subtensor = bt.Subtensor(config=config)
-            self.metagraph = self.subtensor.metagraph(netuid=config.netuid)
+            self.metagraph = bt.Metagraph(
+                netuid=config.netuid,
+                network=self.subtensor.network,
+                lite=True,
+                sync=False,
+            )
+            try:
+                self.metagraph.sync(subtensor=self.subtensor, lite=True)
+            except Exception as e:  # noqa: BLE001
+                # Fresh testnet subnets sometimes return a WASM trap from
+                # NeuronInfoRuntimeApi while the chain warms up. Axon
+                # serving doesn't need the metagraph; retry later.
+                bt.logging.warning(
+                    f"initial metagraph sync failed ({e!r}); continuing with "
+                    "empty metagraph — will retry on next loop"
+                )
             self.axon = bt.Axon(wallet=self.wallet, config=config)
         self._build_internal_state()
 
