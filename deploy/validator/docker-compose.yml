@@ -1,0 +1,40 @@
+# Canonical phylax-validator deployment. Operators run:
+#
+#   cd ~/phylax/validator
+#   docker compose pull
+#   docker compose up -d
+#
+# Configuration lives in ./.env next to this file. The bootstrap script at
+# scripts/install.sh seeds .env with sensible defaults (including the host
+# UID/GID needed for the sandbox bind mount to be writable) and prompts for
+# the phylax-server URL + pinned server hotkey.
+
+services:
+  phylax-validator:
+    image: ghcr.io/praxi-labs/phylax-validator:${PHYLAX_IMAGE_TAG:-latest}
+    container_name: phylax-validator
+    restart: unless-stopped
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    volumes:
+      # Wallet hotkey (read-only) — needed to sign SSSAs and call set_weights
+      - ${BITTENSOR_DIR:-~/.bittensor}:/root/.bittensor:ro
+      # Docker socket — BaselineRunner shells out to docker run for ground-truth detonation
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Per-scan evidence dir — also bind-mounted by the sandbox container
+      - ./evidence:/opt/phylax/evidence
+      # Attestation registry — must persist across restarts
+      - ./registry.sqlite3:/opt/phylax/registry.sqlite3
+    env_file:
+      - .env
+    command:
+      - python
+      - neurons/validator.py
+      - --netuid
+      - "${PHYLAX_NETUID:-486}"
+      - --subtensor.network
+      - "${SUBTENSOR_NETWORK:-test}"
+      - --wallet.name
+      - "${WALLET_NAME:-validator}"
+      - --wallet.hotkey
+      - "${WALLET_HOTKEY:-default}"
+      - --logging.debug

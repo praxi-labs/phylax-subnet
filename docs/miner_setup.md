@@ -1,23 +1,22 @@
 # Miner Setup Guide
 
-Run a Phylax miner on testnet (netuid 486) from a clean host. Copy-paste from top to bottom.
+Run a Phylax miner on testnet (netuid 486) from a clean Ubuntu host. Copy-paste from top to bottom.
 
 ## 1. Prerequisites
 
-- Docker 24+ (`docker` runnable by your user; add yourself to the `docker` group if not).
+- Docker 24+ with the `compose` plugin (`docker compose version` must work).
 - `btcli` ([install guide](https://docs.bittensor.com/getting-started/install-btcli)).
 - 16 GB RAM, 4+ CPU cores, 50 GB free disk.
 - Inbound TCP **8091** open to the public internet (validators dial this port).
+- Your shell user is in the `docker` group: `sudo usermod -aG docker $USER && newgrp docker`.
 
-## 2. Wallet
+## 2. Wallet, register
 
 ```bash
 btcli wallet create --wallet.name miner --wallet.hotkey default
 ```
 
-Fund the **coldkey** with testnet TAO from the Bittensor Discord `#faucet` channel — you need ~1 TAO to register on the subnet.
-
-## 3. Register on subnet 486
+Fund the **coldkey** with testnet TAO from the Bittensor Discord `#faucet` channel (~1 TAO is enough).
 
 ```bash
 btcli subnet register \
@@ -27,86 +26,60 @@ btcli subnet register \
   --wallet.hotkey default
 ```
 
-The transaction prompts for a registration fee (paid from the coldkey balance). On success the hotkey gets assigned a UID on subnet 486.
-
-Verify:
+Verify the hotkey is registered:
 
 ```bash
-btcli wallet overview --wallet.name miner --subtensor.network test | grep -A1 'UID'
+btcli wallet overview --wallet.name miner --subtensor.network test
+# Look for the validator/default row showing a UID on subnet 486.
 ```
 
-## 4. Pull the images
+## 3. Install
 
-The miner image bundles the analysis pipeline. The sandbox image is what the miner shells out to `docker run` per scan.
+One command lays down the compose file, a seeded `.env`, and the evidence directory under `~/phylax/miner/`:
 
 ```bash
-docker pull ghcr.io/praxi-labs/phylax-miner:latest
+curl -fsSL https://raw.githubusercontent.com/praxi-labs/phylax-subnet/main/scripts/install.sh | bash -s miner
+```
+
+The script is idempotent — re-running upgrades the compose file but never clobbers `.env`.
+
+## 4. Run
+
+```bash
+cd ~/phylax/miner
+docker compose pull   # also pulls phylax-sandbox via the image config
+docker compose up -d
+docker compose logs -f
+```
+
+Within ~30 seconds the log should show:
+
+```
+Axon serving on [::]:8091
+```
+
+Within a couple of minutes (once a validator finds your axon on the metagraph):
+
+```
+Received scan request: sha256:...
+Running Layer 3: Sandbox detonation (seed=...)
+```
+
+You also need the sandbox image present locally:
+
+```bash
 docker pull ghcr.io/praxi-labs/phylax-sandbox:latest
 ```
 
-## 5. Configuration
-
-Pull the example `.env`, edit the few fields you need, save anywhere convenient:
+## 5. Updating
 
 ```bash
-mkdir -p ~/phylax && cd ~/phylax
-curl -fsSL https://raw.githubusercontent.com/praxi-labs/phylax-subnet/main/.env.example -o .env
-mkdir -p evidence
+cd ~/phylax/miner
+docker compose pull
+docker compose up -d
 ```
 
-The defaults already point `PHYLAX_SANDBOX_IMAGE` at the published sandbox tag and `PHYLAX_EVIDENCE_DIR` at `/opt/phylax/evidence` (which the miner image pre-creates and the run command bind-mounts). For a miner you do **not** need any phylax-server env vars — those are validator-only.
-
-## 6. Run
-
-```bash
-docker run -d --name phylax-miner --restart=unless-stopped \
-  -p 8091:8091 \
-  --user "$(id -u):$(id -g)" \
-  -v "$HOME/.bittensor:/root/.bittensor:ro" \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  -v "$HOME/phylax/evidence:/opt/phylax/evidence" \
-  --env-file "$HOME/phylax/.env" \
-  ghcr.io/praxi-labs/phylax-miner:latest \
-  python neurons/miner.py \
-    --netuid 486 \
-    --subtensor.network test \
-    --wallet.name miner \
-    --wallet.hotkey default \
-    --axon.port 8091 \
-    --logging.debug
-```
-
-What each mount does:
-
-| Mount | Why |
-|---|---|
-| `~/.bittensor` (read-only) | Hotkey to sign SSSAs |
-| `/var/run/docker.sock` | Miner shells out to `docker run` to launch the sandbox container |
-| `~/phylax/evidence` | Host-side scratch for per-scan trace artefacts (shared with the sandbox by bind mount) |
-| `--user $(id -u):$(id -g)` | Required so the sandbox's bind-mounted `/evidence` is writable from inside the container |
-
-## 7. Verify
-
-```bash
-# Container is up
-docker ps --filter name=phylax-miner --format 'table {{.Names}}\t{{.Status}}'
-
-# Tail logs — within ~30s you should see "Axon serving on [::]:8091"
-docker logs -f phylax-miner
-
-# Once a validator queries you, log lines like:
-#   Received scan request: sha256:...
-#   Running Layer 3: Sandbox detonation (seed=...)
-```
-
-## 8. Updating
-
-```bash
-docker pull ghcr.io/praxi-labs/phylax-miner:latest
-docker pull ghcr.io/praxi-labs/phylax-sandbox:latest
-docker rm -f phylax-miner
-# Re-run the docker run command from step 6.
-```
+`.env` and your evidence directory persist across updates.
 
 ## How the miner answers each query
 
@@ -124,24 +97,26 @@ The miner refuses to detonate if no nonce is supplied — running with a hardcod
 
 ## Tuning
 
+Edit `~/phylax/miner/.env` and `docker compose up -d` to apply.
+
 | Variable | Default | Meaning |
 |---|---|---|
 | `SANDBOX_TIMEOUT` | `60` | Per-detonation timeout (seconds), 5× for `deep` profile |
 | `PHYLAX_LOG_LEVEL` | `INFO` | Stdlib logger level |
-| `PHYLAX_EVIDENCE_DIR` | `/opt/phylax/evidence` | Where evidence packs are written before hashing (mount this from the host) |
+| `PHYLAX_EVIDENCE_DIR` | `/opt/phylax/evidence` | Where evidence packs are written (the compose file already bind-mounts the host's `./evidence` here — don't change this) |
 | `PHYLAX_SANDBOX_IMAGE` | `ghcr.io/praxi-labs/phylax-sandbox:latest` | Sandbox image the detonator launches |
-
-Override any of these by setting them in `~/phylax/.env`.
+| `AXON_PORT` | `8091` | Host port that maps to the miner's axon |
+| `PHYLAX_IMAGE_TAG` | `latest` | Pin to `sha-<short>` for reproducible deploys |
 
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| Container exits immediately | Wallet path not mounted, or hotkey doesn't exist | Confirm `~/.bittensor/wallets/miner/hotkeys/default` exists on the host |
-| `Permission denied: '/opt/phylax/evidence'` | You omitted `--user "$(id -u):$(id -g)"` | Add the flag |
-| `Cannot connect to the Docker daemon` from inside container | Forgot to mount `/var/run/docker.sock` | Add the `-v /var/run/docker.sock:/var/run/docker.sock` flag |
-| No `Received scan request` ever | Inbound 8091 closed in firewall/security group, or axon not registered yet | Open the port; allow ~12 blocks (~2 min) after `subnet register` for the axon to propagate |
+| `docker compose: command not found` | docker compose plugin missing | `sudo apt install docker-compose-plugin` |
+| Container exits immediately | Hotkey not found in `~/.bittensor` | Check `ls ~/.bittensor/wallets/miner/hotkeys/default` |
+| `Cannot connect to the Docker daemon` from inside container | docker.sock mount not propagated | Ensure `/var/run/docker.sock` exists on the host |
+| `Permission denied: '/opt/phylax/evidence'` | `HOST_UID`/`HOST_GID` in `.env` don't match your shell user | Re-run `scripts/install.sh` or hand-edit `.env` |
+| No `Received scan request` lines after 5 min | Inbound 8091 closed or axon not on metagraph yet | Open the port; wait ~12 blocks (~2 min) after `subnet register` |
 | `Bundle hash mismatch` | Wrong bytes downloaded | Check `bundle_url` reachability from inside the container |
-| `validator did not supply a nonce` | Talking to a pre-1.1.0 validator | Tell the validator operator to upgrade |
-| Sandbox timeouts | Heavy bundles, `deep` profile | Bump `SANDBOX_TIMEOUT` in `.env` and recreate the container |
-| ε scored 0 on the leaderboard | Sandbox produced no trace files | Run `ls ~/phylax/evidence/$(ls -1t ~/phylax/evidence \| head -1)` — you should see `network.jsonl`, `fs.jsonl`, `process.jsonl`, `secrets.jsonl`. If only `log.txt`, check that log for the harness error |
+| Sandbox timeouts | Heavy bundles, `deep` profile | Bump `SANDBOX_TIMEOUT` in `.env`, `docker compose up -d` |
+| ε scored 0 on the leaderboard | Sandbox produced no trace files | `ls ~/phylax/miner/evidence/$(ls -1t ~/phylax/miner/evidence \| head -1)` — should contain `network.jsonl`, `fs.jsonl`, `process.jsonl`, `secrets.jsonl`. If only `log.txt`, read that for the harness error |
