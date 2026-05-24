@@ -1,3 +1,4 @@
+import argparse
 import asyncio
 import hashlib
 import os
@@ -32,7 +33,17 @@ class PhylaxMiner(bt.BaseNeuron if hasattr(bt, "BaseNeuron") else object):
     neuron_type: str = "MinerNeuron"
 
     def __init__(self, config=None):
-        super().__init__(config=config)
+        if hasattr(bt, "BaseNeuron"):
+            super().__init__(config=config)
+        else:
+            # bittensor 10.x removed BaseNeuron — wire up the standard
+            # wallet/subtensor/metagraph/axon manually.
+            self.config = config
+            bt.logging(config=config)
+            self.wallet = bt.wallet(config=config)
+            self.subtensor = bt.subtensor(config=config)
+            self.metagraph = self.subtensor.metagraph(netuid=config.netuid)
+            self.axon = bt.axon(wallet=self.wallet, config=config)
         self._build_internal_state()
 
     def _build_internal_state(self):
@@ -393,7 +404,15 @@ class PhylaxMiner(bt.BaseNeuron if hasattr(bt, "BaseNeuron") else object):
 
 
 def main():
-    miner = PhylaxMiner()
+    parser = argparse.ArgumentParser(description="Phylax miner neuron")
+    parser.add_argument("--netuid", type=int, required=True,
+                        help="Subnet netuid to mine on")
+    bt.wallet.add_args(parser)
+    bt.subtensor.add_args(parser)
+    bt.logging.add_args(parser)
+    bt.axon.add_args(parser)
+    config = bt.config(parser)
+    miner = PhylaxMiner(config=config)
     miner.run()
 
 
