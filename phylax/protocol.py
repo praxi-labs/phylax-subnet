@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 from enum import Enum
 from typing import Any
 
 import bittensor as bt
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 
 SCHEMA_VERSION = "1.1.0"
 
@@ -64,6 +65,22 @@ class SkillBundle(BaseModel):
         if not v.startswith("sha256:") or len(v) != 71:
             raise ValueError("bundle_hash must be 'sha256:<64 hex chars>'")
         return v
+
+    # The synapse rides JSON between validator and miner; raw bytes aren't
+    # JSON-serialisable, so transport bundle_bytes as base64. Code that sets
+    # or reads .bundle_bytes still sees raw bytes either side of the wire.
+    @field_serializer("bundle_bytes")
+    def _ser_bundle_bytes(self, v: bytes | None) -> str | None:
+        return base64.b64encode(v).decode("ascii") if v else None
+
+    @field_validator("bundle_bytes", mode="before")
+    @classmethod
+    def _val_bundle_bytes(cls, v: Any) -> bytes | None:
+        if v is None or isinstance(v, bytes):
+            return v
+        if isinstance(v, str):
+            return base64.b64decode(v)
+        raise TypeError(f"bundle_bytes must be bytes, base64 str, or None (got {type(v).__name__})")
 
 
 class VerdictBlock(BaseModel):

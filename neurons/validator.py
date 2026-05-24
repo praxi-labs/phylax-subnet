@@ -673,37 +673,47 @@ class PhylaxValidator:
             f"starting Phylax validator on netuid={self.config.netuid} "
             f"hotkey={self.wallet.hotkey.ss58_address}"
         )
+        # Single persistent event loop across rounds. asyncio.run() per
+        # iteration would close the loop each time, and bittensor's
+        # dendrite caches an aiohttp ClientSession bound to whichever
+        # loop was alive at first use — subsequent rounds then crash
+        # with "Event loop is closed" on every query.
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         last_weight_block = 0
-        while not getattr(self, "should_exit", False):
-            try:
-                self.metagraph.sync(subtensor=self.subtensor)
-                # Re-init countersigner if wallet was just set on first iteration.
-                if self.countersigner is None and hasattr(self, "wallet"):
-                    self.countersigner = ValidatorCountersigner(wallet=self.wallet)
-                mg_n = _metagraph_size(self.metagraph)
-                if self.scores.numel() != mg_n:
-                    new = torch.zeros(mg_n)
-                    n = min(new.numel(), self.scores.numel())
-                    new[:n] = self.scores[:n]
-                    self.scores = new
+        try:
+            while not getattr(self, "should_exit", False):
+                try:
+                    self.metagraph.sync(subtensor=self.subtensor)
+                    # Re-init countersigner if wallet was just set on first iteration.
+                    if self.countersigner is None and hasattr(self, "wallet"):
+                        self.countersigner = ValidatorCountersigner(wallet=self.wallet)
+                    mg_n = _metagraph_size(self.metagraph)
+                    if self.scores.numel() != mg_n:
+                        new = torch.zeros(mg_n)
+                        n = min(new.numel(), self.scores.numel())
+                        new[:n] = self.scores[:n]
+                        self.scores = new
 
-                asyncio.run(self.run_round())
+                    loop.run_until_complete(self.run_round())
 
-                current_block = self.subtensor.get_current_block()
-                if current_block - last_weight_block >= self.WEIGHT_UPDATE_INTERVAL:
-                    self.set_weights()
-                    last_weight_block = current_block
+                    current_block = self.subtensor.get_current_block()
+                    if current_block - last_weight_block >= self.WEIGHT_UPDATE_INTERVAL:
+                        self.set_weights()
+                        last_weight_block = current_block
 
-                self.step += 1
-                time.sleep(12)
+                    self.step += 1
+                    time.sleep(12)
 
-            except KeyboardInterrupt:
-                bt.logging.info("validator stopped by KeyboardInterrupt")
-                break
-            except Exception as e:  # noqa: BLE001
-                bt.logging.error(f"run loop error: {e}")
-                bt.logging.debug(traceback.format_exc())
-                time.sleep(12)
+                except KeyboardInterrupt:
+                    bt.logging.info("validator stopped by KeyboardInterrupt")
+                    break
+                except Exception as e:  # noqa: BLE001
+                    bt.logging.error(f"run loop error: {e}")
+                    bt.logging.debug(traceback.format_exc())
+                    time.sleep(12)
+        finally:
+            loop.close()
 
 
 # ---------------------------------------------------------------------------
