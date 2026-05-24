@@ -60,7 +60,10 @@ class PhylaxValidator(bt.BaseNeuron if hasattr(bt, "BaseNeuron") else object):
             # bittensor 10.x removed BaseNeuron — wire up the standard
             # wallet/subtensor/metagraph/dendrite manually.
             self.config = config
-            bt.logging(config=config)
+            if callable(bt.logging):
+                bt.logging(config=config)
+            elif hasattr(bt.logging, "set_config"):
+                bt.logging.set_config(config)
             self.wallet = bt.Wallet(config=config)
             self.subtensor = bt.Subtensor(config=config)
             self.metagraph = self.subtensor.metagraph(netuid=config.netuid)
@@ -724,7 +727,7 @@ def main() -> None:
     bt.Wallet.add_args(parser)
     bt.Subtensor.add_args(parser)
     bt.logging.add_args(parser)
-    config = bt.config(parser)
+    config = bt.Config(parser)
     validator = PhylaxValidator(config=config)
     validator.run()
 
