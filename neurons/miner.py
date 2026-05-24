@@ -35,6 +35,17 @@ class PhylaxMiner(bt.BaseNeuron if hasattr(bt, "BaseNeuron") else object):
     def __init__(self, config=None, wallet=None, subtensor=None):
         if hasattr(bt, "BaseNeuron"):
             super().__init__(config=config)
+            # BaseNeuron in 9.x rebuilds self.wallet / self.subtensor from
+            # config, which doesn't reliably honour --subtensor.network from
+            # dotted CLI args, so override with the explicit objects main()
+            # constructed (it parses argv directly).
+            if wallet is not None:
+                self.wallet = wallet
+            if subtensor is not None:
+                self.subtensor = subtensor
+                self.metagraph = self.subtensor.metagraph(netuid=config.netuid)
+            if not hasattr(self, "should_exit"):
+                self.should_exit = False
         else:
             # bittensor 10.x removed BaseNeuron — wire up the standard
             # wallet/subtensor/metagraph/axon manually.
@@ -435,20 +446,24 @@ def main():
     bt.Axon.add_args(parser)
     config = bt.Config(parser)
 
-    # bittensor 10.x's bt.Config doesn't reliably promote dotted CLI args
-    # (e.g. --wallet.name miner) into nested config nodes, so we build
-    # wallet and subtensor explicitly from the parsed argparse namespace
-    # and hand them in.
-    args, _ = parser.parse_known_args()
-    wallet_name = getattr(args, "wallet.name", None) or "default"
-    wallet_hotkey = getattr(args, "wallet.hotkey", None) or "default"
-    network = getattr(args, "subtensor.network", None) or "finney"
-    chain_endpoint = getattr(args, "subtensor.chain_endpoint", None) or None
-    wallet = bt.Wallet(name=wallet_name, hotkey=wallet_hotkey)
-    # bittensor 10.x dropped chain_endpoint as a constructor kwarg; the
-    # network parameter accepts either a known name ("test", "finney") or
-    # a full WebSocket URL, so collapse both into a single call.
-    subtensor = bt.Subtensor(network=chain_endpoint or network)
+    if hasattr(bt, "BaseNeuron"):
+        # bittensor 9.x: bt.Config properly promotes dotted CLI args
+        # (--wallet.name, --subtensor.network) into nested config nodes,
+        # so the canonical config-driven constructors work.
+        wallet = bt.Wallet(config=config)
+        subtensor = bt.Subtensor(config=config)
+    else:
+        # bittensor 10.x: bt.Config doesn't reliably promote dotted CLI
+        # args, so parse argparse directly and build explicitly. The
+        # network kwarg in 10.x accepts a known name ("test", "finney")
+        # or a full WebSocket URL, so chain_endpoint folds into it.
+        args, _ = parser.parse_known_args()
+        wallet_name = getattr(args, "wallet.name", None) or "default"
+        wallet_hotkey = getattr(args, "wallet.hotkey", None) or "default"
+        network = getattr(args, "subtensor.network", None) or "finney"
+        chain_endpoint = getattr(args, "subtensor.chain_endpoint", None) or None
+        wallet = bt.Wallet(name=wallet_name, hotkey=wallet_hotkey)
+        subtensor = bt.Subtensor(network=chain_endpoint or network)
 
     miner = PhylaxMiner(config=config, wallet=wallet, subtensor=subtensor)
     miner.run()
