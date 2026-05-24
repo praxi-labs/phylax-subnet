@@ -53,7 +53,13 @@ class SkillIdentity(BaseModel):
 class SkillBundle(BaseModel):
     """Inbound payload from validator to miner."""
 
-    bundle_hash: str
+    # All fields default so the model can be constructed from {}. bittensor
+    # 9.x's axon decodes the bt_header_input_obj_skill_bundle header first
+    # and builds the model from that; for large fields the header is the
+    # placeholder "e30=" (base64 {}) and the real data arrives in the body.
+    # If any field were required, the header-side construction would raise
+    # SynapseParsingError before the body parse ever ran.
+    bundle_hash: str = ""
     bundle_url: str | None = None
     bundle_bytes: bytes | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -62,6 +68,11 @@ class SkillBundle(BaseModel):
     @field_validator("bundle_hash")
     @classmethod
     def _hash_shape(cls, v: str) -> str:
+        # Empty is allowed for the header-placeholder case; the body parse
+        # overwrites it with the real sha256:... hash. Anything else must
+        # match the canonical shape.
+        if not v:
+            return v
         if not v.startswith("sha256:") or len(v) != 71:
             raise ValueError("bundle_hash must be 'sha256:<64 hex chars>'")
         return v
