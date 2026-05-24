@@ -181,15 +181,21 @@ class PhylaxValidator:
         )
 
         per_uid_task_scores: dict[int, list[float]] = {uid: [] for uid in miner_uids}
+        # Per-axis breakdown collected alongside the composite quality. Used by
+        # _push_round_results so the public leaderboard shows real accuracy /
+        # evidence / policy / efficiency columns instead of zeros.
+        per_uid_task_axes: dict[int, list] = {uid: [] for uid in miner_uids}
 
         for task in corpus_tasks:
             await self._run_task_for_corpus(
-                task, miner_uids, per_uid_task_scores, round_id=round_id
+                task, miner_uids, per_uid_task_scores, per_uid_task_axes,
+                round_id=round_id,
             )
 
         for synth in synth_skills:
             await self._run_task_for_synthetic(
-                synth, miner_uids, per_uid_task_scores, round_id=round_id
+                synth, miner_uids, per_uid_task_scores, per_uid_task_axes,
+                round_id=round_id,
             )
 
         # ---- 3. Aggregate epoch scores into the running EMA vector. ----
@@ -206,7 +212,7 @@ class PhylaxValidator:
         # round_id the server doesn't recognise, and reporting them would 404.
         if server_owned_round and self.server_client is not None:
             try:
-                self._push_round_results(round_id, per_uid_task_scores, new_scores)
+                self._push_round_results(round_id, per_uid_task_scores, per_uid_task_axes, new_scores)
                 # Only mark the round as eligible for weight attestation once
                 # the server has accepted the results.
                 self.last_completed_round_id = round_id
@@ -296,28 +302,37 @@ class PhylaxValidator:
         self,
         round_id: str,
         per_uid_task_scores: dict[int, list[float]],
+        per_uid_task_axes: dict[int, list],
         new_scores,
     ) -> None:
         """Submit per-miner scores to /v1/rounds/{round_id}/results."""
         assert self.server_client is not None
-        miner_scores_payload = [
-            {
-                "miner_uid": int(uid),
-                "miner_hotkey": self.metagraph.hotkeys[uid]
-                if uid < len(self.metagraph.hotkeys)
-                else "",
-                "bundle_hash": "sha256:" + "0" * 64,
-                "quality_score": float(new_scores[uid].item()),
-                "detection_score": 0.0,
-                "evidence_score": 0.0,
-                "policy_score": 0.0,
-                "efficiency_score": 0.0,
-                "submission_latency_ms": 0,
-                "verdict": "ALLOW",
-                "risk_score": 0,
-            }
-            for uid in per_uid_task_scores
-        ]
+
+        def _axis_mean(axes_list, attr: str) -> float:
+            if not axes_list:
+                return 0.0
+            return float(sum(getattr(a, attr) for a in axes_list) / len(axes_list))
+
+        miner_scores_payload = []
+        for uid in per_uid_task_scores:
+            axes = per_uid_task_axes.get(uid, [])
+            miner_scores_payload.append(
+                {
+                    "miner_uid": int(uid),
+                    "miner_hotkey": self.metagraph.hotkeys[uid]
+                    if uid < len(self.metagraph.hotkeys)
+                    else "",
+                    "bundle_hash": "sha256:" + "0" * 64,
+                    "quality_score": float(new_scores[uid].item()),
+                    "detection_score": _axis_mean(axes, "detection"),
+                    "evidence_score": _axis_mean(axes, "evidence"),
+                    "policy_score": _axis_mean(axes, "policy"),
+                    "efficiency_score": _axis_mean(axes, "efficiency"),
+                    "submission_latency_ms": 0,
+                    "verdict": "ALLOW",
+                    "risk_score": 0,
+                }
+            )
         self.server_client.submit_round_results(
             round_id=round_id, miner_scores=miner_scores_payload
         )
@@ -331,6 +346,7 @@ class PhylaxValidator:
         task: CorpusTask,
         miner_uids: list[int],
         per_uid_task_scores: dict[int, list[float]],
+        per_uid_task_axes: dict[int, list],
         *,
         round_id: str,
     ) -> None:
@@ -360,6 +376,7 @@ class PhylaxValidator:
             axes = score_all_axes(resp.sssa, evaluation_task)
             quality = compute_total_score(axes)
             per_uid_task_scores[uid].append(quality)
+            per_uid_task_axes[uid].append(axes)
             resp.quality = quality
 
         await self._consense_and_publish(task_dict, responses, round_id=round_id)
@@ -369,6 +386,7 @@ class PhylaxValidator:
         synth_skill,
         miner_uids: list[int],
         per_uid_task_scores: dict[int, list[float]],
+        per_uid_task_axes: dict[int, list],
         *,
         round_id: str,
     ) -> None:
@@ -404,6 +422,7 @@ class PhylaxValidator:
             axes = score_all_axes(resp.sssa, evaluation_task)
             quality = compute_total_score(axes)
             per_uid_task_scores[uid].append(quality)
+            per_uid_task_axes[uid].append(axes)
             resp.quality = quality
 
         await self._consense_and_publish(task_dict, responses, round_id=round_id)
