@@ -32,7 +32,7 @@ class PhylaxMiner(bt.BaseNeuron if hasattr(bt, "BaseNeuron") else object):
 
     neuron_type: str = "MinerNeuron"
 
-    def __init__(self, config=None):
+    def __init__(self, config=None, wallet=None, subtensor=None):
         if hasattr(bt, "BaseNeuron"):
             super().__init__(config=config)
         else:
@@ -43,8 +43,8 @@ class PhylaxMiner(bt.BaseNeuron if hasattr(bt, "BaseNeuron") else object):
                 bt.logging(config=config)
             elif hasattr(bt.logging, "set_config"):
                 bt.logging.set_config(config)
-            self.wallet = bt.Wallet(config=config)
-            self.subtensor = bt.Subtensor(config=config)
+            self.wallet = wallet if wallet is not None else bt.Wallet(config=config)
+            self.subtensor = subtensor if subtensor is not None else bt.Subtensor(config=config)
             self.metagraph = bt.Metagraph(
                 netuid=config.netuid,
                 network=self.subtensor.network,
@@ -430,7 +430,24 @@ def main():
     bt.logging.add_args(parser)
     bt.Axon.add_args(parser)
     config = bt.Config(parser)
-    miner = PhylaxMiner(config=config)
+
+    # bittensor 10.x's bt.Config doesn't reliably promote dotted CLI args
+    # (e.g. --wallet.name miner) into nested config nodes, so we build
+    # wallet and subtensor explicitly from the parsed argparse namespace
+    # and hand them in.
+    args, _ = parser.parse_known_args()
+    wallet_name = getattr(args, "wallet.name", None) or "default"
+    wallet_hotkey = getattr(args, "wallet.hotkey", None) or "default"
+    network = getattr(args, "subtensor.network", None) or "finney"
+    chain_endpoint = getattr(args, "subtensor.chain_endpoint", None) or None
+    wallet = bt.Wallet(name=wallet_name, hotkey=wallet_hotkey)
+    subtensor = (
+        bt.Subtensor(chain_endpoint=chain_endpoint)
+        if chain_endpoint
+        else bt.Subtensor(network=network)
+    )
+
+    miner = PhylaxMiner(config=config, wallet=wallet, subtensor=subtensor)
     miner.run()
 
 
