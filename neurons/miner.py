@@ -448,10 +448,14 @@ def main():
 
     if hasattr(bt, "BaseNeuron"):
         # bittensor 9.x: bt.Config properly promotes dotted CLI args
-        # (--wallet.name, --subtensor.network) into nested config nodes,
-        # so the canonical config-driven constructors work.
+        # (--wallet.name, --subtensor.network) into nested config nodes.
+        # Wallet is fine to build from config, but bt.Subtensor(config=...)
+        # honours config.subtensor.chain_endpoint, whose default is the
+        # mainnet finney URL — that silently overrides --subtensor.network.
+        # Pass network= explicitly so a known name like "test" resolves
+        # to the correct testnet endpoint and chain_endpoint stays out.
         wallet = bt.Wallet(config=config)
-        subtensor = bt.Subtensor(config=config)
+        subtensor = bt.Subtensor(network=config.subtensor.network)
     else:
         # bittensor 10.x: bt.Config doesn't reliably promote dotted CLI
         # args, so parse argparse directly and build explicitly. The
