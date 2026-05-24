@@ -118,10 +118,17 @@ class SandboxDetonator:
 
     def _build_docker_cmd(self, bundle_path: str, run_dir: Path,
                           container_name: str, seed: int) -> list[str]:
+        # Run the container as the host user so the harness can write to
+        # the bind-mounted /evidence directory. Without this override the
+        # image's baked-in 'sandbox' user (UID ~999) can't write to a host
+        # dir owned by the operator (UID 1000), the harness errors out
+        # silently, and the evidence trace files are never produced —
+        # which makes score_evidence return 0 forever.
         return [
             "docker", "run",
             "--rm",
             "--name", container_name,
+            "--user", f"{os.getuid()}:{os.getgid()}",
             "--network", "none",                 # no network by default; harness opens specific routes
             "--memory", self.memory_limit,
             "--cpus", self.cpus,
