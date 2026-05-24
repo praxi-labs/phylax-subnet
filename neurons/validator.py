@@ -754,11 +754,10 @@ def main() -> None:
     network = getattr(args, "subtensor.network", None) or "finney"
     chain_endpoint = getattr(args, "subtensor.chain_endpoint", None) or None
     wallet = bt.Wallet(name=wallet_name, hotkey=wallet_hotkey)
-    subtensor = (
-        bt.Subtensor(chain_endpoint=chain_endpoint)
-        if chain_endpoint
-        else bt.Subtensor(network=network)
-    )
+    # bittensor 10.x dropped chain_endpoint as a constructor kwarg; the
+    # network parameter accepts either a known name ("test", "finney") or
+    # a full WebSocket URL, so collapse both into a single call.
+    subtensor = bt.Subtensor(network=chain_endpoint or network)
 
     validator = PhylaxValidator(config=config, wallet=wallet, subtensor=subtensor)
     validator.run()
