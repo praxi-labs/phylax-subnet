@@ -42,6 +42,29 @@ CORPORA_DIR = Path(__file__).parent.parent / "corpora"
 DEFAULT_REGISTRY_PATH = Path(__file__).parent.parent / "phylax_registry.sqlite3"
 
 
+def _metagraph_size(metagraph) -> int:
+    """Return neuron count as a Python int. bittensor 10.x's metagraph.n can be
+    a multi-element tensor (especially when sync hasn't populated it yet),
+    which breaks a naive int() cast."""
+    if metagraph is None:
+        return 0
+    val = getattr(metagraph, "n", 0)
+    if val is None:
+        return 0
+    if hasattr(val, "item"):
+        try:
+            return int(val.item())
+        except (ValueError, RuntimeError):
+            pass
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        try:
+            return len(val)
+        except TypeError:
+            return 0
+
+
 class PhylaxValidator(bt.BaseNeuron if hasattr(bt, "BaseNeuron") else object):
     """Phylax validator neuron."""
 
@@ -100,8 +123,8 @@ class PhylaxValidator(bt.BaseNeuron if hasattr(bt, "BaseNeuron") else object):
         if hasattr(self, "wallet") and self.wallet is not None:
             self.countersigner = ValidatorCountersigner(wallet=self.wallet)
 
-        n = getattr(self.metagraph, "n", 0) if hasattr(self, "metagraph") else 0
-        self.scores = torch.zeros(int(n))
+        n = _metagraph_size(getattr(self, "metagraph", None))
+        self.scores = torch.zeros(n)
         self.step = 0
 
         # phylax-server integration (control plane)
@@ -644,7 +667,7 @@ class PhylaxValidator(bt.BaseNeuron if hasattr(bt, "BaseNeuron") else object):
             result, msg = self.subtensor.set_weights(
                 netuid=self.config.netuid,
                 wallet=self.wallet,
-                uids=torch.arange(self.metagraph.n),
+                uids=torch.arange(_metagraph_size(self.metagraph)),
                 weights=weights,
                 wait_for_inclusion=False,
             )
@@ -672,8 +695,9 @@ class PhylaxValidator(bt.BaseNeuron if hasattr(bt, "BaseNeuron") else object):
                 # Re-init countersigner if wallet was just set on first iteration.
                 if self.countersigner is None and hasattr(self, "wallet"):
                     self.countersigner = ValidatorCountersigner(wallet=self.wallet)
-                if self.scores.numel() != self.metagraph.n:
-                    new = torch.zeros(self.metagraph.n)
+                mg_n = _metagraph_size(self.metagraph)
+                if self.scores.numel() != mg_n:
+                    new = torch.zeros(mg_n)
                     n = min(new.numel(), self.scores.numel())
                     new[:n] = self.scores[:n]
                     self.scores = new
