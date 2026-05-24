@@ -20,7 +20,9 @@ services:
       # read-write because bittensor's settings.py calls
       # WALLETS_DIR.mkdir(exist_ok=True) at import time, and a :ro mount
       # makes even the no-op mkdir on the existing dir raise PermissionError.
-      - ${BITTENSOR_DIR:-~/.bittensor}:/root/.bittensor
+      # Mounted under /opt/phylax so the non-root container user can traverse
+      # the parent dir (/root would be 700-root and unreachable).
+      - ${BITTENSOR_DIR:-~/.bittensor}:/opt/phylax/.bittensor
       # Docker socket — BaselineRunner shells out to docker run for ground-truth detonation
       - /var/run/docker.sock:/var/run/docker.sock
       # Per-scan evidence dir — also bind-mounted by the sandbox container
@@ -28,11 +30,12 @@ services:
       # Attestation registry — must persist across restarts
       - ./registry.sqlite3:/opt/phylax/registry.sqlite3
     environment:
-      # Force HOME so ~ expands to /root inside the container even when the
-      # process runs as a UID that has no /etc/passwd entry (--user 1000:1000).
-      # Without this, bittensor's settings.py tries to mkdir /.bittensor and
-      # crashes with PermissionError.
-      HOME: /root
+      # Force HOME because the process runs as a UID with no /etc/passwd
+      # entry (--user 1000:1000), so ~ would otherwise resolve to /. We
+      # use /opt/phylax (already 755 in the image) instead of /root so
+      # the non-root container user can traverse it and reach the
+      # bind-mounted wallet under ~/.bittensor.
+      HOME: /opt/phylax
     env_file:
       - .env
     command:
