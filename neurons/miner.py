@@ -40,10 +40,10 @@ class PhylaxMiner(bt.BaseNeuron if hasattr(bt, "BaseNeuron") else object):
             # wallet/subtensor/metagraph/axon manually.
             self.config = config
             bt.logging(config=config)
-            self.wallet = bt.wallet(config=config)
-            self.subtensor = bt.subtensor(config=config)
+            self.wallet = bt.Wallet(config=config)
+            self.subtensor = bt.Subtensor(config=config)
             self.metagraph = self.subtensor.metagraph(netuid=config.netuid)
-            self.axon = bt.axon(wallet=self.wallet, config=config)
+            self.axon = bt.Axon(wallet=self.wallet, config=config)
         self._build_internal_state()
 
     def _build_internal_state(self):
@@ -407,10 +407,10 @@ def main():
     parser = argparse.ArgumentParser(description="Phylax miner neuron")
     parser.add_argument("--netuid", type=int, required=True,
                         help="Subnet netuid to mine on")
-    bt.wallet.add_args(parser)
-    bt.subtensor.add_args(parser)
+    bt.Wallet.add_args(parser)
+    bt.Subtensor.add_args(parser)
     bt.logging.add_args(parser)
-    bt.axon.add_args(parser)
+    bt.Axon.add_args(parser)
     config = bt.config(parser)
     miner = PhylaxMiner(config=config)
     miner.run()

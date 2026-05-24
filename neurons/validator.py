@@ -61,10 +61,10 @@ class PhylaxValidator(bt.BaseNeuron if hasattr(bt, "BaseNeuron") else object):
             # wallet/subtensor/metagraph/dendrite manually.
             self.config = config
             bt.logging(config=config)
-            self.wallet = bt.wallet(config=config)
-            self.subtensor = bt.subtensor(config=config)
+            self.wallet = bt.Wallet(config=config)
+            self.subtensor = bt.Subtensor(config=config)
             self.metagraph = self.subtensor.metagraph(netuid=config.netuid)
-            self.dendrite = bt.dendrite(wallet=self.wallet)
+            self.dendrite = bt.Dendrite(wallet=self.wallet)
         self.corpus = CorpusLoader(CORPORA_DIR).load()
         for err in self.corpus.errors:
             bt.logging.warning(f"corpus: {err}")
@@ -721,8 +721,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Phylax validator neuron")
     parser.add_argument("--netuid", type=int, required=True,
                         help="Subnet netuid to validate on")
-    bt.wallet.add_args(parser)
-    bt.subtensor.add_args(parser)
+    bt.Wallet.add_args(parser)
+    bt.Subtensor.add_args(parser)
     bt.logging.add_args(parser)
     config = bt.config(parser)
     validator = PhylaxValidator(config=config)

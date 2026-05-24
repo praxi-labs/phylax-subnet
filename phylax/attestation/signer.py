@@ -20,7 +20,7 @@ from phylax.protocol import (
 class AttestationSigner:
     """Wraps a Bittensor wallet to sign SSSAs."""
 
-    def __init__(self, wallet: bt.wallet):
+    def __init__(self, wallet: bt.Wallet):
         self.wallet = wallet
 
     @property
@@ -49,7 +49,7 @@ class AttestationSigner:
 class ValidatorCountersigner:
     """Validator-side countersignature on a consensus SSSA."""
 
-    def __init__(self, wallet: bt.wallet):
+    def __init__(self, wallet: bt.Wallet):
         self.wallet = wallet
 
     @property
