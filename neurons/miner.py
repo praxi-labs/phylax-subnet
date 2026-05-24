@@ -70,8 +70,12 @@ class PhylaxMiner(bt.BaseNeuron if hasattr(bt, "BaseNeuron") else object):
 
         self.static_analyzer  = StaticAnalyzer()
         self.sbom_analyzer    = SBOMAnalyzer()
-        self.sandbox          = SandboxDetonator(
-            image=self.config.sandbox.image if hasattr(self.config, "sandbox") else "phylax-sandbox:latest",
+        sandbox_cfg = getattr(self.config, "sandbox", None)
+        sandbox_image = (
+            getattr(sandbox_cfg, "image", None) if sandbox_cfg is not None else None
+        )
+        self.sandbox = SandboxDetonator(
+            image=sandbox_image or os.getenv("PHYLAX_SANDBOX_IMAGE", "phylax-sandbox:latest"),
             timeout_seconds=int(os.getenv("SANDBOX_TIMEOUT", "120")),
         )
         self.policy_generator = PolicyGenerator()
