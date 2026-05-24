@@ -4,22 +4,37 @@ Complete walkthrough for running a Phylax miner on testnet.
 
 ## 1. Prerequisites
 
-- Python 3.10+
 - Docker 24+ with rootless support if running unprivileged
 - `btcli`
 - 16 GB RAM, 4+ CPU cores, 50 GB free disk
 
-Optional:
-- `syft` for high-quality SBOMs
-- `bandit` for static analysis (`pip install bandit`)
-- `semgrep` for additional rules (`pip install semgrep`)
+## 2. Pull the miner image
 
-## 2. Clone + install
+The supported install path is the published miner image. CI builds it
+from `docker/Dockerfile.miner` on every push to `main`, with the exact
+bittensor and substrate-interface versions known to work with the
+testnet runtime already baked in. You do **not** need a Python toolchain
+or a local `pip install` to run a miner.
+
+```bash
+docker pull ghcr.io/praxi-labs/phylax-miner:latest
+```
+
+A pinned tag is available for reproducible deploys:
+
+```bash
+docker pull ghcr.io/praxi-labs/phylax-miner:sha-<short>
+```
+
+Source-install (for development only — not a supported operator path):
 
 ```bash
 git clone https://github.com/praxi-labs/phylax-subnet.git
 cd phylax-subnet
 pip install -e .
+# You will also need to apply the version pins from docker/Dockerfile.miner
+# by hand (bittensor==9.12.2, async-substrate-interface<2, cyscale) — the
+# image bakes these for you.
 ```
 
 ## 3. Wallet

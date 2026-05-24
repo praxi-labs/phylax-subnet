@@ -1,6 +1,6 @@
 # Core
 bittensor
-pydantic>=2.0
+pydantic
 torch
 numpy
 

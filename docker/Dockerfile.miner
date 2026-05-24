@@ -40,6 +40,18 @@ WORKDIR ${PHYLAX_HOME}
 COPY requirements.txt ./
 RUN pip install --upgrade pip && pip install -r requirements.txt
 
+# Pin the bittensor stack to versions known to work with the current testnet
+# runtime. bittensor 10.x calls a NeuronInfoRuntimeApi path the testnet's
+# older WASM runtime panics on; 9.12 matches what btcli 9.x talks to.
+# async-substrate-interface 1.x is the last line that still exposes ScaleObj
+# (2.x removed it). scalecodec gets pulled as a dep but its namespace collides
+# with cyscale (the faster reimplementation we actually want), so swap them.
+RUN pip install --force-reinstall \
+        bittensor==9.12.2 \
+        'async-substrate-interface<2' \
+ && pip uninstall -y scalecodec cyscale \
+ && pip install cyscale
+
 COPY . .
 RUN pip install -e .
 

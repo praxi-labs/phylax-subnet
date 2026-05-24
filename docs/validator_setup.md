@@ -4,22 +4,38 @@ A Phylax validator runs the **same three-layer pipeline that miners run** to pro
 
 ## 1. Prerequisites
 
-- Python 3.10+
 - Docker 24+ with rootless support if running unprivileged
 - `btcli` ([install guide](https://docs.bittensor.com/getting-started/install-btcli))
 - 16 GB RAM, 4+ CPU cores, 50 GB free disk
 - Stable network connection (low latency to the Bittensor chain)
 
-Optional:
-- `syft` for high-fidelity SBOMs
-- `bandit` for richer static findings
+## 2. Pull the validator image
 
-## 2. Install
+The supported install path is the published validator image. CI builds it
+from `docker/Dockerfile.validator` on every push to `main`, with the
+exact bittensor and substrate-interface versions known to work with the
+testnet runtime already baked in. You do **not** need a Python toolchain
+or a local `pip install` to run a validator.
+
+```bash
+docker pull ghcr.io/praxi-labs/phylax-validator:latest
+```
+
+A pinned tag is available for reproducible deploys:
+
+```bash
+docker pull ghcr.io/praxi-labs/phylax-validator:sha-<short>
+```
+
+Source-install (for development only — not a supported operator path):
 
 ```bash
 git clone https://github.com/praxi-labs/phylax-subnet.git
 cd phylax-subnet
 pip install -e .
+# You will also need to apply the version pins from docker/Dockerfile.validator
+# by hand (bittensor==9.12.2, async-substrate-interface<2, cyscale) — the
+# image bakes these for you.
 ```
 
 ## 3. Pull the sandbox image
