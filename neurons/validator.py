@@ -768,6 +768,31 @@ class _SyntheticTaskAdapter:
         self.task_dict = task_dict
 
 
+_NETWORK_ENDPOINTS = {
+    "finney":  "wss://entrypoint-finney.opentensor.ai:443",
+    "test":    "wss://test.finney.opentensor.ai:443",
+    "archive": "wss://archive.chain.opentensor.ai:443",
+    "local":   "ws://127.0.0.1:9944",
+}
+
+
+def _resolve_endpoint(network: str | None) -> str:
+    """Resolve a bittensor network name to its WebSocket endpoint.
+
+    bittensor 9.x's bt.Subtensor(network=...) and bt.Subtensor(config=...)
+    both honour config.subtensor.chain_endpoint whose default is the
+    mainnet finney URL — so passing network='test' silently ends up on
+    finney. Bypass that magic by translating the known names ourselves
+    and handing bt.Subtensor a chain_endpoint directly. If `network` is
+    already a ws:// or wss:// URL, use it as-is.
+    """
+    if not network:
+        return _NETWORK_ENDPOINTS["finney"]
+    if network.startswith(("ws://", "wss://")):
+        return network
+    return _NETWORK_ENDPOINTS.get(network, _NETWORK_ENDPOINTS["finney"])
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Phylax validator neuron")
     parser.add_argument("--netuid", type=int, required=True,
@@ -778,15 +803,15 @@ def main() -> None:
     config = bt.Config(parser)
 
     if hasattr(bt, "BaseNeuron"):
-        # bittensor 9.x: bt.Config properly promotes dotted CLI args
-        # (--wallet.name, --subtensor.network) into nested config nodes.
-        # Wallet is fine to build from config, but bt.Subtensor(config=...)
-        # honours config.subtensor.chain_endpoint, whose default is the
-        # mainnet finney URL — that silently overrides --subtensor.network.
-        # Pass network= explicitly so a known name like "test" resolves
-        # to the correct testnet endpoint and chain_endpoint stays out.
+        # bittensor 9.x: bt.Config promotes dotted CLI args properly, but
+        # bt.Subtensor(network=...) and bt.Subtensor(config=...) both fall
+        # through to config.subtensor.chain_endpoint, whose default is the
+        # mainnet finney URL — so --subtensor.network test ends up on
+        # finney every time. Resolve the endpoint ourselves and pass it
+        # via chain_endpoint.
         wallet = bt.Wallet(config=config)
-        subtensor = bt.Subtensor(network=config.subtensor.network)
+        endpoint = _resolve_endpoint(config.subtensor.network)
+        subtensor = bt.Subtensor(chain_endpoint=endpoint)
     else:
         # bittensor 10.x: bt.Config doesn't reliably promote dotted CLI
         # args, so parse argparse directly and build explicitly. The
