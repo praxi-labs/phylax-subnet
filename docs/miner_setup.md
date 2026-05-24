@@ -37,7 +37,23 @@ cp .env.example .env
 # Edit .env: PHYLAX_NETUID, WALLET_NAME, WALLET_HOTKEY, SUBTENSOR_NETWORK
 ```
 
-## 5. Build the sandbox image
+## 5. Pull the sandbox image
+
+The sandbox is published by CI to GHCR. You should not need to build it
+locally — just pull the latest tag:
+
+```bash
+docker pull ghcr.io/praxi-labs/phylax-sandbox:latest
+```
+
+Then set the image tag in your `.env` so the miner's detonator finds it:
+
+```bash
+PHYLAX_SANDBOX_IMAGE=ghcr.io/praxi-labs/phylax-sandbox:latest
+```
+
+If you need to build from source (developing the harness, debugging a
+pinned commit), the Dockerfile is at `docker/Dockerfile.sandbox`:
 
 ```bash
 docker build -f docker/Dockerfile.sandbox -t phylax-sandbox:latest .

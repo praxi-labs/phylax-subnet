@@ -22,9 +22,24 @@ cd phylax-subnet
 pip install -e .
 ```
 
-## 3. Build the sandbox image
+## 3. Pull the sandbox image
 
-The validator's `BaselineRunner` shells out to docker to launch `phylax-sandbox:latest` for ground-truth detonation:
+The validator's `BaselineRunner` shells out to docker to launch the
+sandbox for ground-truth detonation. The image is published by CI to
+GHCR, so the normal path is a pull, not a build:
+
+```bash
+docker pull ghcr.io/praxi-labs/phylax-sandbox:latest
+```
+
+Then point the baseline runner at it in your `.env`:
+
+```bash
+PHYLAX_SANDBOX_IMAGE=ghcr.io/praxi-labs/phylax-sandbox:latest
+```
+
+If you need to build from source (developing the harness, pinning a
+commit), the Dockerfile is at `docker/Dockerfile.sandbox`:
 
 ```bash
 docker build -f docker/Dockerfile.sandbox -t phylax-sandbox:latest .

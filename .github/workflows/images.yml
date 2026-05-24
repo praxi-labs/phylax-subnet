@@ -1,0 +1,73 @@
+name: Images
+
+# Build and publish the three subnet images to GitHub Container Registry on
+# every push to main. Operators (miners and validators) pull from ghcr.io
+# instead of cloning the repo and running docker build by hand.
+#
+# Each image is tagged with:
+#   - latest         (only when built from main)
+#   - sha-<short>    (always — for reproducible deploys)
+#   - <tag>          (when pushed as a v* tag — for releases)
+#
+# Packages default to private on first publish. After the first successful
+# run, flip each to Public at
+#   https://github.com/orgs/praxi-labs/packages
+# so miners and validators can pull without auth.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+concurrency:
+  group: images-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - { name: sandbox,   dockerfile: docker/Dockerfile.sandbox }
+          - { name: miner,     dockerfile: docker/Dockerfile.miner }
+          - { name: validator, dockerfile: docker/Dockerfile.validator }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute tags and labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/phylax-${{ matrix.image.name }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=short
+            type=ref,event=tag
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.image.dockerfile }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
