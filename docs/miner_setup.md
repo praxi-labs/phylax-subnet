@@ -54,24 +54,13 @@ cp .env.example .env
 
 ## 5. Pull the sandbox image
 
-The sandbox is published by CI to GHCR. You should not need to build it
-locally — just pull the latest tag:
+The miner shells out to docker to launch the sandbox container per scan,
+so the host needs the sandbox image available. The miner image already
+bakes the default tag into `PHYLAX_SANDBOX_IMAGE`; you just need to pull
+it:
 
 ```bash
 docker pull ghcr.io/praxi-labs/phylax-sandbox:latest
-```
-
-Then set the image tag in your `.env` so the miner's detonator finds it:
-
-```bash
-PHYLAX_SANDBOX_IMAGE=ghcr.io/praxi-labs/phylax-sandbox:latest
-```
-
-If you need to build from source (developing the harness, debugging a
-pinned commit), the Dockerfile is at `docker/Dockerfile.sandbox`:
-
-```bash
-docker build -f docker/Dockerfile.sandbox -t phylax-sandbox:latest .
 ```
 
 ## 6. Register
@@ -83,14 +72,31 @@ bash scripts/register_testnet.sh miner
 ## 7. Run
 
 ```bash
-python neurons/miner.py \
-    --netuid $PHYLAX_NETUID \
+docker run -d --name phylax-miner --restart=unless-stopped \
+  -p 8091:8091 \
+  --user "$(id -u):$(id -g)" \
+  -v "$HOME/.bittensor:/root/.bittensor:ro" \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v "$HOME/phylax/evidence:/opt/phylax/evidence" \
+  --env-file "$PWD/.env" \
+  ghcr.io/praxi-labs/phylax-miner:latest \
+  python neurons/miner.py \
+    --netuid "$PHYLAX_NETUID" \
     --subtensor.network test \
     --wallet.name miner \
     --wallet.hotkey default \
     --axon.port 8091 \
     --logging.debug
+
+# Tail logs:
+docker logs -f phylax-miner
 ```
+
+Why these mounts:
+- `~/.bittensor` (read-only) — the miner needs the wallet hotkey to sign SSSAs.
+- `/var/run/docker.sock` — the miner shells out to docker to launch the sandbox container.
+- `~/phylax/evidence` — host-side scratch for per-scan trace artefacts.
+- `--user $(id -u):$(id -g)` — required so the sandbox's bind-mounted `/evidence` is writable.
 
 ## How the miner answers each query
 
@@ -110,9 +116,10 @@ The miner refuses to detonate if no nonce is supplied — running with the old h
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `SANDBOX_TIMEOUT` | 120 | Per-detonation timeout (seconds) |
+| `SANDBOX_TIMEOUT` | 60 | Per-detonation timeout (seconds), 5x for `deep` profile |
 | `PHYLAX_LOG_LEVEL` | INFO | Stdlib logger level |
-| `PHYLAX_EVIDENCE_DIR` | /tmp/... | Where evidence packs are written before hashing |
+| `PHYLAX_EVIDENCE_DIR` | `/opt/phylax/evidence` | Where evidence packs are written before hashing (mount this from the host) |
+| `PHYLAX_SANDBOX_IMAGE` | `ghcr.io/praxi-labs/phylax-sandbox:latest` | Sandbox image the detonator launches |
 
 ## Troubleshooting
 

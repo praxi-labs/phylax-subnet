@@ -10,7 +10,12 @@ FROM python:3.11-slim AS base
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    PHYLAX_HOME=/opt/phylax
+    PHYLAX_HOME=/opt/phylax \
+    PHYLAX_EVIDENCE_DIR=/opt/phylax/evidence \
+    PHYLAX_REGISTRY_PATH=/opt/phylax/registry.sqlite3 \
+    PHYLAX_SANDBOX_IMAGE=ghcr.io/praxi-labs/phylax-sandbox:latest \
+    SANDBOX_TIMEOUT=60 \
+    QUERY_TIMEOUT=60
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl ca-certificates git build-essential \
@@ -47,6 +52,10 @@ RUN pip install --force-reinstall \
 
 COPY . .
 RUN pip install -e .
+
+# Pre-create evidence + registry parent so any UID can write at runtime.
+RUN mkdir -p "${PHYLAX_EVIDENCE_DIR}" "$(dirname ${PHYLAX_REGISTRY_PATH})" \
+ && chmod 777 "${PHYLAX_EVIDENCE_DIR}" "$(dirname ${PHYLAX_REGISTRY_PATH})"
 
 EXPOSE 8080
 CMD ["python", "neurons/validator.py"]

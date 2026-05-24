@@ -41,24 +41,12 @@ pip install -e .
 ## 3. Pull the sandbox image
 
 The validator's `BaselineRunner` shells out to docker to launch the
-sandbox for ground-truth detonation. The image is published by CI to
-GHCR, so the normal path is a pull, not a build:
+sandbox for ground-truth detonation. The validator image already bakes
+the default tag into `PHYLAX_SANDBOX_IMAGE`; you just need the image
+present on the host:
 
 ```bash
 docker pull ghcr.io/praxi-labs/phylax-sandbox:latest
-```
-
-Then point the baseline runner at it in your `.env`:
-
-```bash
-PHYLAX_SANDBOX_IMAGE=ghcr.io/praxi-labs/phylax-sandbox:latest
-```
-
-If you need to build from source (developing the harness, pinning a
-commit), the Dockerfile is at `docker/Dockerfile.sandbox`:
-
-```bash
-docker build -f docker/Dockerfile.sandbox -t phylax-sandbox:latest .
 ```
 
 ## 4. Wallet + stake
@@ -97,18 +85,41 @@ PHYLAX_OFFLINE_FALLBACK=false
 ## 6. Run
 
 ```bash
-python neurons/validator.py \
-    --netuid $PHYLAX_NETUID \
+docker run -d --name phylax-validator --restart=unless-stopped \
+  --user "$(id -u):$(id -g)" \
+  -v "$HOME/.bittensor:/root/.bittensor:ro" \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v "$HOME/phylax/evidence:/opt/phylax/evidence" \
+  -v "$HOME/phylax/registry.sqlite3:/opt/phylax/registry.sqlite3" \
+  --env-file "$PWD/.env" \
+  ghcr.io/praxi-labs/phylax-validator:latest \
+  python neurons/validator.py \
+    --netuid "$PHYLAX_NETUID" \
     --subtensor.network test \
     --wallet.name validator \
     --wallet.hotkey default \
     --logging.debug
+
+# Tail logs:
+docker logs -f phylax-validator
 ```
 
-Optionally, expose the local REST API in a second process so runtimes can query attestations directly (this is the **subnet-side** API — separate from phylax-server's public registry):
+Why these mounts:
+- `~/.bittensor` (read-only) — the validator needs the wallet hotkey to sign and to call set_weights.
+- `/var/run/docker.sock` — `BaselineRunner` shells out to docker to launch the sandbox image for ground-truth detonation.
+- `~/phylax/evidence` — host-side scratch for per-scan trace artefacts (shared with the sandbox container via bind mount).
+- `~/phylax/registry.sqlite3` — persists the attestation registry across restarts.
+- `--user $(id -u):$(id -g)` — required so the sandbox's bind-mounted `/evidence` is writable.
+
+Optionally, expose the local REST API in a second container so runtimes can query attestations directly (this is the **subnet-side** API — separate from phylax-server's public registry):
 
 ```bash
-python -m phylax.api.server
+docker run -d --name phylax-api \
+  -p 8080:8080 \
+  --env-file "$PWD/.env" \
+  -v "$HOME/phylax/registry.sqlite3:/opt/phylax/registry.sqlite3:ro" \
+  ghcr.io/praxi-labs/phylax-validator:latest \
+  python -m phylax.api.server
 ```
 
 ## What the validator does each round
@@ -136,10 +147,10 @@ python -m phylax.api.server
 | `PHYLAX_OFFLINE_FALLBACK` | `false` | If `true`, score against local corpus when server unreachable (weights still blocked). |
 | `TASKS_PER_ROUND` | 8 | Curated tasks requested from phylax-server each round. |
 | `SYNTHETIC_TASKS_PER_ROUND` | 2 | Local synthetic challenges injected per round. |
-| `QUERY_TIMEOUT` | 180 | Seconds to wait per miner. |
+| `QUERY_TIMEOUT` | 60 | Seconds to wait per miner. |
 | `WEIGHT_UPDATE_INTERVAL` | 100 | Blocks between set_weights pushes. |
 | `EMA_ALPHA` | 0.2 | Per-round smoothing factor. |
-| `SANDBOX_TIMEOUT` | 120 | Per-detonation timeout (seconds). |
+| `SANDBOX_TIMEOUT` | 60 | Per-detonation timeout (seconds), 5x for `deep` profile. |
 | `PHYLAX_REGISTRY_PATH` | `./phylax_registry.sqlite3` | Local attestation registry cache. |
 | `PHYLAX_SANDBOX_IMAGE` | `phylax-sandbox:latest` | Image tag the baseline runner launches. |
 | `PHYLAX_API_ADMIN_TOKEN` | _empty_ | Required for `phylax.api.server`'s local `/v1/attestation/{hash}/invalidate` endpoint. **Not** the same as the phylax-server admin token — that one lives on the control-plane host, not here. |

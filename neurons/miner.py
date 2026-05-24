@@ -65,7 +65,7 @@ class PhylaxMiner:
         )
         self.sandbox = SandboxDetonator(
             image=sandbox_image or os.getenv("PHYLAX_SANDBOX_IMAGE", "phylax-sandbox:latest"),
-            timeout_seconds=int(os.getenv("SANDBOX_TIMEOUT", "120")),
+            timeout_seconds=int(os.getenv("SANDBOX_TIMEOUT", "60")),
         )
         self.policy_generator = PolicyGenerator()
         self.signer           = AttestationSigner(wallet=self.wallet)

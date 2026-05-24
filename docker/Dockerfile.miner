@@ -9,7 +9,11 @@ FROM python:3.11-slim AS base
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    PHYLAX_HOME=/opt/phylax
+    PHYLAX_HOME=/opt/phylax \
+    PHYLAX_EVIDENCE_DIR=/opt/phylax/evidence \
+    PHYLAX_SANDBOX_IMAGE=ghcr.io/praxi-labs/phylax-sandbox:latest \
+    SANDBOX_TIMEOUT=60 \
+    QUERY_TIMEOUT=60
 
 # ---------------------------------------------------------------------------
 # OS-level tools needed by the static + SBOM layers
@@ -54,6 +58,11 @@ RUN pip install --force-reinstall \
 
 COPY . .
 RUN pip install -e .
+
+# Pre-create the evidence dir with write perms so any UID can scribble in it
+# at runtime. Operators almost always run the container with --user $(id -u),
+# so we can't rely on a baked-in user owning the path.
+RUN mkdir -p "${PHYLAX_EVIDENCE_DIR}" && chmod 777 "${PHYLAX_EVIDENCE_DIR}"
 
 # ---------------------------------------------------------------------------
 # Default command — miner entry point

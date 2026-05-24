@@ -72,7 +72,7 @@ class PhylaxValidator:
 
     TASKS_PER_ROUND: int = int(os.getenv("TASKS_PER_ROUND", "8"))
     SYNTHETIC_TASKS_PER_ROUND: int = int(os.getenv("SYNTHETIC_TASKS_PER_ROUND", "2"))
-    QUERY_TIMEOUT: int = int(os.getenv("QUERY_TIMEOUT", "180"))
+    QUERY_TIMEOUT: int = int(os.getenv("QUERY_TIMEOUT", "60"))
     WEIGHT_UPDATE_INTERVAL: int = int(os.getenv("WEIGHT_UPDATE_INTERVAL", "100"))
     EMA_ALPHA: float = float(os.getenv("EMA_ALPHA", "0.2"))
 
@@ -97,7 +97,7 @@ class PhylaxValidator:
 
         self.baseline = BaselineRunner(
             sandbox_image=os.getenv("PHYLAX_SANDBOX_IMAGE", "phylax-sandbox:latest"),
-            sandbox_timeout_seconds=int(os.getenv("SANDBOX_TIMEOUT", "120")),
+            sandbox_timeout_seconds=int(os.getenv("SANDBOX_TIMEOUT", "60")),
         )
         self.synth = SyntheticGenerator()
         self.consensus = ConsensusAggregator()
