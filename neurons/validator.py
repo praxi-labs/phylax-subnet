@@ -703,7 +703,13 @@ class PhylaxValidator:
         try:
             while not getattr(self, "should_exit", False):
                 try:
-                    self.metagraph.sync(subtensor=self.subtensor)
+                    # lite=False is REQUIRED: the default lite sync only
+                    # refreshes emission/weights/stake, NOT axon info. With
+                    # lite syncs the validator stays frozen at whatever
+                    # axon IPs were on chain when __init__ first loaded
+                    # the metagraph — if any miner restarted and re-served
+                    # afterwards, the validator dials the stale IP forever.
+                    self.metagraph.sync(subtensor=self.subtensor, lite=False)
                     # Re-init countersigner if wallet was just set on first iteration.
                     if self.countersigner is None and hasattr(self, "wallet"):
                         self.countersigner = ValidatorCountersigner(wallet=self.wallet)
