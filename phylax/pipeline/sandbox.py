@@ -52,8 +52,13 @@ class SandboxDetonator:
         self.timeout         = timeout_seconds
         self.memory_limit    = memory_limit
         self.cpus            = cpus
-        self.evidence_dir    = evidence_dir or os.getenv(
-            "PHYLAX_EVIDENCE_DIR", tempfile.gettempdir()
+        # expanduser so a stray ``PHYLAX_EVIDENCE_DIR=~/phylax/evidence`` in
+        # someone's .env doesn't end up as a literal "~" passed to mkdir —
+        # pathlib doesn't expand tildes, so without this the sandbox would
+        # try to create a directory named "~" in the container's CWD,
+        # fail with EACCES, and silently return no evidence on every run.
+        self.evidence_dir = os.path.expanduser(
+            evidence_dir or os.getenv("PHYLAX_EVIDENCE_DIR", tempfile.gettempdir())
         )
 
     # -----------------------------------------------------------------------

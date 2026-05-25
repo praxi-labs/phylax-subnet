@@ -144,3 +144,16 @@ def test_sandbox_refuses_negative_seed(tmp_path):
     det = SandboxDetonator()
     with pytest.raises(ValueError):
         det.detonate(str(tmp_path), seed=-1)
+
+
+def test_sandbox_expands_tilde_in_evidence_dir(monkeypatch, tmp_path):
+    """A stray ``PHYLAX_EVIDENCE_DIR=~/...`` in an operator's .env must not
+    fall through to pathlib.mkdir as a literal '~' (which fails with EACCES
+    in the container and silently returns no evidence on every run)."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("PHYLAX_EVIDENCE_DIR", "~/phylax/evidence")
+    det = SandboxDetonator()
+    assert "~" not in det.evidence_dir
+    assert det.evidence_dir.startswith(str(fake_home))
