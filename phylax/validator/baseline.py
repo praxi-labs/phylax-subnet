@@ -112,10 +112,23 @@ class BaselineRunner:
     # ------------------------------------------------------------------
 
     def run_from_bytes(self, bundle_bytes: bytes, nonce: int, *, deep: bool = False) -> GroundTruth:
-        """Convenience: writes bytes to a temp dir, unpacks if a zip, then runs."""
+        """Convenience: writes bytes to a temp dir, unpacks if a zip, then runs.
+
+        The staging directory MUST live under PHYLAX_EVIDENCE_DIR (which is
+        bind-mounted from the host) so the sandbox container — launched via
+        the host docker socket — can actually see the bundle. A path under
+        /tmp would only exist inside the validator container; the host
+        dockerd would silently create an empty dir there and mount it into
+        /skill, producing the same "no_entry" baseline for every task and
+        pinning evidence_score to 0 regardless of what miners submit.
+        """
         import zipfile
 
-        tmp = Path(tempfile.mkdtemp(prefix="phylax_gt_"))
+        staging_root = os.path.expanduser(
+            os.getenv("PHYLAX_EVIDENCE_DIR", tempfile.gettempdir())
+        )
+        os.makedirs(staging_root, exist_ok=True)
+        tmp = Path(tempfile.mkdtemp(prefix="phylax_gt_", dir=staging_root))
         bundle_zip = tmp / "bundle.zip"
         bundle_zip.write_bytes(bundle_bytes)
         extract_dir = tmp / "extracted"
