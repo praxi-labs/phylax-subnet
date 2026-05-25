@@ -98,6 +98,10 @@ else
     echo "HOST_GID=$(id -g)"
     echo "DOCKER_GID=$DOCKER_GID"
     echo "BITTENSOR_DIR=$HOME/.bittensor"
+    # Absolute host path of the evidence bind mount. The sandbox
+    # container is launched through the host docker socket, so -v sources
+    # have to resolve on the HOST — not the miner's in-container view.
+    echo "PHYLAX_EVIDENCE_HOST_DIR=$TARGET/evidence"
   } >> "$TARGET/.env"
 
   if [ "$ROLE" = "validator" ]; then

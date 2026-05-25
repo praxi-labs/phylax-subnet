@@ -60,6 +60,20 @@ class SandboxDetonator:
         self.evidence_dir = os.path.expanduser(
             evidence_dir or os.getenv("PHYLAX_EVIDENCE_DIR", tempfile.gettempdir())
         )
+        # When the miner runs inside a container and shells out to ``docker
+        # run`` through the host's /var/run/docker.sock, paths in -v flags
+        # are resolved by the host dockerd, NOT inside the miner container.
+        # So passing the in-container evidence path (e.g. /opt/phylax/evidence)
+        # as a bind source makes dockerd create an empty root-owned dir at
+        # that literal host path and mount it into the sandbox — and the
+        # harness then can't write to it. Operators set PHYLAX_EVIDENCE_HOST_DIR
+        # to the host-side equivalent (e.g. /home/ubuntu/phylax/miner/evidence)
+        # so we can translate the in-container run_dir to its host path before
+        # handing it to dockerd. Falls back to evidence_dir for bare-metal
+        # (no docker-in-docker) deployments where the two are the same.
+        self.evidence_host_dir = os.path.expanduser(
+            os.getenv("PHYLAX_EVIDENCE_HOST_DIR", "") or self.evidence_dir
+        )
 
     # -----------------------------------------------------------------------
 
@@ -121,6 +135,23 @@ class SandboxDetonator:
 
     # -----------------------------------------------------------------------
 
+    def _to_host_path(self, container_path: str | Path) -> str:
+        """Translate an in-container path under evidence_dir to its host
+        equivalent. Needed when shelling out to ``docker run -v`` through
+        /var/run/docker.sock: the host dockerd resolves -v sources against
+        the HOST filesystem, not the miner's container view. If the path
+        isn't under evidence_dir, or evidence_host_dir == evidence_dir
+        (bare-metal install), return the path unchanged.
+        """
+        p = str(container_path)
+        if self.evidence_dir == self.evidence_host_dir:
+            return p
+        try:
+            rel = Path(p).relative_to(self.evidence_dir)
+            return str(Path(self.evidence_host_dir) / rel)
+        except ValueError:
+            return p
+
     def _build_docker_cmd(self, bundle_path: str, run_dir: Path,
                           container_name: str, seed: int) -> list[str]:
         # Run the container as the host user so the harness can write to
@@ -129,6 +160,8 @@ class SandboxDetonator:
         # dir owned by the operator (UID 1000), the harness errors out
         # silently, and the evidence trace files are never produced —
         # which makes score_evidence return 0 forever.
+        host_bundle_path = self._to_host_path(bundle_path)
+        host_run_dir = self._to_host_path(run_dir)
         return [
             "docker", "run",
             "--rm",
@@ -140,8 +173,8 @@ class SandboxDetonator:
             "--read-only",
             "--cap-drop", "ALL",
             "--security-opt", "no-new-privileges",
-            "-v", f"{bundle_path}:/skill:ro",
-            "-v", f"{run_dir}:/evidence",
+            "-v", f"{host_bundle_path}:/skill:ro",
+            "-v", f"{host_run_dir}:/evidence",
             "-e", f"PHYLAX_SEED={seed}",
             self.image,
         ]

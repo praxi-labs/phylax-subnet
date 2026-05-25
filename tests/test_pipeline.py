@@ -146,6 +146,33 @@ def test_sandbox_refuses_negative_seed(tmp_path):
         det.detonate(str(tmp_path), seed=-1)
 
 
+def test_sandbox_translates_in_container_path_to_host(monkeypatch, tmp_path):
+    """When the miner runs inside a container and shells out to ``docker
+    run`` via the host docker socket, -v sources must be HOST paths.
+    PHYLAX_EVIDENCE_HOST_DIR provides that translation. Without it, the
+    sandbox bind-mount lands on a different (empty) directory on the host
+    and the harness sees no bundle + can't write evidence."""
+    monkeypatch.setenv("PHYLAX_EVIDENCE_DIR", "/opt/phylax/evidence")
+    monkeypatch.setenv("PHYLAX_EVIDENCE_HOST_DIR", "/home/op/phylax/miner/evidence")
+    det = SandboxDetonator()
+    # Path under the in-container evidence dir → translates to host equivalent
+    assert det._to_host_path("/opt/phylax/evidence/phylax_run_abc") \
+        == "/home/op/phylax/miner/evidence/phylax_run_abc"
+    # Path outside the evidence dir → returned unchanged (bare-metal fallback)
+    assert det._to_host_path("/tmp/something") == "/tmp/something"
+
+
+def test_sandbox_path_translator_noop_for_bare_metal(monkeypatch, tmp_path):
+    """On bare-metal deployments where the miner runs directly on the host,
+    PHYLAX_EVIDENCE_HOST_DIR == PHYLAX_EVIDENCE_DIR and translation is a
+    no-op — paths get passed through to docker as-is."""
+    monkeypatch.setenv("PHYLAX_EVIDENCE_DIR", str(tmp_path))
+    monkeypatch.delenv("PHYLAX_EVIDENCE_HOST_DIR", raising=False)
+    det = SandboxDetonator()
+    p = str(tmp_path / "phylax_run_xyz")
+    assert det._to_host_path(p) == p
+
+
 def test_sandbox_expands_tilde_in_evidence_dir(monkeypatch, tmp_path):
     """A stray ``PHYLAX_EVIDENCE_DIR=~/...`` in an operator's .env must not
     fall through to pathlib.mkdir as a literal '~' (which fails with EACCES

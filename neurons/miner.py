@@ -212,11 +212,22 @@ class PhylaxMiner:
         """
         Returns a local filesystem path to the skill bundle.
         Downloads from URL if bundle_bytes not provided.
+
+        The extraction directory MUST live under PHYLAX_EVIDENCE_DIR (which
+        is bind-mounted from the host) so the sandbox container — launched
+        via the host docker socket — can actually see the bundle. A path
+        under /tmp would only exist inside the miner container, and the
+        host dockerd would silently create an empty dir there and mount
+        that empty dir into /skill, producing no observations.
         """
         import tempfile
         import zipfile
 
-        tmp_dir = tempfile.mkdtemp(prefix="phylax_bundle_")
+        staging_root = os.path.expanduser(
+            os.getenv("PHYLAX_EVIDENCE_DIR", tempfile.gettempdir())
+        )
+        os.makedirs(staging_root, exist_ok=True)
+        tmp_dir = tempfile.mkdtemp(prefix="phylax_bundle_", dir=staging_root)
         bundle_zip = os.path.join(tmp_dir, "bundle.zip")
 
         if bundle.bundle_bytes:

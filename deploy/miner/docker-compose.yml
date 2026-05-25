@@ -44,6 +44,12 @@ services:
       # the non-root container user can traverse it and reach the
       # bind-mounted wallet under ~/.bittensor.
       HOME: /opt/phylax
+      # Host-side path of the evidence bind mount. The miner shells out to
+      # ``docker run -v`` through the host docker socket, so dockerd
+      # resolves -v sources against the HOST filesystem (NOT this
+      # container's view). Without this, the sandbox would mount empty
+      # root-owned dirs and the harness would fail with EACCES.
+      PHYLAX_EVIDENCE_HOST_DIR: "${PHYLAX_EVIDENCE_HOST_DIR:-${PWD}/evidence}"
     env_file:
       - .env
     command:
