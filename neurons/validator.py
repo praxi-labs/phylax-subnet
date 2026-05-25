@@ -39,6 +39,12 @@ from phylax.validator.synth import SyntheticGenerator
 logger = get_logger(__name__)
 
 CORPORA_DIR = Path(__file__).parent.parent / "corpora"
+# Repo-local default for ad-hoc/local runs. Container deployments override
+# this via PHYLAX_REGISTRY_PATH (see deploy/validator/.env) so the file lands
+# on the bind-mounted /opt/phylax/registry.sqlite3. Reading the env var via
+# ``or DEFAULT_REGISTRY_PATH`` (not getenv's default) so a blank entry falls
+# back here — sqlite3.connect("") silently opens a throwaway temp DB on
+# every connection, which would lose the schema between init and put().
 DEFAULT_REGISTRY_PATH = Path(__file__).parent.parent / "phylax_registry.sqlite3"
 
 
@@ -102,7 +108,7 @@ class PhylaxValidator:
         self.synth = SyntheticGenerator()
         self.consensus = ConsensusAggregator()
         self.registry = AttestationRegistry(
-            os.getenv("PHYLAX_REGISTRY_PATH", str(DEFAULT_REGISTRY_PATH))
+            os.getenv("PHYLAX_REGISTRY_PATH") or str(DEFAULT_REGISTRY_PATH)
         )
         self.countersigner: ValidatorCountersigner | None = None
         if hasattr(self, "wallet") and self.wallet is not None:

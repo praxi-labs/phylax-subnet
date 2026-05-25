@@ -57,6 +57,20 @@ def test_invalidate_by_publisher(registry):
     assert invalidated == 3
 
 
+def test_init_on_preexisting_empty_file(tmp_path):
+    """Operators install.sh's ``touch ./registry.sqlite3`` so the host file
+    exists before the container bind-mounts it. The registry must initialize
+    its schema on the empty file, not fail with 'no such table' on the first
+    put()."""
+    db = tmp_path / "registry.sqlite3"
+    db.touch()
+    assert db.exists() and db.stat().st_size == 0
+    reg = AttestationRegistry(db)
+    h = "sha256:" + "a" * 64
+    reg.put(_signed_sssa(h), round_id="r1", quality_score=0.5)
+    assert reg.get(h) is not None
+
+
 def test_stats_counts_verdicts(registry):
     registry.put(_signed_sssa("sha256:" + "1" * 64, Verdict.ALLOW), round_id="r", quality_score=0.5)
     registry.put(_signed_sssa("sha256:" + "2" * 64, Verdict.WARN), round_id="r", quality_score=0.5)

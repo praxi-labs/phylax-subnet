@@ -61,10 +61,11 @@ def create_app(
     state = _ApiState(
         registry=registry
         or AttestationRegistry(
-            os.getenv(
-                "PHYLAX_REGISTRY_PATH",
-                str(Path(__file__).parent.parent.parent / "phylax_registry.sqlite3"),
-            )
+            # ``or`` (not getenv's default) so a blank PHYLAX_REGISTRY_PATH in
+            # .env falls back here — sqlite3.connect("") silently opens a
+            # throwaway temp DB on every connection, losing the schema.
+            os.getenv("PHYLAX_REGISTRY_PATH")
+            or str(Path(__file__).parent.parent.parent / "phylax_registry.sqlite3")
         ),
         baseline=baseline or BaselineRunner(),
         wallet=wallet,
