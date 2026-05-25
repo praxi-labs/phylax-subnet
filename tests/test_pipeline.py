@@ -2,7 +2,13 @@ from pathlib import Path
 
 import pytest
 
-from phylax.pipeline.sandbox import SandboxDetonator
+from phylax.pipeline.sandbox import (
+    SandboxDetonator,
+    _NORM_FS,
+    _NORM_NET,
+    _NORM_PROC,
+    _NORM_SECRETS,
+)
 from phylax.pipeline.sbom import SBOMAnalyzer
 from phylax.pipeline.static import StaticAnalyzer
 from phylax.protocol import Severity
@@ -162,6 +168,73 @@ def test_sandbox_passes_canary_env_when_both_set(monkeypatch, tmp_path):
     flat = " ".join(cmd)
     assert "PHYLAX_CANARY_ID=deadbeef" in flat
     assert "PHYLAX_CANARY_VAL=" + "cafe" * 16 in flat
+
+
+def test_norm_net_captures_dns_records_with_host_field():
+    """traced_getaddrinfo emits {op:'dns', host:'...'}. The normalizer must
+    accept the 'host' key (not just 'domain') or DNS observations get
+    silently dropped and network_trace_hash collapses to sha256('[]')."""
+    rec = {"op": "dns", "host": "evil.example", "seed": 1, "step": 1}
+    norm = _NORM_NET(rec)
+    assert norm is not None
+    assert norm["host"] == "evil.example"
+    assert norm["op"] == "dns"
+
+
+def test_norm_net_captures_connect_records():
+    """traced_connect emits {op:'connect', ip:'...', port:N}. Already worked
+    pre-fix but verify nothing regressed."""
+    rec = {"op": "connect", "ip": "10.0.0.1", "port": 443}
+    norm = _NORM_NET(rec)
+    assert norm is not None
+    assert norm["ip"] == "10.0.0.1"
+    assert norm["port"] == 443
+
+
+def test_norm_net_drops_records_with_no_observable_field():
+    """A record with only metadata (step, seed) but no observable network
+    facts shouldn't pollute the hash."""
+    rec = {"seed": 1, "step": 1}
+    assert _NORM_NET(rec) is None
+
+
+def test_norm_proc_keeps_error_records():
+    """A real 'skill crashed during detonation' is observable behaviour and
+    must contribute to the hash — otherwise it's indistinguishable from a
+    fabricated empty trace."""
+    rec = {"op": "error", "error": "<urlopen error name resolution>", "step": 29}
+    norm = _NORM_PROC(rec)
+    assert norm is not None
+    assert norm["op"] == "error"
+    assert norm["error"] == "<urlopen error name resolution>"
+
+
+def test_norm_proc_keeps_no_entry_records():
+    """The harness emits {op:'no_entry'} when no entrypoint is found. That
+    IS a real observation and should hash distinctly from 'nothing
+    happened'."""
+    rec = {"op": "no_entry", "step": 1}
+    norm = _NORM_PROC(rec)
+    assert norm is not None
+    assert norm["op"] == "no_entry"
+
+
+def test_norm_proc_keeps_spawn_records():
+    """Standard spawn records should still pass through with cmd preserved."""
+    rec = {"op": "spawn", "cmd": "/bin/ls -la"}
+    norm = _NORM_PROC(rec)
+    assert norm is not None
+    assert norm["cmd"] == "/bin/ls -la"
+
+
+def test_norm_secrets_preserves_access_idiom():
+    """env_get vs env_subscript vs env_getenv carry different policy
+    signals (which Python idiom the skill used). Hash should distinguish."""
+    a = _NORM_SECRETS({"op": "env_get", "var": "STRIPE_KEY"})
+    b = _NORM_SECRETS({"op": "env_subscript", "var": "STRIPE_KEY"})
+    assert a != b
+    assert a["op"] == "env_get"
+    assert b["op"] == "env_subscript"
 
 
 def test_sandbox_omits_canary_env_when_unset(tmp_path):

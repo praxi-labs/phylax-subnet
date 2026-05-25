@@ -328,13 +328,22 @@ class SandboxDetonator:
 def _NORM_NET(rec: dict) -> dict | None:
     if not isinstance(rec, dict):
         return None
+    op = rec.get("op")
+    # Accept both "domain" (older convention from the original spec) and
+    # "host" (what the harness's traced_getaddrinfo actually emits).
+    # Without this fallback DNS records were silently dropped and the
+    # network_trace_hash collapsed to sha256("[]") for every miner who
+    # only observed a DNS attempt, hiding real observability.
+    host = rec.get("domain") or rec.get("host")
     out = {
-        "domain": rec.get("domain"),
+        "op": op,
+        "host": host,
         "ip": rec.get("ip"),
         "port": rec.get("port"),
         "bytes": rec.get("bytes"),
     }
-    if not any(out.values()):
+    # Need at least one observable field beyond op itself.
+    if not any(v for k, v in out.items() if k != "op"):
         return None
     return out
 
@@ -352,10 +361,22 @@ def _NORM_FS(rec: dict) -> dict | None:
 def _NORM_PROC(rec: dict) -> dict | None:
     if not isinstance(rec, dict):
         return None
-    cmd = rec.get("cmd")
-    if not cmd:
+    op = rec.get("op")
+    if not op:
         return None
-    return {"cmd": cmd, "uid": rec.get("uid")}
+    cmd = rec.get("cmd")
+    if cmd:
+        return {"op": op, "cmd": cmd, "uid": rec.get("uid")}
+    # Op-only records (no_entry, error) ARE observable behaviour and
+    # should contribute to the hash. Otherwise a real "skill crashed"
+    # run produces an identical hash to a fabricated empty trace —
+    # losing the signal that the sandbox actually executed and observed
+    # something. Error strings are deterministic in our harness (paths
+    # are in-sandbox so they match between miner and validator).
+    error = rec.get("error")
+    if error:
+        return {"op": op, "error": str(error)}
+    return {"op": op}
 
 
 def _NORM_SECRETS(rec: dict) -> dict | None:
@@ -364,4 +385,8 @@ def _NORM_SECRETS(rec: dict) -> dict | None:
     var = rec.get("var") or rec.get("key")
     if not var:
         return None
-    return {"var": var}
+    op = rec.get("op")
+    # Preserve op so env_get vs env_subscript vs env_getenv distinguish
+    # in the hash (different Python idioms for env access — useful signal
+    # for policy generation downstream).
+    return {"op": op, "var": var}
