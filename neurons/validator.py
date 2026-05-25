@@ -454,6 +454,12 @@ class PhylaxValidator:
 
         async def query_one(uid: int) -> MinerResponse:
             axon = self.metagraph.axons[uid]
+            bt.logging.info(
+                f"DENDRITE-DBG uid={uid} axon.ip={axon.ip!r} axon.port={axon.port} "
+                f"axon.hotkey={axon.hotkey[:16]}... "
+                f"is_serving={getattr(axon, 'is_serving', '?')} "
+                f"metagraph_id={id(self.metagraph)}"
+            )
             nonce = secrets.randbits(63)
             synapse = PhylaxSynapse(
                 skill_bundle=bundle,
