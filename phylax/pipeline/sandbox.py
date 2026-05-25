@@ -77,13 +77,27 @@ class SandboxDetonator:
 
     # -----------------------------------------------------------------------
 
-    def detonate(self, bundle_path: str, seed: int, extended: bool = False) -> SandboxResult:
+    def detonate(
+        self,
+        bundle_path: str,
+        seed: int,
+        extended: bool = False,
+        canary_id: str = "",
+        canary_val: str = "",
+    ) -> SandboxResult:
         """Launch the sandbox container against the bundle.
 
         ``seed`` is the per-task determinism nonce; it is exported to the
         in-container harness as ``PHYLAX_SEED`` so randomness and trace
         ordering are reproducible. Callers must pass a real seed — a
         hardcoded default would break the anti-copy property.
+
+        ``canary_id`` + ``canary_val`` are the functional proof-of-execution
+        challenge (see PhylaxSynapse docstring). The harness will write
+        canary_val to /evidence/.phylax_canary_<canary_id> and read it back;
+        the read appears in fs.jsonl and contributes to fs_trace_hash. When
+        both are empty the harness skips the canary dance (for back-compat
+        with tests and bare-metal local runs).
         """
         if seed is None or seed < 0:
             raise ValueError("SandboxDetonator.detonate requires a non-negative seed")
@@ -97,7 +111,9 @@ class SandboxDetonator:
         result = SandboxResult(container_image=self.image)
 
         try:
-            cmd = self._build_docker_cmd(bundle_path, run_dir, container_name, seed)
+            cmd = self._build_docker_cmd(
+                bundle_path, run_dir, container_name, seed, canary_id, canary_val
+            )
             proc = subprocess.run(
                 cmd,
                 capture_output=True, text=True, timeout=timeout,
@@ -152,8 +168,15 @@ class SandboxDetonator:
         except ValueError:
             return p
 
-    def _build_docker_cmd(self, bundle_path: str, run_dir: Path,
-                          container_name: str, seed: int) -> list[str]:
+    def _build_docker_cmd(
+        self,
+        bundle_path: str,
+        run_dir: Path,
+        container_name: str,
+        seed: int,
+        canary_id: str = "",
+        canary_val: str = "",
+    ) -> list[str]:
         # Run the container as the host user so the harness can write to
         # the bind-mounted /evidence directory. Without this override the
         # image's baked-in 'sandbox' user (UID ~999) can't write to a host
@@ -162,7 +185,7 @@ class SandboxDetonator:
         # which makes score_evidence return 0 forever.
         host_bundle_path = self._to_host_path(bundle_path)
         host_run_dir = self._to_host_path(run_dir)
-        return [
+        cmd = [
             "docker", "run",
             "--rm",
             "--name", container_name,
@@ -176,8 +199,18 @@ class SandboxDetonator:
             "-v", f"{host_bundle_path}:/skill:ro",
             "-v", f"{host_run_dir}:/evidence",
             "-e", f"PHYLAX_SEED={seed}",
-            self.image,
         ]
+        # Canary env vars are passed only when both are set. Empty values
+        # signal "no canary challenge for this run" (used by tests and
+        # bare-metal local detonations); the harness skips the canary dance
+        # in that case rather than producing a record that wouldn't match.
+        if canary_id and canary_val:
+            cmd.extend([
+                "-e", f"PHYLAX_CANARY_ID={canary_id}",
+                "-e", f"PHYLAX_CANARY_VAL={canary_val}",
+            ])
+        cmd.append(self.image)
+        return cmd
 
     @staticmethod
     def _kill_container(name: str) -> None:

@@ -124,6 +124,8 @@ class PhylaxMiner:
                     bundle_path,
                     seed=int(synapse.nonce),
                     extended=(bundle.test_profile.value == "deep"),
+                    canary_id=synapse.canary_id,
+                    canary_val=synapse.canary_val,
                 )
 
             # ------------------------------------------------------------------

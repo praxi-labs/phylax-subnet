@@ -58,6 +58,25 @@ def test_synapse_has_nonce_field():
     assert syn.nonce == 42
 
 
+def test_synapse_carries_canary_challenge():
+    """Functional canary — validator passes id+val so the miner's sandbox
+    harness can produce an fs_trace_hash that's verifiably tied to this
+    specific (miner, task). A miner that skipped the sandbox can't fake
+    both the canary records AND the actual skill's observations."""
+    syn = PhylaxSynapse(
+        skill_bundle=SkillBundle(bundle_hash="sha256:" + "0" * 64),
+        nonce=1,
+        canary_id="deadbeef",
+        canary_val="cafe" * 16,
+    )
+    assert syn.canary_id == "deadbeef"
+    assert syn.canary_val == "cafe" * 16
+    # Defaults are empty (back-compat with tests / bare-metal callers).
+    syn2 = PhylaxSynapse(skill_bundle=SkillBundle(bundle_hash="sha256:" + "0" * 64), nonce=1)
+    assert syn2.canary_id == ""
+    assert syn2.canary_val == ""
+
+
 # ---------------------------------------------------------------------------
 # §5.3 — Composite weights and aggregation
 # ---------------------------------------------------------------------------

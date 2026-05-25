@@ -146,6 +146,40 @@ def test_sandbox_refuses_negative_seed(tmp_path):
         det.detonate(str(tmp_path), seed=-1)
 
 
+def test_sandbox_passes_canary_env_when_both_set(monkeypatch, tmp_path):
+    """When canary_id and canary_val are both set, the docker command
+    must include both PHYLAX_CANARY_ID and PHYLAX_CANARY_VAL env vars
+    so the harness can run the proof-of-execution challenge."""
+    det = SandboxDetonator()
+    cmd = det._build_docker_cmd(
+        bundle_path="/tmp/bundle",
+        run_dir=tmp_path,
+        container_name="phylax-sandbox-test",
+        seed=42,
+        canary_id="deadbeef",
+        canary_val="cafe" * 16,
+    )
+    flat = " ".join(cmd)
+    assert "PHYLAX_CANARY_ID=deadbeef" in flat
+    assert "PHYLAX_CANARY_VAL=" + "cafe" * 16 in flat
+
+
+def test_sandbox_omits_canary_env_when_unset(tmp_path):
+    """No canary env vars should appear when canary_id/canary_val are
+    empty — keeps tests and bare-metal local runs working without forcing
+    every caller to invent a canary."""
+    det = SandboxDetonator()
+    cmd = det._build_docker_cmd(
+        bundle_path="/tmp/bundle",
+        run_dir=tmp_path,
+        container_name="phylax-sandbox-test",
+        seed=42,
+    )
+    flat = " ".join(cmd)
+    assert "PHYLAX_CANARY_ID" not in flat
+    assert "PHYLAX_CANARY_VAL" not in flat
+
+
 def test_sandbox_translates_in_container_path_to_host(monkeypatch, tmp_path):
     """When the miner runs inside a container and shells out to ``docker
     run`` via the host docker socket, -v sources must be HOST paths.

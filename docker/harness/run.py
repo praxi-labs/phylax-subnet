@@ -179,6 +179,39 @@ def _detonate_entry(entry: Path) -> None:
     detonate(compiled, sandbox_globals)
 
 
+def _run_canary_challenge() -> None:
+    """Functional proof-of-execution: write + read a validator-chosen file.
+
+    The validator generates PHYLAX_CANARY_ID and PHYLAX_CANARY_VAL per
+    (miner, task) and passes them as env vars. The harness writes
+    canary_val to /evidence/.phylax_canary_<id> and reads it back —
+    both go through the traced builtins, so fs.jsonl records two
+    canary entries on top of whatever the skill itself does.
+
+    A cheater who skipped the sandbox can't produce the matching
+    fs_trace_hash: they'd need the canary records (which they can guess
+    from env vars they don't see) AND every record the actual skill
+    would have emitted (which they can't fabricate without running it).
+
+    When the env vars are unset (tests, bare-metal local runs) this is
+    a no-op so existing flows aren't disturbed.
+    """
+    canary_id = os.environ.get("PHYLAX_CANARY_ID", "").strip()
+    canary_val = os.environ.get("PHYLAX_CANARY_VAL", "").strip()
+    if not canary_id or not canary_val:
+        return
+    EVIDENCE_DIR.mkdir(parents=True, exist_ok=True)
+    canary_path = EVIDENCE_DIR / f".phylax_canary_{canary_id}"
+    # Use the traced builtin (already installed by install_hooks) so the
+    # write + read both land in fs.jsonl. The content is canary_val; the
+    # actual bytes never enter the hash directly — what matters is that
+    # the read of this exact path appears in the trace.
+    with open(canary_path, "w", encoding="utf-8") as f:
+        f.write(canary_val)
+    with open(canary_path, encoding="utf-8") as f:
+        _ = f.read()
+
+
 def main() -> int:
     started_at = time.time()
     random.seed(SEED)
@@ -190,6 +223,7 @@ def main() -> int:
         pass
 
     install_hooks()
+    _run_canary_challenge()
     sys.path.insert(0, str(SKILL_DIR))
 
     entry = find_entrypoint()

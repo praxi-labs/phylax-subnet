@@ -267,6 +267,15 @@ class PhylaxSynapse(bt.Synapse):
     ``nonce`` is the determinism seed the miner threads into the sandbox
     detonation; validators replay with the same nonce and require matching
     evidence hashes. Without it the anti-copy property collapses.
+
+    ``canary_id`` + ``canary_val`` are the functional proof-of-execution
+    challenge. The validator generates fresh values per (miner, task) and
+    the miner must thread them into the sandbox environment. The harness
+    writes ``canary_val`` to ``/evidence/.phylax_canary_<canary_id>`` and
+    reads it back; both write and read get recorded in fs.jsonl. A miner
+    that didn't actually launch the sandbox has no way to produce the
+    matching fs_trace_hash (which combines the canary records with all the
+    skill's own observations).
     """
 
     # Input (validator → miner)
@@ -274,6 +283,8 @@ class PhylaxSynapse(bt.Synapse):
     nonce: int = 0
     round_id: str = ""
     deadline_unix: float = 0.0
+    canary_id: str = ""
+    canary_val: str = ""  # hex-encoded so it survives the JSON wire format
 
     # Output (miner → validator)
     attestation: dict | None = None

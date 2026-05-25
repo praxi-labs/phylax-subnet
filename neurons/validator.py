@@ -375,7 +375,10 @@ class PhylaxValidator:
             evaluation_task["submission_latency_ms"] = resp.submission_latency_ms
             evaluation_task["median_latency_ms"] = median_latency
 
-            gt = await self._baseline_for_corpus_task(task, resp.nonce)
+            gt = await self._baseline_for_corpus_task(
+                task, resp.nonce,
+                canary_id=resp.canary_id, canary_val=resp.canary_val,
+            )
             if gt is not None:
                 evaluation_task.update(gt.as_task_dict())
 
@@ -421,7 +424,11 @@ class PhylaxValidator:
             evaluation_task["median_latency_ms"] = median_latency
 
             gt = await asyncio.to_thread(
-                self.baseline.run_from_bytes, synth_skill.bundle_bytes, resp.nonce
+                self.baseline.run_from_bytes,
+                synth_skill.bundle_bytes,
+                resp.nonce,
+                canary_id=resp.canary_id,
+                canary_val=resp.canary_val,
             )
             evaluation_task.update(gt.as_task_dict())
 
@@ -461,11 +468,22 @@ class PhylaxValidator:
         async def query_one(uid: int) -> MinerResponse:
             axon = self.metagraph.axons[uid]
             nonce = secrets.randbits(63)
+            # Per-(miner, task) functional canary. canary_val is a 32-byte
+            # random hex string the harness will write+read inside the
+            # sandbox; both miner and validator threads it into their
+            # sandbox env so the fs_trace_hash incorporates the canary
+            # records. A miner that skipped the sandbox can't produce the
+            # matching hash (they don't have the records of whatever the
+            # skill itself did alongside the canary read).
+            canary_id = secrets.token_hex(8)
+            canary_val = secrets.token_hex(32)
             synapse = PhylaxSynapse(
                 skill_bundle=bundle,
                 nonce=nonce,
                 round_id=round_id,
                 deadline_unix=deadline_unix,
+                canary_id=canary_id,
+                canary_val=canary_val,
             )
             sent_at = time.time()
             try:
@@ -478,24 +496,39 @@ class PhylaxValidator:
                 returned = resp[0] if isinstance(resp, list) else resp
             except Exception as e:  # noqa: BLE001
                 bt.logging.debug(f"uid {uid}: dendrite error: {e}")
-                return MinerResponse(uid=uid, nonce=nonce, ok=False, reason=str(e))
+                return MinerResponse(
+                    uid=uid, nonce=nonce, ok=False, reason=str(e),
+                    canary_id=canary_id, canary_val=canary_val,
+                )
 
             latency_ms = int((time.time() - sent_at) * 1000)
             if returned is None or not returned.is_valid_response():
-                return MinerResponse(uid=uid, nonce=nonce, ok=False, reason="invalid response")
+                return MinerResponse(
+                    uid=uid, nonce=nonce, ok=False, reason="invalid response",
+                    canary_id=canary_id, canary_val=canary_val,
+                )
 
             sssa = returned.get_sssa()
             if sssa is None or sssa.attestation is None:
-                return MinerResponse(uid=uid, nonce=nonce, ok=False, reason="missing attestation")
+                return MinerResponse(
+                    uid=uid, nonce=nonce, ok=False, reason="missing attestation",
+                    canary_id=canary_id, canary_val=canary_val,
+                )
 
             # Signature + identity check
             v = verify_attestation(sssa, local_bundle_hash=bundle.bundle_hash)
             if not v.ok:
-                return MinerResponse(uid=uid, nonce=nonce, ok=False, reason=f"verify: {v.reason}")
+                return MinerResponse(
+                    uid=uid, nonce=nonce, ok=False, reason=f"verify: {v.reason}",
+                    canary_id=canary_id, canary_val=canary_val,
+                )
 
             hotkey = self.metagraph.hotkeys[uid] if uid < len(self.metagraph.hotkeys) else None
             if hotkey and sssa.attestation.miner_hotkey != hotkey:
-                return MinerResponse(uid=uid, nonce=nonce, ok=False, reason="hotkey mismatch")
+                return MinerResponse(
+                    uid=uid, nonce=nonce, ok=False, reason="hotkey mismatch",
+                    canary_id=canary_id, canary_val=canary_val,
+                )
 
             return MinerResponse(
                 uid=uid,
@@ -504,6 +537,8 @@ class PhylaxValidator:
                 sssa=sssa,
                 submission_latency_ms=latency_ms,
                 verification=v,
+                canary_id=canary_id,
+                canary_val=canary_val,
             )
 
         return await asyncio.gather(*(query_one(u) for u in miner_uids))
@@ -513,14 +548,21 @@ class PhylaxValidator:
     # ------------------------------------------------------------------
 
     async def _baseline_for_corpus_task(
-        self, task: CorpusTask, nonce: int
+        self, task: CorpusTask, nonce: int,
+        canary_id: str = "", canary_val: str = "",
     ) -> GroundTruth | None:
         """Run validator baseline if bundle bytes are retrievable."""
         bundle_bytes = await self._fetch_bundle_bytes(task)
         if not bundle_bytes:
             return None
         try:
-            return await asyncio.to_thread(self.baseline.run_from_bytes, bundle_bytes, nonce)
+            return await asyncio.to_thread(
+                self.baseline.run_from_bytes,
+                bundle_bytes,
+                nonce,
+                canary_id=canary_id,
+                canary_val=canary_val,
+            )
         except Exception as e:  # noqa: BLE001
             bt.logging.debug(f"baseline error for {task.name}: {e}")
             return None
@@ -753,7 +795,10 @@ class PhylaxValidator:
 
 
 class MinerResponse:
-    __slots__ = ("uid", "nonce", "ok", "sssa", "submission_latency_ms", "quality", "reason", "verification")
+    __slots__ = (
+        "uid", "nonce", "canary_id", "canary_val",
+        "ok", "sssa", "submission_latency_ms", "quality", "reason", "verification",
+    )
 
     def __init__(
         self,
@@ -765,9 +810,13 @@ class MinerResponse:
         submission_latency_ms: int = 0,
         reason: str = "",
         verification: VerificationResult | None = None,
+        canary_id: str = "",
+        canary_val: str = "",
     ):
         self.uid = uid
         self.nonce = nonce
+        self.canary_id = canary_id
+        self.canary_val = canary_val
         self.ok = ok
         self.sssa = sssa
         self.submission_latency_ms = submission_latency_ms

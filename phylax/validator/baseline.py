@@ -73,14 +73,28 @@ class BaselineRunner:
 
     # ------------------------------------------------------------------
 
-    def run(self, bundle_path: str, nonce: int, *, deep: bool = False) -> GroundTruth:
+    def run(
+        self,
+        bundle_path: str,
+        nonce: int,
+        *,
+        deep: bool = False,
+        canary_id: str = "",
+        canary_val: str = "",
+    ) -> GroundTruth:
         start = time.time()
 
         static_result = self.static_analyzer.analyze(bundle_path)
         sbom_result = self.sbom_analyzer.analyze(bundle_path)
         sandbox_result: SandboxResult | None = None
         try:
-            sandbox_result = self.sandbox.detonate(bundle_path, seed=nonce, extended=deep)
+            sandbox_result = self.sandbox.detonate(
+                bundle_path,
+                seed=nonce,
+                extended=deep,
+                canary_id=canary_id,
+                canary_val=canary_val,
+            )
         except ValueError:
             sandbox_result = None
         except Exception:  # noqa: BLE001
@@ -111,7 +125,15 @@ class BaselineRunner:
 
     # ------------------------------------------------------------------
 
-    def run_from_bytes(self, bundle_bytes: bytes, nonce: int, *, deep: bool = False) -> GroundTruth:
+    def run_from_bytes(
+        self,
+        bundle_bytes: bytes,
+        nonce: int,
+        *,
+        deep: bool = False,
+        canary_id: str = "",
+        canary_val: str = "",
+    ) -> GroundTruth:
         """Convenience: writes bytes to a temp dir, unpacks if a zip, then runs.
 
         The staging directory MUST live under PHYLAX_EVIDENCE_DIR (which is
@@ -139,7 +161,13 @@ class BaselineRunner:
         except zipfile.BadZipFile:
             # Not a zip — treat as a single-file bundle.
             (extract_dir / "main.py").write_bytes(bundle_bytes)
-        return self.run(str(extract_dir), nonce=nonce, deep=deep)
+        return self.run(
+            str(extract_dir),
+            nonce=nonce,
+            deep=deep,
+            canary_id=canary_id,
+            canary_val=canary_val,
+        )
 
 
 # ---------------------------------------------------------------------------
