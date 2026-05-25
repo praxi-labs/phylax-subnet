@@ -12,9 +12,6 @@ from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_valid
 SCHEMA_VERSION = "1.1.0"
 
 
-# ---------------------------------------------------------------------------
-# Enums
-# ---------------------------------------------------------------------------
 
 
 class Verdict(str, Enum):
@@ -31,14 +28,11 @@ class Severity(str, Enum):
 
 
 class TestProfile(str, Enum):
-    FAST = "fast"          # Static + SBOM only (~5s)
-    STANDARD = "standard"  # All 3 layers, standard timeout (~60s)
-    DEEP = "deep"          # All 3 layers, extended detonation (~5min)
+    FAST = "fast"
+    STANDARD = "standard"
+    DEEP = "deep"
 
 
-# ---------------------------------------------------------------------------
-# Sub-models nested inside SSSA
-# ---------------------------------------------------------------------------
 
 
 class SkillIdentity(BaseModel):
@@ -53,12 +47,6 @@ class SkillIdentity(BaseModel):
 class SkillBundle(BaseModel):
     """Inbound payload from validator to miner."""
 
-    # All fields default so the model can be constructed from {}. bittensor
-    # 9.x's axon decodes the bt_header_input_obj_skill_bundle header first
-    # and builds the model from that; for large fields the header is the
-    # placeholder "e30=" (base64 {}) and the real data arrives in the body.
-    # If any field were required, the header-side construction would raise
-    # SynapseParsingError before the body parse ever ran.
     bundle_hash: str = ""
     bundle_url: str | None = None
     bundle_bytes: bytes | None = None
@@ -68,18 +56,12 @@ class SkillBundle(BaseModel):
     @field_validator("bundle_hash")
     @classmethod
     def _hash_shape(cls, v: str) -> str:
-        # Empty is allowed for the header-placeholder case; the body parse
-        # overwrites it with the real sha256:... hash. Anything else must
-        # match the canonical shape.
         if not v:
             return v
         if not v.startswith("sha256:") or len(v) != 71:
             raise ValueError("bundle_hash must be 'sha256:<64 hex chars>'")
         return v
 
-    # The synapse rides JSON between validator and miner; raw bytes aren't
-    # JSON-serialisable, so transport bundle_bytes as base64. Code that sets
-    # or reads .bundle_bytes still sees raw bytes either side of the wire.
     @field_serializer("bundle_bytes")
     def _ser_bundle_bytes(self, v: bytes | None) -> str | None:
         return base64.b64encode(v).decode("ascii") if v else None
@@ -198,7 +180,7 @@ class EvidencePack(BaseModel):
 class RunMetadata(BaseModel):
     tools: dict[str, str] = Field(default_factory=dict)
     runtime_image: str | None = None
-    determinism_seed: int = 0  # set per-task from validator nonce; never hardcoded
+    determinism_seed: int = 0
     analysis_duration_ms: int = 0
     schema_version: str = SCHEMA_VERSION
 
@@ -246,8 +228,6 @@ class SSSA(BaseModel):
         return hashlib.sha256(self.canonical_json().encode()).digest()
 
     def consensus_signing_bytes(self, round_id: str) -> bytes:
-        # Binds the countersignature to a specific round so it can't be
-        # replayed onto a different one.
         if self.attestation is None:
             raise ValueError("cannot countersign an unsigned SSSA")
         payload = {
@@ -278,15 +258,13 @@ class PhylaxSynapse(bt.Synapse):
     skill's own observations).
     """
 
-    # Input (validator → miner)
     skill_bundle: SkillBundle
     nonce: int = 0
     round_id: str = ""
     deadline_unix: float = 0.0
     canary_id: str = ""
-    canary_val: str = ""  # hex-encoded so it survives the JSON wire format
+    canary_val: str = ""
 
-    # Output (miner → validator)
     attestation: dict | None = None
     evidence_refs: dict | None = None
     error: str | None = None
@@ -304,3 +282,4 @@ class PhylaxSynapse(bt.Synapse):
             return sssa is not None and sssa.attestation is not None
         except Exception:  # noqa: BLE001
             return False
+

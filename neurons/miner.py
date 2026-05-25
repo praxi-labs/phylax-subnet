@@ -33,10 +33,6 @@ class PhylaxMiner:
     neuron_type: str = "MinerNeuron"
 
     def __init__(self, config=None, wallet=None, subtensor=None):
-        # bt.BaseNeuron does not exist in the bittensor SDK (9.x or 10.x);
-        # it's a subnet-template concept. We wire everything up ourselves
-        # from the wallet/subtensor main() built (which already resolved
-        # --subtensor.network correctly).
         self.config = config
         if callable(bt.logging):
             bt.logging(config=config)
@@ -46,9 +42,6 @@ class PhylaxMiner:
         self.subtensor = subtensor if subtensor is not None else bt.Subtensor(config=config)
         self.metagraph = self.subtensor.metagraph(netuid=config.netuid)
         self.axon = bt.Axon(wallet=self.wallet, config=config)
-        # Register the PhylaxSynapse handler — without this, the axon only
-        # knows about bittensor's bare Synapse type and rejects every
-        # PhylaxSynapse query with UnknownSynapseError.
         self.axon.attach(forward_fn=self.forward)
         self.should_exit = False
         self._build_internal_state()
@@ -72,9 +65,6 @@ class PhylaxMiner:
 
         bt.logging.info("Pipeline ready.")
 
-    # -----------------------------------------------------------------------
-    # Bittensor lifecycle hooks
-    # -----------------------------------------------------------------------
 
     async def forward(self, synapse: PhylaxSynapse) -> PhylaxSynapse:
         """
@@ -88,30 +78,18 @@ class PhylaxMiner:
         start_time = time.time()
 
         try:
-            # ------------------------------------------------------------------
-            # Resolve the skill bundle (download if URL provided)
-            # ------------------------------------------------------------------
             bundle_path = await self._resolve_bundle(bundle)
 
-            # ------------------------------------------------------------------
-            # Layer 1: Static analysis
-            # ------------------------------------------------------------------
             bt.logging.debug("Running Layer 1: Static analysis…")
             static_result = await asyncio.to_thread(
                 self.static_analyzer.analyze, bundle_path
             )
 
-            # ------------------------------------------------------------------
-            # Layer 2: SBOM + supply-chain
-            # ------------------------------------------------------------------
             bt.logging.debug("Running Layer 2: SBOM + supply-chain…")
             sbom_result = await asyncio.to_thread(
                 self.sbom_analyzer.analyze, bundle_path
             )
 
-            # Layer 3: sandbox detonation (standard + deep profiles only).
-            # The seed is synapse.nonce — without it, evidence hashes would
-            # not be miner-unique, so we refuse to detonate.
             sandbox_result = None
             if bundle.test_profile.value in ("standard", "deep"):
                 if not synapse.nonce:
@@ -128,26 +106,14 @@ class PhylaxMiner:
                     canary_val=synapse.canary_val,
                 )
 
-            # ------------------------------------------------------------------
-            # Aggregate findings + build capability map
-            # ------------------------------------------------------------------
             findings       = static_result.findings + sbom_result.findings
             capabilities   = self._merge_capabilities(static_result, sbom_result, sandbox_result)
             evidence_pack  = self._build_evidence_pack(static_result, sbom_result, sandbox_result)
 
-            # ------------------------------------------------------------------
-            # Compute verdict
-            # ------------------------------------------------------------------
             verdict = self._compute_verdict(findings, capabilities, sbom_result)
 
-            # ------------------------------------------------------------------
-            # Generate recommended policy
-            # ------------------------------------------------------------------
             policy = self.policy_generator.generate(capabilities, findings)
 
-            # ------------------------------------------------------------------
-            # Assemble SSSA
-            # ------------------------------------------------------------------
             duration_ms = int((time.time() - start_time) * 1000)
             sssa = self._assemble_sssa(
                 bundle=bundle,
@@ -161,9 +127,6 @@ class PhylaxMiner:
                 nonce=int(synapse.nonce or 0),
             )
 
-            # ------------------------------------------------------------------
-            # Sign the attestation
-            # ------------------------------------------------------------------
             signed_sssa = self.signer.sign(sssa)
 
             synapse.attestation = signed_sssa.model_dump(mode="json")
@@ -206,9 +169,6 @@ class PhylaxMiner:
             return 0.0
         return float(self.metagraph.S[uid])
 
-    # -----------------------------------------------------------------------
-    # Internal helpers
-    # -----------------------------------------------------------------------
 
     async def _resolve_bundle(self, bundle: SkillBundle) -> str:
         """
@@ -241,7 +201,6 @@ class PhylaxMiner:
         else:
             raise ValueError("SkillBundle must have either bundle_bytes or bundle_url")
 
-        # Verify hash integrity
         with open(bundle_zip, "rb") as f:
             actual_hash = "sha256:" + hashlib.sha256(f.read()).hexdigest()
         if actual_hash != bundle.bundle_hash:
@@ -249,7 +208,6 @@ class PhylaxMiner:
                 f"Bundle hash mismatch: expected {bundle.bundle_hash}, got {actual_hash}"
             )
 
-        # Extract
         extract_dir = os.path.join(tmp_dir, "extracted")
         with zipfile.ZipFile(bundle_zip, "r") as zf:
             zf.extractall(extract_dir)
@@ -335,9 +293,6 @@ class PhylaxMiner:
             f"[{severity_names[f.severity]}] {f.title}" for f in (critical + high)[:3]
         ]
 
-        # Confidence rises with observation surface area; sandbox runs that
-        # actually saw network/process/fs activity give us more to base the
-        # verdict on than a static-only scan.
         observations = (
             int(capabilities.network.egress)
             + int(capabilities.process.spawns)
@@ -394,9 +349,6 @@ class PhylaxMiner:
             ),
         )
 
-    # -----------------------------------------------------------------------
-    # Standard Bittensor neuron run loop
-    # -----------------------------------------------------------------------
 
     def run(self):
         bt.logging.info(
@@ -415,7 +367,7 @@ class PhylaxMiner:
                     self.metagraph.sync(subtensor=self.subtensor)
                     bt.logging.debug(f"Metagraph synced | step={step}")
 
-                time.sleep(12)  # One block
+                time.sleep(12)
                 step += 1
 
             except KeyboardInterrupt:
@@ -461,10 +413,6 @@ def main():
     bt.logging.add_args(parser)
     bt.Axon.add_args(parser)
     config = bt.Config(parser)
-    # The CLI default for --subtensor.chain_endpoint is the mainnet URL,
-    # and chain_endpoint wins over network inside bt.Subtensor. Overwrite
-    # it from the network name so --subtensor.network test actually lands
-    # on the test chain.
     config.subtensor.chain_endpoint = _resolve_endpoint(config.subtensor.network)
     wallet = bt.Wallet(config=config)
     subtensor = bt.Subtensor(config=config)
@@ -474,3 +422,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

@@ -20,9 +20,6 @@ from phylax.protocol import (
 from phylax.validator.baseline import BaselineRunner, GroundTruth
 from phylax.validator.registry import AttestationRegistry
 
-# ---------------------------------------------------------------------------
-# Models
-# ---------------------------------------------------------------------------
 
 
 class ScanRequest(BaseModel):
@@ -46,9 +43,6 @@ class HealthResponse(BaseModel):
     registry: dict[str, int]
 
 
-# ---------------------------------------------------------------------------
-# App factory
-# ---------------------------------------------------------------------------
 
 
 def create_app(
@@ -61,9 +55,6 @@ def create_app(
     state = _ApiState(
         registry=registry
         or AttestationRegistry(
-            # ``or`` (not getenv's default) so a blank PHYLAX_REGISTRY_PATH in
-            # .env falls back here — sqlite3.connect("") silently opens a
-            # throwaway temp DB on every connection, losing the schema.
             os.getenv("PHYLAX_REGISTRY_PATH")
             or str(Path(__file__).parent.parent.parent / "phylax_registry.sqlite3")
         ),
@@ -147,9 +138,6 @@ def create_app(
     return app
 
 
-# ---------------------------------------------------------------------------
-# State container
-# ---------------------------------------------------------------------------
 
 
 class _ApiState:
@@ -196,7 +184,6 @@ class _ApiState:
                 analysis_duration_ms=gt.duration_ms,
             ),
         )
-        # Set evidence hashes from the validator's own baseline detonation.
         sssa.evidence.network_trace_hash = gt.evidence_hashes.get("N")
         sssa.evidence.fs_trace_hash = gt.evidence_hashes.get("F")
         sssa.evidence.process_trace_hash = gt.evidence_hashes.get("P")
@@ -233,9 +220,6 @@ def _resolve_bundle_bytes(req: ScanRequest) -> bytes:
     raise HTTPException(status_code=400, detail="bundle_bytes or bundle_url required")
 
 
-# ---------------------------------------------------------------------------
-# Entrypoint
-# ---------------------------------------------------------------------------
 
 
 def main() -> None:
@@ -249,3 +233,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

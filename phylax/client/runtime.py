@@ -7,9 +7,6 @@ from typing import Any
 from phylax.attestation import VerificationResult, verify_attestation
 from phylax.protocol import SSSA, RecommendedPolicy, Verdict
 
-# ---------------------------------------------------------------------------
-# Client
-# ---------------------------------------------------------------------------
 
 
 class PhylaxClient:
@@ -19,7 +16,6 @@ class PhylaxClient:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
 
-    # ------------------------------------------------------------------
 
     def get_attestation(self, bundle_hash: str) -> SSSA | None:
         import httpx
@@ -52,9 +48,6 @@ class PhylaxClient:
         return SSSA(**r.json()["attestation"])
 
 
-# ---------------------------------------------------------------------------
-# Verification helper
-# ---------------------------------------------------------------------------
 
 
 def fetch_and_verify(
@@ -77,7 +70,7 @@ def fetch_and_verify(
     if sssa is None:
         sssa = client.scan(bundle_bytes)
 
-    sbom_hash = sssa.skill.sbom_hash  # we don't recompute locally; trust validator
+    sbom_hash = sssa.skill.sbom_hash
     result = verify_attestation(
         sssa,
         local_bundle_hash=bundle_hash,
@@ -88,9 +81,6 @@ def fetch_and_verify(
     return sssa, result
 
 
-# ---------------------------------------------------------------------------
-# Policy enforcement adapter
-# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -119,3 +109,4 @@ class PolicyEnforcer:
             "timeout_seconds": int(p.timeout_seconds),
             "rate_limit_rps": p.rate_limit_rps,
         }
+

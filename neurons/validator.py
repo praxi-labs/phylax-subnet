@@ -39,12 +39,6 @@ from phylax.validator.synth import SyntheticGenerator
 logger = get_logger(__name__)
 
 CORPORA_DIR = Path(__file__).parent.parent / "corpora"
-# Repo-local default for ad-hoc/local runs. Container deployments override
-# this via PHYLAX_REGISTRY_PATH (see deploy/validator/.env) so the file lands
-# on the bind-mounted /opt/phylax/registry.sqlite3. Reading the env var via
-# ``or DEFAULT_REGISTRY_PATH`` (not getenv's default) so a blank entry falls
-# back here — sqlite3.connect("") silently opens a throwaway temp DB on
-# every connection, which would lose the schema between init and put().
 DEFAULT_REGISTRY_PATH = Path(__file__).parent.parent / "phylax_registry.sqlite3"
 
 
@@ -83,10 +77,6 @@ class PhylaxValidator:
     EMA_ALPHA: float = float(os.getenv("EMA_ALPHA", "0.2"))
 
     def __init__(self, config=None, wallet=None, subtensor=None):
-        # bt.BaseNeuron does not exist in the bittensor SDK (9.x or 10.x);
-        # it's a subnet-template concept. We wire everything up ourselves
-        # from the wallet/subtensor main() built (which already resolved
-        # --subtensor.network correctly).
         self.config = config
         if callable(bt.logging):
             bt.logging(config=config)
@@ -118,7 +108,6 @@ class PhylaxValidator:
         self.scores = torch.zeros(n)
         self.step = 0
 
-        # phylax-server integration (control plane)
         server_url = os.getenv("PHYLAX_SERVER_URL", "")
         expected_server_hotkey = os.getenv("PHYLAX_SERVER_HOTKEY", "").strip() or None
         self.server_client: PhylaxServerClient | None = None
@@ -144,27 +133,12 @@ class PhylaxValidator:
                 "PHYLAX_SERVER_URL not configured — validator will not be able to set_weights"
             )
 
-        # Offline fallback policy:
-        #   PHYLAX_OFFLINE_FALLBACK=true   → keep scoring miners on local corpus
-        #                                     when the server is unreachable.
-        #                                     Weight pushes are still blocked
-        #                                     because no fresh attestation is
-        #                                     obtainable.
-        #   PHYLAX_OFFLINE_FALLBACK=false  → skip the round entirely.
-        # Default is FALSE because the whole point of phylax-server is
-        # consistent task allocation across validators; running on local
-        # corpus drifts your scoring away from the consensus.
         self.allow_offline_fallback = (
             os.getenv("PHYLAX_OFFLINE_FALLBACK", "false").lower() == "true"
         )
 
-        # Track the latest server-owned round so set_weights can request an
-        # attestation against it. Reset to None whenever a round runs offline.
         self.last_completed_round_id: str | None = None
 
-    # ------------------------------------------------------------------
-    # Round driver
-    # ------------------------------------------------------------------
 
     async def run_round(self) -> None:
         miner_uids = self._get_active_miner_uids()
@@ -172,12 +146,10 @@ class PhylaxValidator:
             bt.logging.warning("no active miners on metagraph")
             return
 
-        # ---- 1. Curated tasks: phylax-server is the source of truth ----
         round_id, corpus_tasks, server_owned_round = await self._fetch_curated_batch()
         if round_id is None:
-            return  # offline-fallback disabled; nothing to do this round
+            return
 
-        # ---- 2. Synthetic tasks: always validator-local (hybrid decision) ----
         synth_skills = [self.synth.generate() for _ in range(self.SYNTHETIC_TASKS_PER_ROUND)]
 
         bt.logging.info(
@@ -187,9 +159,6 @@ class PhylaxValidator:
         )
 
         per_uid_task_scores: dict[int, list[float]] = {uid: [] for uid in miner_uids}
-        # Per-axis breakdown collected alongside the composite quality. Used by
-        # _push_round_results so the public leaderboard shows real accuracy /
-        # evidence / policy / efficiency columns instead of zeros.
         per_uid_task_axes: dict[int, list] = {uid: [] for uid in miner_uids}
 
         for task in corpus_tasks:
@@ -204,7 +173,6 @@ class PhylaxValidator:
                 round_id=round_id,
             )
 
-        # ---- 3. Aggregate epoch scores into the running EMA vector. ----
         new_scores = torch.zeros_like(self.scores)
         for uid, ts in per_uid_task_scores.items():
             new_scores[uid] = float(aggregate_epoch(ts))
@@ -213,14 +181,9 @@ class PhylaxValidator:
         top = float(self.scores.max().item()) if self.scores.numel() else 0.0
         bt.logging.info(f"round {round_id[:8]} done | top_score={top:.3f}")
 
-        # ---- 4. Report results to phylax-server. ----
-        # Only server-owned rounds qualify; offline rounds carry a synthetic
-        # round_id the server doesn't recognise, and reporting them would 404.
         if server_owned_round and self.server_client is not None:
             try:
                 self._push_round_results(round_id, per_uid_task_scores, per_uid_task_axes, new_scores)
-                # Only mark the round as eligible for weight attestation once
-                # the server has accepted the results.
                 self.last_completed_round_id = round_id
             except ServerUnreachable as e:
                 bt.logging.warning(
@@ -232,12 +195,8 @@ class PhylaxValidator:
                 bt.logging.warning(f"phylax-server round push failed: {e}")
                 self.last_completed_round_id = None
         else:
-            # Offline rounds don't grant a weight attestation.
             self.last_completed_round_id = None
 
-    # ------------------------------------------------------------------
-    # Server-curated batch fetch (with offline fallback)
-    # ------------------------------------------------------------------
 
     async def _fetch_curated_batch(self):
         """Return ``(round_id, corpus_tasks, server_owned_round)``.
@@ -256,13 +215,11 @@ class PhylaxValidator:
             except ServerUnreachable as e:
                 bt.logging.warning(f"phylax-server unreachable for task batch: {e}")
             except ServerIdentityMismatch as e:
-                # This is a hard fail — refuse to proceed.
                 bt.logging.error(f"phylax-server identity mismatch: {e}; skipping round")
                 return None, [], False
             except Exception as e:  # noqa: BLE001
                 bt.logging.warning(f"phylax-server task fetch failed: {e}")
 
-        # Server unreachable / not configured.
         if not self.allow_offline_fallback:
             bt.logging.error(
                 "phylax-server task fetch failed and PHYLAX_OFFLINE_FALLBACK=false — skipping round"
@@ -300,9 +257,6 @@ class PhylaxValidator:
             tags=server_task.get("tags") or [],
         )
 
-    # ------------------------------------------------------------------
-    # Server round-results push
-    # ------------------------------------------------------------------
 
     def _push_round_results(
         self,
@@ -343,9 +297,6 @@ class PhylaxValidator:
             round_id=round_id, miner_scores=miner_scores_payload
         )
 
-    # ------------------------------------------------------------------
-    # Per-task drivers
-    # ------------------------------------------------------------------
 
     async def _run_task_for_corpus(
         self,
@@ -356,9 +307,6 @@ class PhylaxValidator:
         *,
         round_id: str,
     ) -> None:
-        # Validator baseline: where possible, compute fresh GT under each
-        # miner's nonce. For corpus tasks without retrievable bytes we fall
-        # back to the corpus-authored labels (no evidence GT available).
         task_dict = task.as_scoring_dict()
 
         responses = await self._query_miners_per_nonce(miner_uids, task)
@@ -440,9 +388,6 @@ class PhylaxValidator:
 
         await self._consense_and_publish(task_dict, responses, round_id=round_id)
 
-    # ------------------------------------------------------------------
-    # Querying with per-miner nonces
-    # ------------------------------------------------------------------
 
     async def _query_miners_per_nonce(
         self,
@@ -468,13 +413,6 @@ class PhylaxValidator:
         async def query_one(uid: int) -> MinerResponse:
             axon = self.metagraph.axons[uid]
             nonce = secrets.randbits(63)
-            # Per-(miner, task) functional canary. canary_val is a 32-byte
-            # random hex string the harness will write+read inside the
-            # sandbox; both miner and validator threads it into their
-            # sandbox env so the fs_trace_hash incorporates the canary
-            # records. A miner that skipped the sandbox can't produce the
-            # matching hash (they don't have the records of whatever the
-            # skill itself did alongside the canary read).
             canary_id = secrets.token_hex(8)
             canary_val = secrets.token_hex(32)
             synapse = PhylaxSynapse(
@@ -515,7 +453,6 @@ class PhylaxValidator:
                     canary_id=canary_id, canary_val=canary_val,
                 )
 
-            # Signature + identity check
             v = verify_attestation(sssa, local_bundle_hash=bundle.bundle_hash)
             if not v.ok:
                 return MinerResponse(
@@ -543,9 +480,6 @@ class PhylaxValidator:
 
         return await asyncio.gather(*(query_one(u) for u in miner_uids))
 
-    # ------------------------------------------------------------------
-    # Baseline + GT
-    # ------------------------------------------------------------------
 
     async def _baseline_for_corpus_task(
         self, task: CorpusTask, nonce: int,
@@ -576,18 +510,11 @@ class PhylaxValidator:
             except Exception:  # noqa: BLE001
                 return None
         if task.bundle_url:
-            # Defense-in-depth against a compromised server feeding us a URL
-            # that points at cloud-metadata or LAN services. ``safe_get_bytes``
-            # rejects private-IP hosts on the initial request and on every
-            # redirect, and caps body size.
             from phylax.utils.safe_http import safe_get_bytes
 
             return await asyncio.to_thread(safe_get_bytes, task.bundle_url)
         return None
 
-    # ------------------------------------------------------------------
-    # Consensus + registry
-    # ------------------------------------------------------------------
 
     async def _consense_and_publish(
         self,
@@ -633,8 +560,6 @@ class PhylaxValidator:
         except Exception as e:  # noqa: BLE001
             bt.logging.warning(f"registry write failed: {e}")
 
-        # Push the consensus SSSA to phylax-server, which picks the
-        # cross-validator canonical one for the public registry.
         if self.server_client is not None and not round_id.startswith("offline-"):
             try:
                 sssa_payload = sssa.model_dump(mode="json")
@@ -650,9 +575,6 @@ class PhylaxValidator:
             except Exception as e:  # noqa: BLE001
                 bt.logging.warning(f"server attestation push failed: {e}")
 
-    # ------------------------------------------------------------------
-    # Metagraph + weights
-    # ------------------------------------------------------------------
 
     def _get_active_miner_uids(self) -> list[int]:
         out: list[int] = []
@@ -681,7 +603,6 @@ class PhylaxValidator:
         weights = weights / weights.sum()
         bt.logging.info(f"set_weights | non-zero={int((weights > 0).sum().item())}")
 
-        # Pre-flight: weight attestation from phylax-server
         server_client = getattr(self, "server_client", None)
         last_round_id = getattr(self, "last_completed_round_id", None)
         if server_client is None:
@@ -731,34 +652,19 @@ class PhylaxValidator:
         else:
             bt.logging.warning(f"set_weights returned False: {msg}")
 
-    # ------------------------------------------------------------------
-    # Run loop
-    # ------------------------------------------------------------------
 
     def run(self) -> None:
         bt.logging.info(
             f"starting Phylax validator on netuid={self.config.netuid} "
             f"hotkey={self.wallet.hotkey.ss58_address}"
         )
-        # Single persistent event loop across rounds. asyncio.run() per
-        # iteration would close the loop each time, and bittensor's
-        # dendrite caches an aiohttp ClientSession bound to whichever
-        # loop was alive at first use — subsequent rounds then crash
-        # with "Event loop is closed" on every query.
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         last_weight_block = 0
         try:
             while not getattr(self, "should_exit", False):
                 try:
-                    # lite=False is REQUIRED: the default lite sync only
-                    # refreshes emission/weights/stake, NOT axon info. With
-                    # lite syncs the validator stays frozen at whatever
-                    # axon IPs were on chain when __init__ first loaded
-                    # the metagraph — if any miner restarted and re-served
-                    # afterwards, the validator dials the stale IP forever.
                     self.metagraph.sync(subtensor=self.subtensor, lite=False)
-                    # Re-init countersigner if wallet was just set on first iteration.
                     if self.countersigner is None and hasattr(self, "wallet"):
                         self.countersigner = ValidatorCountersigner(wallet=self.wallet)
                     mg_n = _metagraph_size(self.metagraph)
@@ -789,9 +695,6 @@ class PhylaxValidator:
             loop.close()
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 class MinerResponse:
@@ -867,10 +770,6 @@ def main() -> None:
     bt.Subtensor.add_args(parser)
     bt.logging.add_args(parser)
     config = bt.Config(parser)
-    # The CLI default for --subtensor.chain_endpoint is the mainnet URL,
-    # and chain_endpoint wins over network inside bt.Subtensor. Overwrite
-    # it from the network name so --subtensor.network test actually lands
-    # on the test chain.
     config.subtensor.chain_endpoint = _resolve_endpoint(config.subtensor.network)
     wallet = bt.Wallet(config=config)
     subtensor = bt.Subtensor(config=config)
@@ -880,3 +779,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

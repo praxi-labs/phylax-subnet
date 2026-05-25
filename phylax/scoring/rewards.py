@@ -9,15 +9,8 @@ W_EVIDENCE = 0.30
 W_POLICY = 0.20
 W_EFFICIENCY = 0.05
 
-# Evidence is a hard gate: a miner who didn't actually run the sandbox
-# (or whose hashes don't match the validator's replay at all) earns
-# nothing, regardless of how well their other axes look. This closes the
-# "lazy honest" failure mode where detection + policy + efficiency at 1.0
-# with evidence = 0 still produced a 0.70 floor under a pure linear sum.
 EVIDENCE_GATE = 0.10
 
-# Sum of the non-evidence weights — used to renormalise the gated
-# composite so a perfect miner still tops out at 1.0.
 _NON_EVIDENCE_WEIGHT_SUM = W_DETECTION + W_POLICY + W_EFFICIENCY
 
 
@@ -69,6 +62,7 @@ def aggregate_epoch(per_task_scores: Iterable[float]) -> float:
 
 
 def _clip01(x: float) -> float:
-    if x != x:  # NaN guard
+    if x != x:
         return 0.0
     return max(0.0, min(1.0, float(x)))
+

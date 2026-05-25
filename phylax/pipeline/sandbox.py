@@ -12,7 +12,6 @@ from pathlib import Path
 
 @dataclass
 class SandboxResult:
-    # Observed capabilities
     fs_reads:        list[str] = field(default_factory=list)
     fs_writes:       list[str] = field(default_factory=list)
     network_domains: list[str] = field(default_factory=list)
@@ -20,14 +19,12 @@ class SandboxResult:
     shell_commands:  list[str] = field(default_factory=list)
     env_vars:        list[str] = field(default_factory=list)
 
-    # Evidence hashes (content-addressed)
     network_trace_hash: str | None = None
     fs_trace_hash:      str | None = None
     process_trace_hash: str | None = None
     secrets_trace_hash: str | None = None
     log_hash:           str | None = None
 
-    # Runtime metadata
     exit_code:       int = 0
     duration_ms:     int = 0
     timed_out:       bool = False
@@ -52,30 +49,13 @@ class SandboxDetonator:
         self.timeout         = timeout_seconds
         self.memory_limit    = memory_limit
         self.cpus            = cpus
-        # expanduser so a stray ``PHYLAX_EVIDENCE_DIR=~/phylax/evidence`` in
-        # someone's .env doesn't end up as a literal "~" passed to mkdir —
-        # pathlib doesn't expand tildes, so without this the sandbox would
-        # try to create a directory named "~" in the container's CWD,
-        # fail with EACCES, and silently return no evidence on every run.
         self.evidence_dir = os.path.expanduser(
             evidence_dir or os.getenv("PHYLAX_EVIDENCE_DIR", tempfile.gettempdir())
         )
-        # When the miner runs inside a container and shells out to ``docker
-        # run`` through the host's /var/run/docker.sock, paths in -v flags
-        # are resolved by the host dockerd, NOT inside the miner container.
-        # So passing the in-container evidence path (e.g. /opt/phylax/evidence)
-        # as a bind source makes dockerd create an empty root-owned dir at
-        # that literal host path and mount it into the sandbox — and the
-        # harness then can't write to it. Operators set PHYLAX_EVIDENCE_HOST_DIR
-        # to the host-side equivalent (e.g. /home/ubuntu/phylax/miner/evidence)
-        # so we can translate the in-container run_dir to its host path before
-        # handing it to dockerd. Falls back to evidence_dir for bare-metal
-        # (no docker-in-docker) deployments where the two are the same.
         self.evidence_host_dir = os.path.expanduser(
             os.getenv("PHYLAX_EVIDENCE_HOST_DIR", "") or self.evidence_dir
         )
 
-    # -----------------------------------------------------------------------
 
     def detonate(
         self,
@@ -127,21 +107,15 @@ class SandboxDetonator:
             stderr = f"sandbox timeout after {timeout}s"
             self._kill_container(container_name)
         except FileNotFoundError:
-            # Docker unavailable — return empty result so static+SBOM still flow
             result.log_hash = self._write_and_hash(run_dir / "log.txt", "docker not available\n")
             return result
 
-        # Parse trace files written by the sandbox harness inside the container
         self._parse_traces(run_dir, result)
 
-        # Hash the full container log (stdout + stderr).
         log_path = run_dir / "log.txt"
         log_path.write_text(stdout + "\n--- stderr ---\n" + stderr, encoding="utf-8")
         result.log_hash = self._hash_file(log_path)
 
-        # Hash the normalized record set (sorted, volatile fields stripped),
-        # not the raw JSONL bytes, so two honest miners on the same nonce
-        # produce byte-equal hashes regardless of hook firing order.
         result.network_trace_hash = self._canonical_hash(run_dir / "network.jsonl", _NORM_NET)
         result.fs_trace_hash = self._canonical_hash(run_dir / "fs.jsonl", _NORM_FS)
         result.process_trace_hash = self._canonical_hash(run_dir / "process.jsonl", _NORM_PROC)
@@ -149,7 +123,6 @@ class SandboxDetonator:
 
         return result
 
-    # -----------------------------------------------------------------------
 
     def _to_host_path(self, container_path: str | Path) -> str:
         """Translate an in-container path under evidence_dir to its host
@@ -177,12 +150,6 @@ class SandboxDetonator:
         canary_id: str = "",
         canary_val: str = "",
     ) -> list[str]:
-        # Run the container as the host user so the harness can write to
-        # the bind-mounted /evidence directory. Without this override the
-        # image's baked-in 'sandbox' user (UID ~999) can't write to a host
-        # dir owned by the operator (UID 1000), the harness errors out
-        # silently, and the evidence trace files are never produced —
-        # which makes score_evidence return 0 forever.
         host_bundle_path = self._to_host_path(bundle_path)
         host_run_dir = self._to_host_path(run_dir)
         cmd = [
@@ -190,7 +157,7 @@ class SandboxDetonator:
             "--rm",
             "--name", container_name,
             "--user", f"{os.getuid()}:{os.getgid()}",
-            "--network", "none",                 # no network by default; harness opens specific routes
+            "--network", "none",
             "--memory", self.memory_limit,
             "--cpus", self.cpus,
             "--read-only",
@@ -200,10 +167,6 @@ class SandboxDetonator:
             "-v", f"{host_run_dir}:/evidence",
             "-e", f"PHYLAX_SEED={seed}",
         ]
-        # Canary env vars are passed only when both are set. Empty values
-        # signal "no canary challenge for this run" (used by tests and
-        # bare-metal local detonations); the harness skips the canary dance
-        # in that case rather than producing a record that wouldn't match.
         if canary_id and canary_val:
             cmd.extend([
                 "-e", f"PHYLAX_CANARY_ID={canary_id}",
@@ -219,7 +182,6 @@ class SandboxDetonator:
         except Exception:
             pass
 
-    # -----------------------------------------------------------------------
 
     def _parse_traces(self, run_dir: Path, result: SandboxResult) -> None:
         """
@@ -271,12 +233,10 @@ class SandboxDetonator:
                 except json.JSONDecodeError:
                     continue
 
-        # De-dup
         for attr in ("fs_reads", "fs_writes", "network_domains",
                      "network_ips", "shell_commands", "env_vars"):
             setattr(result, attr, sorted(set(getattr(result, attr))))
 
-    # -----------------------------------------------------------------------
 
     @staticmethod
     def _hash_file(path: Path) -> str:
@@ -316,24 +276,16 @@ class SandboxDetonator:
             norm = normaliser(rec)
             if norm is not None:
                 records.append(norm)
-        # Canonical ordering: sort by stable JSON representation of each record.
         records.sort(key=lambda r: json.dumps(r, sort_keys=True, separators=(",", ":")))
         canon = json.dumps(records, sort_keys=True, separators=(",", ":"))
         return "sha256:" + hashlib.sha256(canon.encode("utf-8")).hexdigest()
 
 
-# Per-component normalisers drop nondeterministic fields (timestamps, pids)
-# and keep only the behavioural facts that go into the canonical hash.
 
 def _NORM_NET(rec: dict) -> dict | None:
     if not isinstance(rec, dict):
         return None
     op = rec.get("op")
-    # Accept both "domain" (older convention from the original spec) and
-    # "host" (what the harness's traced_getaddrinfo actually emits).
-    # Without this fallback DNS records were silently dropped and the
-    # network_trace_hash collapsed to sha256("[]") for every miner who
-    # only observed a DNS attempt, hiding real observability.
     host = rec.get("domain") or rec.get("host")
     out = {
         "op": op,
@@ -342,7 +294,6 @@ def _NORM_NET(rec: dict) -> dict | None:
         "port": rec.get("port"),
         "bytes": rec.get("bytes"),
     }
-    # Need at least one observable field beyond op itself.
     if not any(v for k, v in out.items() if k != "op"):
         return None
     return out
@@ -367,12 +318,6 @@ def _NORM_PROC(rec: dict) -> dict | None:
     cmd = rec.get("cmd")
     if cmd:
         return {"op": op, "cmd": cmd, "uid": rec.get("uid")}
-    # Op-only records (no_entry, error) ARE observable behaviour and
-    # should contribute to the hash. Otherwise a real "skill crashed"
-    # run produces an identical hash to a fabricated empty trace —
-    # losing the signal that the sandbox actually executed and observed
-    # something. Error strings are deterministic in our harness (paths
-    # are in-sandbox so they match between miner and validator).
     error = rec.get("error")
     if error:
         return {"op": op, "error": str(error)}
@@ -386,7 +331,5 @@ def _NORM_SECRETS(rec: dict) -> dict | None:
     if not var:
         return None
     op = rec.get("op")
-    # Preserve op so env_get vs env_subscript vs env_getenv distinguish
-    # in the hash (different Python idioms for env access — useful signal
-    # for policy generation downstream).
     return {"op": op, "var": var}
+

@@ -63,7 +63,6 @@ class AttestationRegistry:
         conn.execute("PRAGMA foreign_keys=ON")
         return conn
 
-    # ------------------------------------------------------------------
 
     def put(self, sssa: SSSA, *, round_id: str, quality_score: float) -> None:
         """Insert or upsert a consensus SSSA keyed by ``bundle_hash``."""
@@ -166,3 +165,4 @@ class AttestationRegistry:
             "warn": row[3] or 0,
             "allow": row[4] or 0,
         }
+

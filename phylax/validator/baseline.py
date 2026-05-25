@@ -71,7 +71,6 @@ class BaselineRunner:
         )
         self.policy_generator = PolicyGenerator()
 
-    # ------------------------------------------------------------------
 
     def run(
         self,
@@ -123,7 +122,6 @@ class BaselineRunner:
             duration_ms=duration_ms,
         )
 
-    # ------------------------------------------------------------------
 
     def run_from_bytes(
         self,
@@ -159,7 +157,6 @@ class BaselineRunner:
             with zipfile.ZipFile(bundle_zip) as zf:
                 zf.extractall(extract_dir)
         except zipfile.BadZipFile:
-            # Not a zip — treat as a single-file bundle.
             (extract_dir / "main.py").write_bytes(bundle_bytes)
         return self.run(
             str(extract_dir),
@@ -170,9 +167,6 @@ class BaselineRunner:
         )
 
 
-# ---------------------------------------------------------------------------
-# Helpers shared with the miner verdict logic
-# ---------------------------------------------------------------------------
 
 
 def _merge_capabilities(
@@ -245,3 +239,4 @@ def _compute_verdict(
         summary=summary,
         top_reasons=top_reasons,
     )
+

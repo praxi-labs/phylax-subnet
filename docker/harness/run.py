@@ -14,16 +14,8 @@ EVIDENCE_DIR = Path(os.getenv("PHYLAX_EVIDENCE_DIR", "/evidence"))
 SKILL_DIR = Path(os.getenv("PHYLAX_SKILL_DIR", "/skill"))
 SEED = int(os.getenv("PHYLAX_SEED", "0"))
 
-# Capture the unpatched builtins BEFORE install_hooks() replaces them. emit()
-# uses these to append JSONL records; if it used the patched `open` instead,
-# traced_open would call emit("fs", ...), which would call open(), which would
-# call traced_open() again — infinite recursion, no trace files ever produced,
-# and the evidence axis stuck at 0.0 forever.
 _REAL_OPEN = open
 
-# Monotonic step counter so JSONL records are stably ordered even if the
-# system clock skews. Validators replaying with the same seed see the same
-# sequence and therefore the same hash.
 _STEP = 0
 
 
@@ -45,7 +37,6 @@ def install_hooks() -> None:
     """Monkey-patch common Python APIs so the harness observes what the skill calls."""
     import builtins
 
-    # --- Filesystem -------------------------------------------------------
     real_open = builtins.open
 
     def traced_open(file, mode="r", *args, **kwargs):
@@ -55,7 +46,6 @@ def install_hooks() -> None:
 
     builtins.open = traced_open  # type: ignore[assignment]
 
-    # --- Network ----------------------------------------------------------
     real_connect = socket.socket.connect
 
     def traced_connect(self, addr):
@@ -76,7 +66,6 @@ def install_hooks() -> None:
 
     socket.getaddrinfo = traced_getaddrinfo  # type: ignore[assignment]
 
-    # --- Secrets (env access) — cover all three Python idioms -------------
     real_environ_get = os.environ.get
     real_module_getenv = os.getenv
 
@@ -99,7 +88,6 @@ def install_hooks() -> None:
 
     os.environ.__class__.__getitem__ = traced_env_getitem  # type: ignore[assignment]
 
-    # --- Process spawning -------------------------------------------------
     real_popen_init = subprocess.Popen.__init__
 
     def traced_popen(self, args, *a, **kw):
@@ -109,9 +97,6 @@ def install_hooks() -> None:
 
     subprocess.Popen.__init__ = traced_popen  # type: ignore[assignment]
 
-    # Hook os.system via attribute reflection so the literal call name does
-    # not appear textually in this file (avoids tripping defensive linters
-    # that pattern-match the source).
     _system_attr = "sys" + "tem"
     real_system_call = getattr(os, _system_attr)
 
@@ -202,10 +187,6 @@ def _run_canary_challenge() -> None:
         return
     EVIDENCE_DIR.mkdir(parents=True, exist_ok=True)
     canary_path = EVIDENCE_DIR / f".phylax_canary_{canary_id}"
-    # Use the traced builtin (already installed by install_hooks) so the
-    # write + read both land in fs.jsonl. The content is canary_val; the
-    # actual bytes never enter the hash directly — what matters is that
-    # the read of this exact path appears in the trace.
     with open(canary_path, "w", encoding="utf-8") as f:
         f.write(canary_val)
     with open(canary_path, encoding="utf-8") as f:
@@ -247,3 +228,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+

@@ -11,7 +11,6 @@ from phylax.protocol import (
 class PolicyGenerator:
     """Build a RecommendedPolicy from analysis output."""
 
-    # Heuristic defaults
     DEFAULT_MEMORY_MB = 256
     DEFAULT_TIMEOUT_S = 30
     DEEP_MEMORY_MB    = 512
@@ -28,7 +27,6 @@ class PolicyGenerator:
           - filesystem read/write = observed paths
           - memory/timeout    = scale with finding severity
         """
-        # Allowlist exactly what we saw
         egress_allowlist = sorted(set(capabilities.network.observed_domains))
         egress_denylist  = list(capabilities.network.denylist_suggestion)
 
@@ -41,7 +39,6 @@ class PolicyGenerator:
         if capabilities.filesystem.writes:
             fs_block["restricted_write"] = sorted(set(capabilities.filesystem.writes))
 
-        # Memory / timeout: bump up only if no high-severity findings
         has_high = any(f.severity in (Severity.HIGH, Severity.CRITICAL) for f in findings)
         if has_high:
             memory  = self.DEFAULT_MEMORY_MB
@@ -59,3 +56,4 @@ class PolicyGenerator:
             max_memory_mb=memory,
             timeout_seconds=timeout,
         )
+

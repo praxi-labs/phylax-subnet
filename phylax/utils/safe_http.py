@@ -14,13 +14,11 @@ import ipaddress
 import socket
 from urllib.parse import urljoin, urlparse
 
-# Cloud metadata + RFC1918 + loopback + link-local + IPv6 equivalents.
-# Any URL whose host resolves into one of these is rejected.
 _PRIVATE_NETS = [
     ipaddress.ip_network("0.0.0.0/8"),
     ipaddress.ip_network("10.0.0.0/8"),
     ipaddress.ip_network("127.0.0.0/8"),
-    ipaddress.ip_network("169.254.0.0/16"),  # incl. 169.254.169.254 (AWS/GCP)
+    ipaddress.ip_network("169.254.0.0/16"),
     ipaddress.ip_network("172.16.0.0/12"),
     ipaddress.ip_network("192.168.0.0/16"),
     ipaddress.ip_network("::1/128"),
@@ -33,8 +31,6 @@ def _ip_is_private(addr_str: str) -> bool:
     try:
         addr = ipaddress.ip_address(addr_str)
     except ValueError:
-        # If it doesn't parse as an IP it's nothing we know how to gate;
-        # treat as unsafe.
         return True
     return any(addr in net for net in _PRIVATE_NETS)
 
@@ -43,7 +39,6 @@ def _host_resolves_safely(host: str) -> bool:
     try:
         infos = socket.getaddrinfo(host, None)
     except socket.gaierror:
-        # DNS failure → can't verify → unsafe.
         return False
     for info in infos:
         if _ip_is_private(info[4][0]):
@@ -114,3 +109,4 @@ def safe_get_bytes(
 
 
 __all__ = ["is_safe_url", "safe_get_bytes"]
+

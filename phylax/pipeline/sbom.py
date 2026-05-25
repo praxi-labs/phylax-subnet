@@ -11,7 +11,6 @@ from pathlib import Path
 
 from phylax.protocol import Finding, FindingEvidence, Severity
 
-# OSV.dev CVE lookup. Responses cached on disk for 24h.
 
 OSV_API_URL = "https://api.osv.dev/v1/query"
 OSV_CACHE_DIR = Path(os.getenv("PHYLAX_OSV_CACHE_DIR", str(Path.home() / ".phylax" / "osv_cache")))
@@ -33,8 +32,6 @@ OSV_ECOSYSTEMS = {
 }
 
 
-# A small starter list of high-profile packages used for typosquat detection.
-# Production deployments should load the top-10k from PyPI's BigQuery dataset.
 POPULAR_PACKAGES = {
     "requests", "numpy", "pandas", "django", "flask", "fastapi",
     "pydantic", "sqlalchemy", "pytest", "scikit-learn", "tensorflow",
@@ -49,9 +46,6 @@ INSTALL_HOOK_PATTERNS = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# Disk-backed OSV cache helpers
-# ---------------------------------------------------------------------------
 
 def _osv_cache_key(ecosystem: str, name: str, version: str) -> Path:
     digest = hashlib.sha256(f"{ecosystem}|{name.lower()}|{version}".encode()).hexdigest()
@@ -88,7 +82,7 @@ class SBOMResult:
     sbom_hash:          str | None   = None
     packages:           list[dict]      = field(default_factory=list)
     high_risk_packages: list[str]       = field(default_factory=list)
-    known_vulns:        list[str]       = field(default_factory=list)  # CVE IDs
+    known_vulns:        list[str]       = field(default_factory=list)
     install_hooks:      list[str]       = field(default_factory=list)
     findings:           list[Finding]   = field(default_factory=list)
 
@@ -109,24 +103,18 @@ class SBOMAnalyzer:
         result = SBOMResult()
         root = Path(bundle_path)
 
-        # Generate the SBOM
         sbom = self._generate_sbom(root)
         result.packages  = sbom
         result.sbom_hash = self._hash_sbom(sbom)
 
-        # Detect install hooks in setup.py / package.json
         result.install_hooks = self._detect_install_hooks(root, result)
 
-        # Typosquat / known-bad / vulnerability checks
         for pkg in sbom:
             name = pkg.get("name", "")
             self._check_package(name, pkg, result)
 
         return result
 
-    # -----------------------------------------------------------------------
-    # SBOM generation
-    # -----------------------------------------------------------------------
 
     def _generate_sbom(self, root: Path) -> list[dict]:
         if self.use_syft:
@@ -153,13 +141,11 @@ class SBOMAnalyzer:
     def _manual_manifest_parse(self, root: Path) -> list[dict]:
         pkgs = []
 
-        # requirements.txt
         for req_file in root.rglob("requirements*.txt"):
             for line in req_file.read_text(encoding="utf-8", errors="ignore").splitlines():
                 line = line.strip()
                 if not line or line.startswith("#"):
                     continue
-                # name[==version]
                 m = re.match(r"^([A-Za-z0-9_\-.\[\]]+)\s*([<>=!~]+)?\s*([0-9A-Za-z._\-]+)?", line)
                 if m:
                     pkgs.append({
@@ -168,11 +154,10 @@ class SBOMAnalyzer:
                         "type": "python",
                     })
 
-        # pyproject.toml (TOML parser optional)
         for pyproj in root.rglob("pyproject.toml"):
             try:
                 try:
-                    import tomllib  # py3.11+
+                    import tomllib
                 except ImportError:
                     import tomli as tomllib  # type: ignore
                 data = tomllib.loads(pyproj.read_text(encoding="utf-8", errors="ignore"))
@@ -183,7 +168,6 @@ class SBOMAnalyzer:
             except Exception:
                 pass
 
-        # package.json
         for pkg_json in root.rglob("package.json"):
             try:
                 data = json.loads(pkg_json.read_text(encoding="utf-8", errors="ignore"))
@@ -195,12 +179,8 @@ class SBOMAnalyzer:
 
         return pkgs
 
-    # -----------------------------------------------------------------------
-    # Risk checks
-    # -----------------------------------------------------------------------
 
     def _check_package(self, name: str, pkg: dict, result: SBOMResult) -> None:
-        # Typosquat check (Python ecosystem only — extend as needed)
         if pkg.get("type") in ("python", None):
             squat = self._typosquat_target(name)
             if squat:
@@ -253,8 +233,6 @@ class SBOMAnalyzer:
             previous = current
         return previous[-1]
 
-    # CVE lookup cache — keyed by (ecosystem, name, version). Process-local
-    # so re-scans during one validator round are fast; reset on restart.
     _cve_cache: dict[tuple[str, str, str], list[str]] = {}
 
     def _lookup_cves(self, name: str, version: str, pkg_type: str = "python") -> list[str]:
@@ -285,7 +263,7 @@ class SBOMAnalyzer:
             return list(disk)
 
         try:
-            import httpx  # local import — keeps cold-start cheap
+            import httpx
         except ImportError:
             self._cve_cache[cache_key] = []
             return []
@@ -310,7 +288,6 @@ class SBOMAnalyzer:
         _osv_cache_put(ecosystem, name, version, ids)
         return list(ids)
 
-    # -----------------------------------------------------------------------
 
     def _detect_install_hooks(self, root: Path, result: SBOMResult) -> list[str]:
         hooks = []
@@ -355,3 +332,4 @@ class SBOMAnalyzer:
     def _hash_sbom(sbom: list[dict]) -> str:
         canon = json.dumps(sbom, sort_keys=True, separators=(",", ":"))
         return "sha256:" + hashlib.sha256(canon.encode()).hexdigest()
+

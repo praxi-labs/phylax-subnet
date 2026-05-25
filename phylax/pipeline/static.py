@@ -9,9 +9,6 @@ from pathlib import Path
 
 from phylax.protocol import Finding, FindingEvidence, Severity
 
-# --------------------------------------------------------------------------
-# Dangerous patterns
-# --------------------------------------------------------------------------
 
 DANGEROUS_CALLS: dict[str, tuple[Severity, str]] = {
     "eval": (Severity.HIGH, "Dynamic code execution via eval()"),
@@ -49,7 +46,6 @@ HARDCODED_KEY = re.compile(
     re.IGNORECASE,
 )
 
-# Prompt-injection patterns
 PROMPT_INJECTION_PATTERNS: list[tuple[re.Pattern[str], Severity, str]] = [
     (
         re.compile(r"ignore\s+(all\s+)?(previous|prior|above)\s+instructions", re.IGNORECASE),
@@ -78,7 +74,6 @@ PROMPT_INJECTION_PATTERNS: list[tuple[re.Pattern[str], Severity, str]] = [
     ),
 ]
 
-# Persistent / C2-style network indicators
 PERSISTENT_NET_PATTERNS = [
     re.compile(r"while\s+True[\s\S]{0,200}?(\.recv\(|\.read\(|requests\.get\()", re.IGNORECASE),
     re.compile(r"websockets?\.(connect|create_connection)", re.IGNORECASE),
@@ -126,11 +121,8 @@ class StaticAnalyzer:
                 self._scan_python_file(py_file, root, result)
                 result.files_scanned += 1
             except Exception:  # noqa: BLE001
-                # Best-effort — skip unreadable / unparseable files
                 continue
 
-        # Prompt-injection scan runs over any text file the skill ships
-        # (templates, manifests, fixtures), not just Python sources.
         for txt_file in self._iter_text_files(root):
             try:
                 self._scan_prompt_injection(txt_file, root, result)
@@ -146,9 +138,6 @@ class StaticAnalyzer:
 
         return result.dedup()
 
-    # -------------------------------------------------------------------
-    # Manifest + permission discrepancy
-    # -------------------------------------------------------------------
 
     def _load_manifest_permissions(self, root: Path, result: StaticAnalysisResult) -> None:
         for name in ("manifest.json", "SKILL.json", "skill.json"):
@@ -181,9 +170,6 @@ class StaticAnalyzer:
                 )
             )
 
-    # -------------------------------------------------------------------
-    # Prompt-injection scan
-    # -------------------------------------------------------------------
 
     _TEXT_SUFFIXES = {".py", ".md", ".txt", ".json", ".yaml", ".yml", ".tmpl", ".jinja", ".j2"}
 
@@ -212,13 +198,11 @@ class StaticAnalyzer:
                     )
                 )
 
-    # -----------------------------------------------------------------------
 
     def _scan_python_file(self, path: Path, root: Path, result: StaticAnalysisResult):
         rel = str(path.relative_to(root))
         source = path.read_text(encoding="utf-8", errors="replace")
 
-        # AST-based dangerous-call detection
         try:
             tree = ast.parse(source, filename=str(path))
             for node in ast.walk(tree):
@@ -244,7 +228,6 @@ class StaticAnalyzer:
         except SyntaxError:
             pass
 
-        # Regex-based scans
         for m in URL_PATTERN.finditer(source):
             result.network_domains.append(m.group(1))
             result.used_capabilities.add("network")
@@ -278,7 +261,6 @@ class StaticAnalyzer:
                 )
             )
 
-        # Persistent-network indicators
         for pat in PERSISTENT_NET_PATTERNS:
             if pat.search(source):
                 result.findings.append(
@@ -294,7 +276,6 @@ class StaticAnalyzer:
                 result.used_capabilities.add("network")
                 break
 
-        # Filesystem heuristics
         if "open(" in source:
             result.fs_reads.append(rel)
             result.used_capabilities.add("filesystem")
@@ -302,7 +283,6 @@ class StaticAnalyzer:
             result.fs_writes.append(rel)
             result.used_capabilities.add("filesystem")
 
-    # -----------------------------------------------------------------------
 
     @staticmethod
     def _call_name(node: ast.Call) -> str:
@@ -316,9 +296,6 @@ class StaticAnalyzer:
             parts.append(cur.id)
         return ".".join(reversed(parts))
 
-    # -----------------------------------------------------------------------
-    # External tool integration
-    # -----------------------------------------------------------------------
 
     def _run_bandit(self, root: Path, result: StaticAnalysisResult) -> None:
         try:
@@ -363,3 +340,4 @@ class StaticAnalyzer:
                 ))
         except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
             pass
+

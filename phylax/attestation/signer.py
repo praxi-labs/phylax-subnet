@@ -12,9 +12,6 @@ from phylax.protocol import (
     ValidatorCountersignature,
 )
 
-# ---------------------------------------------------------------------------
-# Signer (miner)
-# ---------------------------------------------------------------------------
 
 
 class AttestationSigner:
@@ -41,9 +38,6 @@ class AttestationSigner:
         return sssa
 
 
-# ---------------------------------------------------------------------------
-# Countersigner (validator)
-# ---------------------------------------------------------------------------
 
 
 class ValidatorCountersigner:
@@ -71,9 +65,6 @@ class ValidatorCountersigner:
         return sssa
 
 
-# ---------------------------------------------------------------------------
-# Verifier
-# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -105,7 +96,6 @@ def verify_attestation(
         result.reason = "missing miner attestation"
         return result
 
-    # Step 1 — bundle hash
     if local_bundle_hash is not None:
         result.bundle_hash_ok = local_bundle_hash == sssa.skill.bundle_hash
         if not result.bundle_hash_ok:
@@ -114,13 +104,11 @@ def verify_attestation(
     else:
         result.bundle_hash_ok = True
 
-    # Step 2 — miner signature
     result.miner_signature_ok = _verify_miner_signature(sssa)
     if not result.miner_signature_ok:
         result.reason = "miner signature invalid"
         return result
 
-    # Step 3 — validator countersignature (optional)
     if require_countersignature:
         if sssa.countersignature is None:
             result.reason = "missing validator countersignature"
@@ -132,7 +120,6 @@ def verify_attestation(
     elif sssa.countersignature is not None:
         result.validator_signature_ok = _verify_countersignature(sssa)
 
-    # Step 4 — SBOM hash
     if local_sbom_hash is not None:
         result.sbom_hash_ok = local_sbom_hash == (sssa.skill.sbom_hash or "")
         if not result.sbom_hash_ok:
@@ -141,7 +128,6 @@ def verify_attestation(
     else:
         result.sbom_hash_ok = True
 
-    # Step 5 — freshness
     if max_age_seconds is not None:
         try:
             issued = datetime.datetime.fromisoformat(sssa.attestation.timestamp.rstrip("Z"))
@@ -204,8 +190,6 @@ def _verify_ed25519(ss58_address: str, message: bytes, signature: bytes) -> bool
     try:
         from substrateinterface import Keypair  # type: ignore
     except ImportError:
-        # Without substrate-interface we cannot recover the public key from
-        # the SS58 address. Fail closed.
         return False
     try:
         keypair = Keypair(ss58_address=ss58_address)
@@ -221,3 +205,4 @@ def _utcnow_iso() -> str:
 def sha256_of_bytes(data: bytes) -> str:
     """Convenience for callers that need the canonical bundle-hash form."""
     return "sha256:" + hashlib.sha256(data).hexdigest()
+

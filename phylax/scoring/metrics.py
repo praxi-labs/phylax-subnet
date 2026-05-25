@@ -20,8 +20,6 @@ class AxisScores:
 
 _V_RANK = {Verdict.ALLOW: 0, Verdict.WARN: 1, Verdict.BLOCK: 2}
 
-# False negatives (under-blocking a real threat) cost more than false
-# positives (over-blocking a benign skill), so the lambdas are asymmetric.
 LAMBDA_FALSE_NEGATIVE = 1.0
 LAMBDA_FALSE_POSITIVE = 0.4
 
@@ -43,8 +41,6 @@ def score_detection(sssa: SSSA, task: dict) -> float:
     lam = LAMBDA_FALSE_POSITIVE if predicted > truth else LAMBDA_FALSE_NEGATIVE
     base = max(0.0, 1.0 - lam * distance / 2.0)
 
-    # Risk-score calibration is a soft secondary signal that can shave at
-    # most 10% off a correct-verdict score; it can't rescue a wrong verdict.
     expected_risk = task.get("expected_risk_score")
     if expected_risk is not None and distance == 0:
         delta = abs(sssa.verdict.risk_score - int(expected_risk)) / 100.0
@@ -64,8 +60,6 @@ def score_evidence(sssa: SSSA, task: dict) -> float:
         )
         return matches / 4.0
 
-    # Degraded mode: presence + format only. Capped well below 1.0 so
-    # running without a replay validator is never preferable.
     components = [miner_hashes[k] for k in ("N", "F", "P", "K")]
     if any(h is None for h in components):
         return 0.0
@@ -78,8 +72,6 @@ def _is_sha256_ref(s: str | None) -> bool:
     return bool(s) and s.startswith("sha256:") and len(s) == 71
 
 
-# F-beta = 0.5 weights precision over recall — over-permissive policies
-# are more dangerous than over-restrictive ones.
 POLICY_BETA = 0.5
 
 
@@ -170,8 +162,6 @@ def score_efficiency(sssa: SSSA, task: dict) -> float:
 
     tau = task.get("submission_latency_ms")
     if tau is None:
-        # Miner self-report can be forged; cap this path well below 1.0 so
-        # validators that measure latency themselves always win.
         tau = sssa.run_metadata.analysis_duration_ms
         cap = 0.7
     else:
@@ -202,3 +192,4 @@ def round_median_latency(latencies_ms: Iterable[int]) -> float:
     if n % 2 == 1:
         return float(arr[n // 2])
     return (arr[n // 2 - 1] + arr[n // 2]) / 2.0
+

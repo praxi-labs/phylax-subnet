@@ -66,12 +66,8 @@ class PhylaxServerClient:
         self.base_url = base_url.rstrip("/")
         self.wallet = wallet
         self.timeout = timeout
-        # Pinned at first use (or supplied explicitly for tests).
         self._server_hotkey: str | None = expected_server_hotkey
 
-    # ------------------------------------------------------------------
-    # Internals
-    # ------------------------------------------------------------------
 
     @property
     def hotkey_address(self) -> str:
@@ -113,9 +109,6 @@ class PhylaxServerClient:
         r.raise_for_status()
         return r.json() if r.content else {}
 
-    # ------------------------------------------------------------------
-    # Endpoints
-    # ------------------------------------------------------------------
 
     def fetch_server_identity(self) -> str:
         """Pull the server's public signing key and pin it. Idempotent."""
@@ -134,8 +127,6 @@ class PhylaxServerClient:
         return self._request("GET", "/v1/health", signed=False)
 
     def register(self, label: str = "") -> dict:
-        # Pin the server identity on the first register call so subsequent
-        # weight-attestation verifications can fail fast on a key mismatch.
         if self._server_hotkey is None:
             self.fetch_server_identity()
         return self._request("POST", "/v1/validators/register", json_body={"label": label})
@@ -201,9 +192,6 @@ class PhylaxServerClient:
             },
         )
 
-    # ------------------------------------------------------------------
-    # Weight-attestation verification (pre-flight before set_weights)
-    # ------------------------------------------------------------------
 
     def request_and_verify_weight_attestation(
         self, round_id: str, weights: dict[int, float]
@@ -237,8 +225,6 @@ class PhylaxServerClient:
         except (KeyError, TypeError):
             return None
 
-        # Identity pinning: refuse attestations from a different signer than the
-        # one we registered against.
         if self._server_hotkey and att.server_hotkey != self._server_hotkey:
             raise ServerIdentityMismatch(
                 f"weight attestation signed by {att.server_hotkey[:16]}…; "
@@ -282,3 +268,4 @@ __all__ = [
     "ServerUnreachable",
     "WeightAttestation",
 ]
+

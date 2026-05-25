@@ -22,7 +22,6 @@ class SyntheticGenerator:
     def __init__(self, rng: random.Random | None = None):
         self.rng = rng or random.Random()
 
-    # ------------------------------------------------------------------
 
     def generate(self, family: str | None = None) -> SyntheticSkill:
         family = family or self.rng.choice(
@@ -38,7 +37,6 @@ class SyntheticGenerator:
             return self._prompt_conditioned()
         raise ValueError(f"unknown synthetic family {family}")
 
-    # ------------------------------------------------------------------
 
     def _adversarial(self) -> SyntheticSkill:
         nonce = self.rng.randrange(2**31)
@@ -177,7 +175,6 @@ class SyntheticGenerator:
                 "expected_verdict": "BLOCK",
                 "expected_risk_score": 80,
                 # noqa: S108 — this path is data describing what an adversarial
-                # skill is expected to write to, not an actual tempfile we open.
                 "expected_capabilities": {"filesystem": {"writes": ["/tmp/inj.flag"]}},  # noqa: S108
                 "expected_policy": {
                     "egress_allowlist": [],
@@ -191,7 +188,6 @@ class SyntheticGenerator:
             },
         )
 
-    # ------------------------------------------------------------------
 
     def _pack(self, *, name: str, files: dict[str, str], task: dict) -> SyntheticSkill:
         buf = io.BytesIO()
@@ -212,3 +208,4 @@ class SyntheticGenerator:
             bundle_hash=bundle_hash,
             task=task_full,
         )
+
