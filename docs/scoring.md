@@ -4,20 +4,36 @@ How a validator turns an SSSA into a Bittensor weight. Mirrors whitepaper §5.3 
 
 ## Composite
 
-For each (miner, task) pair the validator computes:
+For each (miner, task) pair the validator computes an **evidence-gated**
+composite. Evidence is treated as a multiplicative gate rather than an
+additive term — a miner that didn't actually run the sandbox earns zero
+regardless of how well their other axes look.
 
 ```
-Q(m_i, S) = w_α·α + w_ε·ε + w_π·π + w_η·η         Σ w_k = 1
+Q(m_i, S) = 0                                              if ε < ε_gate
+Q(m_i, S) = (w_α·α + w_π·π + w_η·η) / (w_α + w_π + w_η) · ε   otherwise
 ```
 
 | Axis | Symbol | Weight | What it measures |
 |---|---|---|---|
 | Detection accuracy   | α | 0.45 | Correct ALLOW / WARN / BLOCK with asymmetric FN penalty |
-| Evidence integrity   | ε | 0.30 | Hash equality of N/F/P/K traces vs validator replay |
+| Evidence integrity   | ε | 0.30 (gate) | Hash equality of N/F/P/K traces vs validator replay |
 | Policy effectiveness | π | 0.20 | Precision-weighted F0.5 over the policy constraint set |
 | Efficiency           | η | 0.05 | Validator-measured submission latency vs τ_min / τ_max |
 
-The aggregation is a **weighted linear sum**. A harmonic-mean variant is available as `compute_harmonic_score` for diagnostic dashboards but does not drive emissions.
+The gate threshold is `ε_gate = 0.10`. Above the gate, the non-evidence
+axes are renormalised by their weight-sum (0.70) so a perfect miner still
+tops out at 1.0; the result is then scaled by the evidence score. A miner
+with 80% trace agreement and perfect other axes scores ≈ 0.80.
+
+This diverges from the original whitepaper §5.3 pure linear sum and is a
+deliberate change. Under the old formula a "lazy honest" miner with
+`detection = policy = efficiency = 1.0` and `evidence = 0` scored the
+weighted sum `0.70` — paying full reward to non-participants. The gated
+form ensures that no proof of execution means no reward.
+
+A harmonic-mean variant is available as `compute_harmonic_score` for
+diagnostic dashboards but does not drive emissions.
 
 ## Axis 1 — Detection accuracy (α)
 

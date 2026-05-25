@@ -57,20 +57,21 @@ Full reference: [docs/sssa_schema.md](docs/sssa_schema.md).
 
 ## Scoring
 
-Each (miner, task) submission is scored on four axes that combine via a **weighted linear sum** (whitepaper §5.3):
+Each (miner, task) submission is scored on four axes combined via an **evidence-gated composite**: evidence is a multiplicative gate (no proof of execution = no reward), not an additive term.
 
 | Axis | Weight | Measures |
 |---|---|---|
 | Detection accuracy α | 0.45 | Correct verdict with asymmetric FN penalty (λ_FN = 1.0, λ_FP = 0.4) |
-| Evidence integrity ε | 0.30 | Hash equality of N/F/P/K traces vs validator replay |
+| Evidence integrity ε | 0.30 (gate) | Hash equality of N/F/P/K traces vs validator replay |
 | Policy effectiveness π | 0.20 | Precision-weighted F0.5 over the policy constraint set |
 | Efficiency η | 0.05 | Validator-measured submission latency with τ_min floor |
 
 ```text
-Q(m, S) = 0.45·α + 0.30·ε + 0.20·π + 0.05·η
+Q(m, S) = 0                                              if ε < 0.10
+Q(m, S) = (0.45·α + 0.20·π + 0.05·η) / 0.70 · ε          otherwise
 ```
 
-A harmonic-mean variant is available as a diagnostic. Epoch aggregation, EMA smoothing, and on-chain weight pushes are documented in [docs/scoring.md](docs/scoring.md).
+A miner who skips the sandbox earns zero, regardless of how good the other axes look. A miner with 80% trace agreement and perfect other axes scores ≈ 0.80. A harmonic-mean variant is available as a diagnostic. Epoch aggregation, EMA smoothing, and on-chain weight pushes are documented in [docs/scoring.md](docs/scoring.md).
 
 ## Anti-Gaming
 

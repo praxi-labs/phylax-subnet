@@ -24,6 +24,7 @@ from phylax.scoring import (
     score_evidence,
     score_policy,
 )
+from phylax.scoring.rewards import EVIDENCE_GATE, _NON_EVIDENCE_WEIGHT_SUM
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -234,12 +235,42 @@ def test_weights_match_whitepaper():
     assert W_DETECTION + W_EVIDENCE + W_POLICY + W_EFFICIENCY == pytest.approx(1.0)
 
 
-def test_composite_is_linear_weighted_sum():
-    axes = AxisScores(detection=0.8, evidence=0.6, policy=0.4, efficiency=0.2)
-    expected = (
-        W_DETECTION * 0.8 + W_EVIDENCE * 0.6 + W_POLICY * 0.4 + W_EFFICIENCY * 0.2
-    )
+def test_composite_zero_below_evidence_gate():
+    """Below EVIDENCE_GATE the composite is zero, regardless of other axes."""
+    axes = AxisScores(detection=1.0, evidence=EVIDENCE_GATE - 0.001, policy=1.0, efficiency=1.0)
+    assert compute_total_score(axes) == 0.0
+
+
+def test_composite_perfect_miner_reaches_one():
+    """A miner with 1.0 on every axis tops out at exactly 1.0 — the gate
+    renormalisation preserves the upper bound."""
+    axes = AxisScores(detection=1.0, evidence=1.0, policy=1.0, efficiency=1.0)
+    assert compute_total_score(axes) == pytest.approx(1.0)
+
+
+def test_composite_evidence_is_multiplicative_above_gate():
+    """Above the gate the non-evidence axes are renormalised, then scaled
+    by evidence. 80% evidence on otherwise-perfect work ≈ 80% credit."""
+    axes = AxisScores(detection=1.0, evidence=0.8, policy=1.0, efficiency=1.0)
+    expected = (W_DETECTION + W_POLICY + W_EFFICIENCY) / _NON_EVIDENCE_WEIGHT_SUM * 0.8
     assert compute_total_score(axes) == pytest.approx(expected)
+    assert compute_total_score(axes) == pytest.approx(0.8)
+
+
+def test_composite_zero_evidence_zero_score_even_with_perfect_others():
+    """The exact failure mode the gate was added to close: detection=policy=
+    efficiency=1.0 with evidence=0 must score zero, not 0.70."""
+    axes = AxisScores(detection=1.0, evidence=0.0, policy=1.0, efficiency=1.0)
+    assert compute_total_score(axes) == 0.0
+
+
+def test_composite_partial_axes_scale_proportionally():
+    """Above the gate, weak detection still hurts: a miner with 0.5
+    detection but perfect everything else scores between zero and one."""
+    axes = AxisScores(detection=0.5, evidence=1.0, policy=1.0, efficiency=1.0)
+    expected = (W_DETECTION * 0.5 + W_POLICY + W_EFFICIENCY) / _NON_EVIDENCE_WEIGHT_SUM * 1.0
+    assert compute_total_score(axes) == pytest.approx(expected)
+    assert 0.0 < compute_total_score(axes) < 1.0
 
 
 def test_harmonic_diagnostic_exists_and_differs():

@@ -9,14 +9,38 @@ W_EVIDENCE = 0.30
 W_POLICY = 0.20
 W_EFFICIENCY = 0.05
 
+# Evidence is a hard gate: a miner who didn't actually run the sandbox
+# (or whose hashes don't match the validator's replay at all) earns
+# nothing, regardless of how well their other axes look. This closes the
+# "lazy honest" failure mode where detection + policy + efficiency at 1.0
+# with evidence = 0 still produced a 0.70 floor under a pure linear sum.
+EVIDENCE_GATE = 0.10
+
+# Sum of the non-evidence weights — used to renormalise the gated
+# composite so a perfect miner still tops out at 1.0.
+_NON_EVIDENCE_WEIGHT_SUM = W_DETECTION + W_POLICY + W_EFFICIENCY
+
 
 def compute_total_score(axes: AxisScores) -> float:
-    """Weighted linear sum. This is the value that drives emissions."""
+    """Evidence-gated composite. Drives emissions.
+
+    Diverges from the original whitepaper §5.3 linear sum: evidence is a
+    multiplicative gate, not an additive term. Below ``EVIDENCE_GATE`` the
+    composite is zero — no proof of execution means no reward, even if the
+    other axes look perfect. Above the gate, the non-evidence axes
+    (detection, policy, efficiency) are weighted, renormalised so a perfect
+    miner reaches 1.0, then scaled by the evidence quality. This preserves
+    smooth gradients (80% evidence ≈ 80% credit) while zeroing out true
+    non-participants.
+    """
     d = _clip01(axes.detection)
     e = _clip01(axes.evidence)
     p = _clip01(axes.policy)
     f = _clip01(axes.efficiency)
-    return W_DETECTION * d + W_EVIDENCE * e + W_POLICY * p + W_EFFICIENCY * f
+    if e < EVIDENCE_GATE:
+        return 0.0
+    non_evidence = W_DETECTION * d + W_POLICY * p + W_EFFICIENCY * f
+    return (non_evidence / _NON_EVIDENCE_WEIGHT_SUM) * e
 
 
 def compute_harmonic_score(axes: AxisScores) -> float:

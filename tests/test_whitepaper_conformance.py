@@ -69,11 +69,24 @@ def test_section_5_3_axis_weights():
     assert W_DETECTION + W_EVIDENCE + W_POLICY + W_EFFICIENCY == pytest.approx(1.0)
 
 
-def test_section_5_3_composite_formula():
-    """§5.3 — Q = w_α·α + w_ε·ε + w_π·π + w_η·η."""
+def test_section_5_3_composite_formula_evidence_gated():
+    """§5.3 — composite is evidence-gated, not a pure linear sum (revised
+    from the original whitepaper formula). Above the gate the non-evidence
+    axes are renormalised then multiplied by evidence; below the gate the
+    score is zero. Closes the "lazy honest" failure mode where
+    evidence = 0 with perfect other axes still produced a 0.70 floor."""
+    from phylax.scoring.rewards import EVIDENCE_GATE, _NON_EVIDENCE_WEIGHT_SUM
+
+    # Above the gate: evidence is a multiplicative scaler on the renormalised
+    # non-evidence axes.
     axes = AxisScores(detection=0.9, evidence=0.8, policy=0.7, efficiency=0.6)
-    expected = 0.45 * 0.9 + 0.30 * 0.8 + 0.20 * 0.7 + 0.05 * 0.6
+    non_ev = W_DETECTION * 0.9 + W_POLICY * 0.7 + W_EFFICIENCY * 0.6
+    expected = (non_ev / _NON_EVIDENCE_WEIGHT_SUM) * 0.8
     assert compute_total_score(axes) == pytest.approx(expected)
+
+    # Below the gate: hard zero, regardless of other axes.
+    sub_gate = AxisScores(detection=1.0, evidence=EVIDENCE_GATE - 0.001, policy=1.0, efficiency=1.0)
+    assert compute_total_score(sub_gate) == 0.0
 
 
 # ---------------------------------------------------------------------------
