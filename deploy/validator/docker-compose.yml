@@ -15,6 +15,14 @@ services:
     container_name: phylax-validator
     restart: unless-stopped
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    # Add the host's docker group so the container UID can open
+    # /var/run/docker.sock — BaselineRunner shells out to docker run for
+    # ground-truth detonation, and without socket access it produces no
+    # evidence hashes, dragging every miner's evidence_score to 0.
+    # install.sh detects the GID from `getent group docker` and writes it
+    # to .env.
+    group_add:
+      - "${DOCKER_GID:-999}"
     volumes:
       # Wallet hotkey — needed to sign SSSAs and call set_weights. Mounted
       # read-write because bittensor's settings.py calls

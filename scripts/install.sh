@@ -81,12 +81,22 @@ else
   fetch "$REPO_RAW/.env.example" -o "$TARGET/.env"
 
   # Append host UID/GID so the compose file's user: directive resolves
-  # correctly, and so the sandbox bind mount stays writable
+  # correctly, and so the sandbox bind mount stays writable. Also pin the
+  # host's docker group GID so the container (which runs as a non-root UID
+  # with no /etc/group entry) can still open /var/run/docker.sock — without
+  # this the miner/validator can't launch the sandbox and the evidence axis
+  # silently scores 0 on every run.
+  DOCKER_GID="$(getent group docker | cut -d: -f3)"
+  if [ -z "$DOCKER_GID" ]; then
+    echo "==> WARNING: no 'docker' group on this host. Sandbox launches will fail." >&2
+    DOCKER_GID=999
+  fi
   {
     echo ""
     echo "# --- Host identity (written by install.sh) ---"
     echo "HOST_UID=$(id -u)"
     echo "HOST_GID=$(id -g)"
+    echo "DOCKER_GID=$DOCKER_GID"
     echo "BITTENSOR_DIR=$HOME/.bittensor"
   } >> "$TARGET/.env"
 

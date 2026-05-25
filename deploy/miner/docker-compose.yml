@@ -14,6 +14,14 @@ services:
     container_name: phylax-miner
     restart: unless-stopped
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    # Add the host's docker group so the container UID can open
+    # /var/run/docker.sock — without this, the miner sees
+    # "permission denied while trying to connect to the docker API at
+    # unix:///var/run/docker.sock" the moment it tries to launch a sandbox,
+    # and every miner silently scores 0 on the evidence axis. install.sh
+    # detects the GID from `getent group docker` and writes it to .env.
+    group_add:
+      - "${DOCKER_GID:-999}"
     ports:
       - "${AXON_PORT:-8091}:8091"
     volumes:
