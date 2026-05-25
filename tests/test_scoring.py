@@ -140,6 +140,35 @@ def test_evidence_degraded_mode_capped():
     assert score_evidence(sssa, {}) <= 0.5
 
 
+def test_evidence_zero_when_miner_returns_no_evidence():
+    """A miner that returns an SSSA with no component hashes earns zero on
+    the evidence axis, on both the truth-replay path AND the degraded
+    fall-through path. This is the contract that protects validators from
+    miners that skip Layer 3 entirely."""
+    empty_hashes = {"N": None, "F": None, "P": None, "K": None}
+    sssa = _sssa(hashes=empty_hashes)
+
+    # Truth-replay path: validator has ground truth, miner has nothing
+    truth = {
+        "N": "sha256:" + "a" * 64,
+        "F": "sha256:" + "b" * 64,
+        "P": "sha256:" + "c" * 64,
+        "K": "sha256:" + "d" * 64,
+    }
+    assert score_evidence(sssa, {"ground_truth_evidence": truth}) == 0.0
+
+    # Degraded path: no ground truth available, miner has nothing
+    assert score_evidence(sssa, {}) == 0.0
+
+
+def test_evidence_zero_when_miner_returns_malformed_hashes():
+    """Hashes that aren't well-formed sha256 refs earn zero in degraded
+    mode — prevents 'random string in hash field' griefing."""
+    junk = {k: "not-a-real-hash" for k in ("N", "F", "P", "K")}
+    sssa = _sssa(hashes=junk)
+    assert score_evidence(sssa, {}) == 0.0
+
+
 # ---------------------------------------------------------------------------
 # Policy (π)  F0.5 over constraint set
 # ---------------------------------------------------------------------------
