@@ -11,7 +11,6 @@ from pathlib import Path
 
 from phylax.protocol import Finding, FindingEvidence, Severity
 
-
 OSV_API_URL = "https://api.osv.dev/v1/query"
 OSV_CACHE_DIR = Path(os.getenv("PHYLAX_OSV_CACHE_DIR", str(Path.home() / ".phylax" / "osv_cache")))
 OSV_CACHE_TTL_SECONDS = 24 * 60 * 60

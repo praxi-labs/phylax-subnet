@@ -94,7 +94,7 @@ def test_section_5_3_composite_formula_evidence_gated():
     axes are renormalised then multiplied by evidence; below the gate the
     score is zero. Closes the "lazy honest" failure mode where
     evidence = 0 with perfect other axes still produced a 0.70 floor."""
-    from phylax.scoring.rewards import EVIDENCE_GATE, _NON_EVIDENCE_WEIGHT_SUM
+    from phylax.scoring.rewards import _NON_EVIDENCE_WEIGHT_SUM, EVIDENCE_GATE
 
     # Above the gate: evidence is a multiplicative scaler on the renormalised
     # non-evidence axes.

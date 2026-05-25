@@ -3,11 +3,10 @@ from pathlib import Path
 import pytest
 
 from phylax.pipeline.sandbox import (
-    SandboxDetonator,
-    _NORM_FS,
     _NORM_NET,
     _NORM_PROC,
     _NORM_SECRETS,
+    SandboxDetonator,
 )
 from phylax.pipeline.sbom import SBOMAnalyzer
 from phylax.pipeline.static import StaticAnalyzer

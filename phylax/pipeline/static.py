@@ -9,7 +9,6 @@ from pathlib import Path
 
 from phylax.protocol import Finding, FindingEvidence, Severity
 
-
 DANGEROUS_CALLS: dict[str, tuple[Severity, str]] = {
     "eval": (Severity.HIGH, "Dynamic code execution via eval()"),
     "exec": (Severity.HIGH, "Dynamic code execution via exec()"),

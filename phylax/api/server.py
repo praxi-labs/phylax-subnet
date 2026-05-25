@@ -21,7 +21,6 @@ from phylax.validator.baseline import BaselineRunner, GroundTruth
 from phylax.validator.registry import AttestationRegistry
 
 
-
 class ScanRequest(BaseModel):
     bundle_url: str | None = None
     bundle_bytes: str | None = Field(

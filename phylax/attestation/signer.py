@@ -13,7 +13,6 @@ from phylax.protocol import (
 )
 
 
-
 class AttestationSigner:
     """Wraps a Bittensor wallet to sign SSSAs."""
 

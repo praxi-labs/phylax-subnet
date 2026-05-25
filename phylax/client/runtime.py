@@ -8,7 +8,6 @@ from phylax.attestation import VerificationResult, verify_attestation
 from phylax.protocol import SSSA, RecommendedPolicy, Verdict
 
 
-
 class PhylaxClient:
     """Tiny client around the Phylax REST API."""
 

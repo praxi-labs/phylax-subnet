@@ -24,7 +24,7 @@ from phylax.scoring import (
     score_evidence,
     score_policy,
 )
-from phylax.scoring.rewards import EVIDENCE_GATE, _NON_EVIDENCE_WEIGHT_SUM
+from phylax.scoring.rewards import _NON_EVIDENCE_WEIGHT_SUM, EVIDENCE_GATE
 
 # ---------------------------------------------------------------------------
 # Fixtures
