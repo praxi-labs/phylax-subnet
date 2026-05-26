@@ -234,9 +234,21 @@ class PhylaxValidator:
 
     @staticmethod
     def _server_task_to_corpus_task(server_task: dict) -> CorpusTask:
-        """Adapt a phylax-server TaskItem payload into the validator's CorpusTask shape."""
+        """Adapt a phylax-server TaskItem payload into the validator's
+        CorpusTask shape.
+
+        Note: ``expected_verdict`` falls back to ``"ALLOW"`` for legacy
+        server payloads that don't include it, but the validator's scoring
+        path now tags the task with ``_has_server_label`` so a missing
+        label can be distinguished from a curated ALLOW. When the server
+        provided no label, the validator's baseline verdict is used as
+        ground truth; when it did, the server's label takes precedence and
+        baseline is only consulted for ``ground_truth_evidence`` (which
+        depends on per-nonce sandbox replay and can't be curated upstream).
+        """
         bundle_hash = server_task["bundle_hash"]
-        return CorpusTask(
+        has_label = server_task.get("expected_verdict") in ("ALLOW", "WARN", "BLOCK")
+        task = CorpusTask(
             name=server_task.get("name", "unnamed"),
             family=server_task.get("family", "known_good"),
             path=f"server://{bundle_hash}",
@@ -256,6 +268,9 @@ class PhylaxValidator:
             expected_findings=server_task.get("expected_findings") or [],
             tags=server_task.get("tags") or [],
         )
+        task.metadata = dict(task.metadata)
+        task.metadata["_has_server_label"] = has_label
+        return task
 
 
     def _push_round_results(
@@ -328,7 +343,7 @@ class PhylaxValidator:
                 canary_id=resp.canary_id, canary_val=resp.canary_val,
             )
             if gt is not None:
-                evaluation_task.update(gt.as_task_dict())
+                _merge_baseline_into_task(evaluation_task, gt)
 
             axes = score_all_axes(resp.sssa, evaluation_task)
             quality = compute_total_score(axes)
@@ -378,7 +393,7 @@ class PhylaxValidator:
                 canary_id=resp.canary_id,
                 canary_val=resp.canary_val,
             )
-            evaluation_task.update(gt.as_task_dict())
+            _merge_baseline_into_task(evaluation_task, gt)
 
             axes = score_all_axes(resp.sssa, evaluation_task)
             quality = compute_total_score(axes)
@@ -695,6 +710,43 @@ class PhylaxValidator:
             loop.close()
 
 
+
+
+def _merge_baseline_into_task(evaluation_task: dict, gt) -> None:
+    """Fold the validator's BaselineRunner output into the evaluation_task,
+    but only fill fields the server didn't already provide.
+
+    Why this isn't just ``evaluation_task.update(gt.as_task_dict())``:
+    when phylax-server provides a curated ``expected_verdict`` (and the
+    rest), it represents privileged ground truth that miners cannot
+    derive from public subnet code alone. Overwriting it with the
+    validator's locally-computed verdict reduces the Detection axis to
+    'miner-agrees-with-validator's-public-pipeline' — the very tautology
+    the discrepancy engine + curated corpus together are supposed to
+    close.
+
+    ``ground_truth_evidence`` is the one field always taken from the
+    baseline, because it's per-nonce sandbox-replay hashes that can
+    only be produced by the validator running the same sandbox the
+    miner did. The server can't curate those upstream.
+    """
+    gt_dict = gt.as_task_dict()
+    has_server_label = (
+        evaluation_task.get("metadata", {}).get("_has_server_label")
+        if isinstance(evaluation_task.get("metadata"), dict)
+        else False
+    )
+    if has_server_label:
+        # Preserve server-curated ground truth for verdict / risk /
+        # capabilities / policy. Only take the evidence hashes from
+        # baseline since the server can't know them ahead of time.
+        evaluation_task["ground_truth_evidence"] = gt_dict.get("ground_truth_evidence")
+    else:
+        # No server label — fall back to baseline-derived ground truth
+        # for everything. This is the offline / synthetic / unlabelled
+        # corpus path; the tautology applies here but there's no
+        # alternative source of truth.
+        evaluation_task.update(gt_dict)
 
 
 class MinerResponse:
