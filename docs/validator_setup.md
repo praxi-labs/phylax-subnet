@@ -2,14 +2,14 @@
 
 Run a Phylax validator on testnet (netuid 486) from a clean Ubuntu host. Copy-paste from top to bottom.
 
-A Phylax validator runs the **same three-layer pipeline that miners run** to produce ground truth (whitepaper §5.2). It therefore needs Docker on the host AND a path to talk to the phylax-server control plane.
+A Phylax validator independently re-runs the same three-layer pipeline that miners run (whitepaper §5.2) and consumes additional server-side intelligence (threat-intel feeds, CVE database, miner reputation) that the reference miner doesn't have access to. It therefore needs Docker on the host AND a path to talk to the phylax-server control plane.
 
 ## 1. Prerequisites
 
 - Docker 24+ with the `compose` plugin (`docker compose version` must work).
 - `btcli` ([install guide](https://docs.bittensor.com/getting-started/install-btcli)).
-- 16 GB RAM, 4+ CPU cores, 50 GB free disk.
-- Outbound HTTPS to `https://<your-phylax-server>` (no inbound ports required unless you also expose the optional local attestation API).
+- 16 GB RAM, 4+ CPU cores, **80 GB free disk** (image layers + bundle staging + evidence dirs + registry add up — 50 GB has bitten operators).
+- Outbound HTTPS to your phylax-server URL (no inbound ports required unless you also expose the optional local attestation API on TCP 8080).
 - Your shell user is in the `docker` group: `sudo usermod -aG docker $USER && newgrp docker`.
 
 ## 2. Wallet, register, stake
@@ -55,7 +55,7 @@ They reply with the phylax-server base URL and the server's signing-key hotkey (
 
 ## 4. Install
 
-One command lays down the compose file, a seeded `.env`, an empty `registry.sqlite3`, and the evidence directory under `~/phylax/validator/`:
+One command lays down the compose file, a seeded `.env` (with host UID/GID, docker-group GID, and host-side evidence path), an empty `registry.sqlite3`, and the evidence directory under `~/phylax/validator/`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/praxi-labs/phylax-subnet/main/scripts/install.sh | bash -s validator
@@ -91,25 +91,18 @@ docker compose up -d
 docker compose logs -f
 ```
 
-You also need the sandbox image present locally (the validator shells out to it for ground-truth detonation):
-
-```bash
-docker pull ghcr.io/praxi-labs/phylax-sandbox:latest
-```
-
 Within ~30 seconds the log should show:
 
-```
+```text
 registered with phylax-server at https://...
 starting Phylax validator on netuid=486 hotkey=...
 ```
 
 Within a couple of minutes:
 
-```
+```text
 round <id> | miners=N server_curated=5 local_synth=2 server_owned=True
 round <id> done | top_score=0.XXX
-set_weights | non-zero=N
 set_weights | attestation <id> expires ...
 ```
 
@@ -132,7 +125,29 @@ Open inbound TCP 8080 in your firewall if you want this reachable from outside t
 
 ## 8. Updating
 
-### Manual (default)
+### Automatic (recommended) — opt-in Watchtower
+
+The cleanest way to stay in sync with the network. A small companion container polls GHCR every 6 hours, pulls new validator images, recreates the container, and prunes old layers (which also solves the disk-pressure problem operators kept hitting).
+
+```bash
+cd ~/phylax/validator
+docker compose --profile auto-update up -d
+```
+
+Only containers carrying the `com.centurylinklabs.watchtower.enable=true` label are touched, so nothing else on the host is affected. Tune the cadence:
+
+```bash
+echo "WATCHTOWER_POLL_INTERVAL=3600" >> .env   # 1h instead of 6h
+docker compose --profile auto-update up -d
+```
+
+Disable later:
+
+```bash
+docker compose stop watchtower && docker compose rm -f watchtower
+```
+
+### Manual
 
 ```bash
 cd ~/phylax/validator
@@ -140,44 +155,36 @@ docker compose pull
 docker compose up -d
 ```
 
-`.env`, your evidence dir, and `registry.sqlite3` persist across updates.
-
-### Automatic (recommended for testnet, opt-in)
-
-Run with the `auto-update` compose profile and a small Watchtower companion container will poll GHCR every 6 hours, pull new validator images, recreate the container, and prune the old layers. Solves image drift and disk pressure in one stroke.
-
-```bash
-cd ~/phylax/validator
-docker compose --profile auto-update up -d
-```
-
-Only containers carrying the `com.centurylinklabs.watchtower.enable=true` label are touched, so nothing else you run on the host is affected. Tune the poll interval if you want:
-
-```bash
-echo "WATCHTOWER_POLL_INTERVAL=3600" >> .env   # 1h instead of 6h
-docker compose --profile auto-update up -d
-```
-
-To disable auto-update later:
-
-```bash
-docker compose stop watchtower && docker compose rm -f watchtower
-```
+`.env`, your evidence dir, and `registry.sqlite3` persist across updates either way.
 
 ## What the validator does each round
 
 | Step | Description |
 |---|---|
-| Fetch task batch | `POST /v1/tasks/batch` to phylax-server — every validator gets a comparable curated batch |
+| Fetch task batch | `POST /v1/tasks/batch` to phylax-server — every validator gets a comparable curated batch (plus its own private canaries) |
 | Add local synthetic | Validator generates its own private synthetic challenges on top of the curated batch |
-| Per-miner nonce | Generate η_i for every miner; broadcast (S, η_i, deadline) over dendrite |
-| Run baseline | Validator locally runs the same three-layer pipeline under each η_i to get ground truth |
-| Score | Compute α, ε, π, η per miner and the composite Q |
+| Per-miner nonce + canary | Unique determinism nonce + proof-of-execution canary token issued per (miner, task) |
+| Query miners | Broadcast PhylaxSynapse over dendrite, wait for SSSAs within `QUERY_TIMEOUT` |
+| Run baseline | Validator locally runs the same three-layer pipeline under each nonce to get ground truth |
+| Threat-intel + CVE | Validator queries the server's intel proxy for every observed domain/IP and SBOM package |
+| Discrepancy + verdict | Compare observed sandbox behavior to the bundle's declared SKILL.md manifest (or Implicit Zero-Trust default); combine with static findings + CVE hits |
+| Score | Compute α (detection), ε (evidence), π (policy), η (efficiency) per miner and the composite Q |
+| Apply reputation | Multiply per-miner weights by their server-tracked reputation (defends against systematic cheating) |
 | Consensus | Quality-weighted argmax verdict; countersign the winning SSSA |
 | Publish | Write consensus SSSA locally and push to phylax-server's public registry |
 | Push results | `POST /v1/rounds/{round_id}/results` so the server can validate the next weight push |
 | Request weight attestation | `POST /v1/weights/report` → server signs a short-TTL `WeightAttestation` |
 | `set_weights` | On-chain push — only happens if the local attestation verifier passes |
+
+## What makes the validator strictly stronger than the reference miner
+
+The validator consumes server-only signals miners cannot access:
+
+- **Threat-intel** (urlhaus host blacklist, Spamhaus DROP/EDROP for IPs) — known C2 domains and hostile networks become CRITICAL findings regardless of what the skill's manifest declared.
+- **CVE database** (osv.dev) — every SBOM package gets a vulnerability lookup; vulnerable deps escalate the verdict.
+- **Miner reputation** — derived from each miner's accuracy on validator-pinned canary tasks (private tasks miners can't memorize answers for). Suspected cheaters get their emission weight de-multiplied; coordinated collusion rings get the same treatment.
+
+These run automatically when `PHYLAX_SERVER_URL` is configured. They're not optional — running without them produces a weaker validator and worse weight signals. If the server is briefly unreachable, the validator falls back to a local disk cache of recent responses (`phylax_intel_cache.sqlite3` next to your registry); only sustained outages degrade scoring.
 
 ## Tuning
 
@@ -196,13 +203,14 @@ Edit `~/phylax/validator/.env` and `docker compose up -d` to apply.
 | `EMA_ALPHA` | `0.2` | Per-round smoothing factor. |
 | `SANDBOX_TIMEOUT` | `60` | Per-detonation timeout (seconds), 5× for `deep` profile. |
 | `PHYLAX_REGISTRY_PATH` | `/opt/phylax/registry.sqlite3` | Local attestation registry cache (compose bind-mounts `./registry.sqlite3` here). |
+| `PHYLAX_EVIDENCE_DIR` | `/opt/phylax/evidence` | In-container path the sandbox harness writes to. |
+| `PHYLAX_EVIDENCE_HOST_DIR` | _set by install.sh_ | Absolute host-side path of the bind mount. Required for docker-in-docker so the sandbox container sees the same dir the validator does. |
 | `PHYLAX_SANDBOX_IMAGE` | `ghcr.io/praxi-labs/phylax-sandbox:latest` | Image tag the baseline runner launches. |
+| `DOCKER_GID` | _set by install.sh_ | Host's `docker` group GID; container joins this group via `group_add` to open `/var/run/docker.sock`. |
+| `HOST_UID` / `HOST_GID` | _set by install.sh_ | Your shell user's UID/GID; the container runs as this user so bind mounts stay writable. |
 | `PHYLAX_API_ADMIN_TOKEN` | _empty_ | Required for `phylax.api.server`'s local `/v1/attestation/{hash}/invalidate` endpoint. **Not** the same as the phylax-server admin token. |
 | `PHYLAX_IMAGE_TAG` | `latest` | Pin to `sha-<short>` for reproducible deploys. |
-
-## Adding canary tasks
-
-Canaries are private — never committed to the public repo (whitepaper §7.3 / §7.4). To add them to a containerised validator, mount the directory into the container at `/opt/phylax/corpora/canaries/` (extend the `volumes:` list in `docker-compose.yml`). The `CorpusLoader` auto-loads JSON files from that path.
+| `WATCHTOWER_POLL_INTERVAL` | `21600` | When auto-update profile is active: GHCR poll interval in seconds (default 6h). |
 
 ## Troubleshooting
 
@@ -210,13 +218,18 @@ Canaries are private — never committed to the public repo (whitepaper §7.3 / 
 |---|---|---|
 | `docker compose: command not found` | docker compose plugin missing | `sudo apt install docker-compose-plugin` |
 | Container exits immediately | Hotkey not found in `~/.bittensor` | Check `ls ~/.bittensor/wallets/validator/hotkeys/default` |
-| `Cannot connect to the Docker daemon` from inside container | docker.sock mount not propagated | Ensure `/var/run/docker.sock` exists on the host |
-| `Permission denied: '/opt/phylax/evidence'` | `HOST_UID`/`HOST_GID` in `.env` don't match your shell user | Re-run `scripts/install.sh` or hand-edit `.env` |
+| `PermissionError: '~/phylax/evidence/...'` (literal tilde) | Old `.env` with `~/...` in `PHYLAX_EVIDENCE_DIR` | Set it to `/opt/phylax/evidence` (the in-container path) |
+| `permission denied while trying to connect to the docker API` | Container UID not in host docker group | Confirm `DOCKER_GID` in `.env` matches `getent group docker`, re-run `up -d` |
+| Sandbox produces only `log.txt`, no `network.jsonl` etc. | `PHYLAX_EVIDENCE_HOST_DIR` not set or wrong | Re-run `scripts/install.sh`, or set it to the absolute host path of `~/phylax/validator/evidence` |
+| Sandbox crashes with `PermissionError: '/evidence/process.jsonl'` | Docker-in-docker bind mount creating root-owned dir | Same as above — fix `PHYLAX_EVIDENCE_HOST_DIR` |
+| `registry write failed: no such table: attestations` | `PHYLAX_REGISTRY_PATH` is empty / points at a non-bind-mounted path | Set it to `/opt/phylax/registry.sqlite3` in `.env`, restart |
 | `phylax-server registration failed: 403 Forbidden` | Your hotkey/source-IP isn't on the server allowlist | Contact the server operator |
 | `phylax-server identity mismatch` | Server's signing key changed, or `PHYLAX_SERVER_HOTKEY` is wrong | Re-fetch `/v1/server-identity` and update `.env` |
 | Rounds taking 5+ minutes, `409 Conflict` on results push | Sandbox detonations exceed the server's round deadline | Lower `SANDBOX_TIMEOUT` and/or `QUERY_TIMEOUT` in `.env` |
 | `top_score` stuck at `0.000` | No miner returning valid SSSAs | Check there's a miner registered on netuid 486 and its axon is reachable from this host |
 | `set_weights returned False` | Stake too low for permit | `btcli stake add` more TAO |
 | `set_weights: phylax-server refused to issue a weight attestation` | Your hotkey was de-allowlisted, or you haven't pushed any results yet | Contact server operator / check round-results push log |
+| `intel refresh failed; serving stale cache` warnings | Brief server outage, validator falling back to local intel cache | Non-fatal; no action needed unless it persists more than a few minutes |
+| Disk fills up | Old image layers accumulating | Either enable the auto-update profile (Watchtower prunes automatically) or `docker image prune -af` manually |
 | `evidence` axis stuck at `0` on the public leaderboard | Sandbox produces only `log.txt`, no JSONL trace files | Pull the latest `phylax-sandbox:latest`; verify run dirs in `~/phylax/validator/evidence` contain `network.jsonl`, `fs.jsonl`, `process.jsonl`, `secrets.jsonl` |
 | Registry not growing | Consensus aggregator never produces a winner | Inspect miner verdict diversity in logs |
