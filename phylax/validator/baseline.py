@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from phylax.manifest import load_manifest
 from phylax.pipeline.sandbox import SandboxDetonator, SandboxResult
 from phylax.pipeline.sbom import SBOMAnalyzer, SBOMResult
 from phylax.pipeline.static import StaticAnalysisResult, StaticAnalyzer
@@ -22,6 +23,7 @@ from phylax.protocol import (
     Verdict,
     VerdictBlock,
 )
+from phylax.scoring.discrepancy import combine_verdict, compute_discrepancy
 
 
 @dataclass
@@ -101,7 +103,9 @@ class BaselineRunner:
 
         capabilities = _merge_capabilities(static_result, sandbox_result)
         findings = list(static_result.findings) + list(sbom_result.findings)
-        verdict = _compute_verdict(findings, capabilities, sbom_result)
+        manifest = load_manifest(bundle_path)
+        discrepancy = compute_discrepancy(capabilities, manifest)
+        verdict = combine_verdict(discrepancy, findings, sbom_result.known_vulns)
         policy = self.policy_generator.generate(capabilities, findings)
 
         evidence = {

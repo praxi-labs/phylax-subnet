@@ -110,7 +110,7 @@ class PhylaxMiner:
             capabilities   = self._merge_capabilities(static_result, sbom_result, sandbox_result)
             evidence_pack  = self._build_evidence_pack(static_result, sbom_result, sandbox_result)
 
-            verdict = self._compute_verdict(findings, capabilities, sbom_result)
+            verdict = self._compute_verdict(findings, capabilities, sbom_result, bundle_path)
 
             policy = self.policy_generator.generate(capabilities, findings)
 
@@ -256,64 +256,23 @@ class PhylaxMiner:
             sandbox_log_hash=sandbox.log_hash if sandbox else None,
         )
 
-    def _compute_verdict(self, findings, capabilities, sbom_result):
+    def _compute_verdict(self, findings, capabilities, sbom_result, bundle_path):
+        """Verdict = manifest-vs-observed discrepancy, combined with static
+        findings and SBOM CVEs.
+
+        Replaces the old hand-coded heuristic. The shared
+        ``phylax.scoring.discrepancy`` engine compares what the sandbox
+        observed against the bundle's declared SKILL.md (or
+        IMPLICIT_ZERO_TRUST when no manifest exists). Miner and validator
+        run the identical function so an honest miner matches the
+        validator's verdict by construction.
         """
-        Compute the verdict based on findings severity and capabilities.
+        from phylax.manifest import load_manifest
+        from phylax.scoring.discrepancy import combine_verdict, compute_discrepancy
 
-        Rules:
-        - Any CRITICAL finding → BLOCK
-        - Any HIGH finding OR known_vuln in deps → WARN
-        - Shell exec observed → WARN (at minimum)
-        - Exfiltration patterns → BLOCK
-        - Otherwise → ALLOW
-        """
-        from phylax.protocol import Severity, Verdict, VerdictBlock
-
-        critical = [f for f in findings if f.severity == Severity.CRITICAL]
-        high     = [f for f in findings if f.severity == Severity.HIGH]
-
-        if critical or (capabilities.network.egress and capabilities.secrets.env_access
-                        and capabilities.process.shell_exec):
-            decision   = Verdict.BLOCK
-            risk_score = min(100, 75 + len(critical) * 5)
-        elif high or sbom_result.known_vulns or capabilities.process.shell_exec:
-            decision   = Verdict.WARN
-            risk_score = min(74, 40 + len(high) * 8)
-        else:
-            decision   = Verdict.ALLOW
-            risk_score = max(0, len(findings) * 3)
-
-        severity_names = {
-            Severity.CRITICAL: "CRITICAL",
-            Severity.HIGH: "HIGH",
-            Severity.MEDIUM: "MEDIUM",
-            Severity.LOW: "LOW",
-        }
-        top_reasons = [
-            f"[{severity_names[f.severity]}] {f.title}" for f in (critical + high)[:3]
-        ]
-
-        observations = (
-            int(capabilities.network.egress)
-            + int(capabilities.process.spawns)
-            + int(capabilities.secrets.env_access)
-            + int(bool(capabilities.filesystem.reads or capabilities.filesystem.writes))
-        )
-        confidence = round(min(0.99, 0.70 + 0.07 * observations), 2)
-
-        summary = (
-            f"Verdict {decision.value}: risk_score={risk_score}. "
-            f"{len(findings)} finding(s). "
-            f"Networks contacted: {capabilities.network.observed_domains or 'none'}."
-        )
-
-        return VerdictBlock(
-            decision=decision,
-            risk_score=risk_score,
-            confidence=confidence,
-            summary=summary,
-            top_reasons=top_reasons,
-        )
+        manifest = load_manifest(bundle_path)
+        discrepancy = compute_discrepancy(capabilities, manifest)
+        return combine_verdict(discrepancy, findings, sbom_result.known_vulns)
 
     def _assemble_sssa(self, bundle, sbom_result, verdict, capabilities,
                        findings, policy, evidence_pack, duration_ms, nonce) -> SSSA:
