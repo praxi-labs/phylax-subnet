@@ -188,6 +188,24 @@ class PhylaxValidator:
         new_scores = torch.zeros_like(self.scores)
         for uid, ts in per_uid_task_scores.items():
             new_scores[uid] = float(aggregate_epoch(ts))
+
+        # Reputation multiplier: pull the server's canary-derived
+        # per-miner reputation and use it to de-weight suspected
+        # colluders smoothly. reputation is in [0.5, 1.0] — a 0.5 here
+        # halves the miner's emission for this round. The signal is
+        # cached server-side, so per-round polling is cheap. On any
+        # error (server unreachable, parse failure, no data yet), every
+        # miner gets reputation=1.0 — fail-open is the right semantics
+        # here since the reputation system is a defense layer on top of
+        # already-validated work, not the primary scoring axis.
+        reputation_by_hotkey = self._fetch_miner_reputation()
+        if reputation_by_hotkey:
+            for uid in range(min(len(new_scores), len(self.metagraph.hotkeys))):
+                hk = self.metagraph.hotkeys[uid]
+                rep = reputation_by_hotkey.get(hk, 1.0)
+                if rep < 1.0:
+                    new_scores[uid] = float(new_scores[uid]) * rep
+
         self.scores = self.EMA_ALPHA * new_scores + (1.0 - self.EMA_ALPHA) * self.scores
 
         top = float(self.scores.max().item()) if self.scores.numel() else 0.0
@@ -209,6 +227,36 @@ class PhylaxValidator:
         else:
             self.last_completed_round_id = None
 
+
+    def _fetch_miner_reputation(self) -> dict[str, float]:
+        """Pull current miner-reputation snapshot from phylax-server.
+
+        Returns a ``{hotkey: reputation_float}`` map. Server caches the
+        snapshot for 5min so per-round polls are cheap. Any failure
+        (no server, server unreachable, malformed response) returns an
+        empty dict — fail-open semantics, since the reputation layer
+        is a defense on top of already-validated work.
+        """
+        if self.server_client is None:
+            return {}
+        try:
+            payload = self.server_client.fetch_miner_reputation()
+        except Exception as e:  # noqa: BLE001
+            bt.logging.debug(f"reputation fetch failed: {e}")
+            return {}
+        out: dict[str, float] = {}
+        for entry in payload.get("miners", []) or []:
+            hk = entry.get("miner_hotkey")
+            rep = entry.get("reputation")
+            if hk and isinstance(rep, int | float):
+                out[hk] = float(rep)
+        clusters = payload.get("collusion_clusters") or []
+        if clusters:
+            bt.logging.warning(
+                f"reputation: {len(clusters)} active collusion cluster(s) "
+                f"flagged by server; affected miners de-weighted"
+            )
+        return out
 
     async def _fetch_curated_batch(self):
         """Return ``(round_id, corpus_tasks, server_owned_round)``.

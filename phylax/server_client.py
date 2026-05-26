@@ -217,6 +217,24 @@ class PhylaxServerClient:
             },
         )
 
+    def fetch_miner_reputation(self) -> dict:
+        """GET the current miner-reputation snapshot from the server.
+
+        Returns ``{computed_at, miners: [{miner_hotkey, accuracy,
+        reputation, flagged_clusters, ...}], collusion_clusters: [...]}``.
+
+        The ``reputation`` float in [0.5, 1.0] is the multiplier the
+        validator applies to each miner's final emission weight: 1.0 =
+        no penalty (new miners or those with ≥90% canary accuracy);
+        0.5 = floor for miners who systematically lie on canaries.
+        Smooth de-weighting rather than slashing keeps the incentive
+        to keep behaving on the existing hotkey rather than churn to
+        a new one.
+
+        Cached server-side for 5 minutes; cheap to poll per round.
+        """
+        return self._request("GET", "/v1/reputation/miners")
+
     def cve_lookup(self, packages: list[dict] | None = None) -> dict:
         """Resolve CVEs for a batch of SBOM packages.
 
