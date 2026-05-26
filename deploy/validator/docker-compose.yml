@@ -4,6 +4,11 @@
 #   docker compose pull
 #   docker compose up -d
 #
+# To opt into automatic image updates (Watchtower polls GHCR every 6h, pulls
+# new versions, recreates the container, and prunes old layers):
+#
+#   docker compose --profile auto-update up -d
+#
 # Configuration lives in ./.env next to this file. The bootstrap script at
 # scripts/install.sh seeds .env with sensible defaults (including the host
 # UID/GID needed for the sandbox bind mount to be writable) and prompts for
@@ -15,6 +20,11 @@ services:
     container_name: phylax-validator
     restart: unless-stopped
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    labels:
+      # Watchtower (in the auto-update profile below) only manages
+      # containers carrying this label. Keeps it from touching anything
+      # else the operator runs on the same host.
+      - "com.centurylinklabs.watchtower.enable=true"
     # Add the host's docker group so the container UID can open
     # /var/run/docker.sock — BaselineRunner shells out to docker run for
     # ground-truth detonation, and without socket access it produces no
@@ -65,3 +75,26 @@ services:
       - --wallet.hotkey
       - "${WALLET_HOTKEY:-default}"
       - --logging.debug
+
+  # Opt-in auto-updater. Starts only with `docker compose --profile
+  # auto-update up -d`; absent from the default `docker compose up -d`
+  # so operators who want manual control aren't surprised. When
+  # enabled, polls GHCR every 6h, pulls new images for labeled
+  # containers (just phylax-validator), recreates them with the new
+  # image, and prunes the old layers. Solves two recurring operational
+  # problems at once: validators drifting onto stale code, and disk
+  # pressure from accumulated old image layers.
+  watchtower:
+    image: containrrr/watchtower:latest
+    container_name: phylax-watchtower
+    restart: unless-stopped
+    profiles: ["auto-update"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      WATCHTOWER_LABEL_ENABLE: "true"
+      WATCHTOWER_CLEANUP: "true"
+      WATCHTOWER_INCLUDE_RESTARTING: "false"
+      WATCHTOWER_ROLLING_RESTART: "true"
+      WATCHTOWER_POLL_INTERVAL: "${WATCHTOWER_POLL_INTERVAL:-21600}"
+      TZ: "UTC"

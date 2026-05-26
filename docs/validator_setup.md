@@ -132,6 +132,8 @@ Open inbound TCP 8080 in your firewall if you want this reachable from outside t
 
 ## 8. Updating
 
+### Manual (default)
+
 ```bash
 cd ~/phylax/validator
 docker compose pull
@@ -139,6 +141,28 @@ docker compose up -d
 ```
 
 `.env`, your evidence dir, and `registry.sqlite3` persist across updates.
+
+### Automatic (recommended for testnet, opt-in)
+
+Run with the `auto-update` compose profile and a small Watchtower companion container will poll GHCR every 6 hours, pull new validator images, recreate the container, and prune the old layers. Solves image drift and disk pressure in one stroke.
+
+```bash
+cd ~/phylax/validator
+docker compose --profile auto-update up -d
+```
+
+Only containers carrying the `com.centurylinklabs.watchtower.enable=true` label are touched, so nothing else you run on the host is affected. Tune the poll interval if you want:
+
+```bash
+echo "WATCHTOWER_POLL_INTERVAL=3600" >> .env   # 1h instead of 6h
+docker compose --profile auto-update up -d
+```
+
+To disable auto-update later:
+
+```bash
+docker compose stop watchtower && docker compose rm -f watchtower
+```
 
 ## What the validator does each round
 

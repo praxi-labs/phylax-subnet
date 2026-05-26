@@ -73,6 +73,8 @@ docker pull ghcr.io/praxi-labs/phylax-sandbox:latest
 
 ## 5. Updating
 
+### Manual (default)
+
 ```bash
 cd ~/phylax/miner
 docker compose pull
@@ -80,6 +82,28 @@ docker compose up -d
 ```
 
 `.env` and your evidence directory persist across updates.
+
+### Automatic (recommended, opt-in)
+
+Run with the `auto-update` compose profile and a small Watchtower companion polls GHCR every 6 hours, pulls new miner images, recreates the container, and prunes old layers.
+
+```bash
+cd ~/phylax/miner
+docker compose --profile auto-update up -d
+```
+
+Tune the poll interval if you want:
+
+```bash
+echo "WATCHTOWER_POLL_INTERVAL=3600" >> .env   # 1h instead of 6h
+docker compose --profile auto-update up -d
+```
+
+To disable later:
+
+```bash
+docker compose stop watchtower && docker compose rm -f watchtower
+```
 
 ## How the miner answers each query
 
