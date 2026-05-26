@@ -193,8 +193,9 @@ class SandboxDetonator:
             for line in net_file.read_text(encoding="utf-8", errors="ignore").splitlines():
                 try:
                     rec = json.loads(line)
-                    if rec.get("domain"):
-                        result.network_domains.append(rec["domain"])
+                    host = rec.get("domain") or rec.get("host")
+                    if host:
+                        result.network_domains.append(host)
                     if rec.get("ip"):
                         result.network_ips.append(rec["ip"])
                 except json.JSONDecodeError:

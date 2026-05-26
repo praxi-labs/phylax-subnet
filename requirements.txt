@@ -18,6 +18,9 @@ PyNaCl
 requests
 httpx
 
+# SKILL.md capability manifest parsing (YAML frontmatter)
+pyyaml
+
 # REST API surface (validator side)
 fastapi
 uvicorn[standard]
