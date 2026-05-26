@@ -114,7 +114,9 @@ class BaselineRunner:
         manifest = load_manifest(bundle_path)
         discrepancy = compute_discrepancy(capabilities, manifest)
         discrepancy = self._apply_threat_intel(discrepancy, capabilities)
-        verdict = combine_verdict(discrepancy, findings, sbom_result.known_vulns)
+        cve_vulns = self._lookup_cves(sbom_result)
+        known_vulns = list(sbom_result.known_vulns) + cve_vulns
+        verdict = combine_verdict(discrepancy, findings, known_vulns)
         policy = self.policy_generator.generate(capabilities, findings)
 
         evidence = {
@@ -152,6 +154,47 @@ class BaselineRunner:
         except Exception:  # noqa: BLE001
             return discrepancy
         return apply_intel_hits(discrepancy, intel_results)
+
+    def _lookup_cves(self, sbom_result) -> list[str]:
+        """Query the server's CVE proxy for every package in the SBOM.
+        Returns a list of "CVE-xxxx-yyyy" identifiers that feed into
+        combine_verdict's ``known_vulns`` parameter.
+
+        When intel_client is None (no server / offline mode), this is a
+        no-op. Server failures are non-fatal — log and return [] so the
+        round proceeds with whatever local SBOM analysis already found.
+        """
+        if self.intel_client is None or not hasattr(self.intel_client, "cve_lookup"):
+            return []
+        packages = list(getattr(sbom_result, "packages", []) or [])
+        if not packages:
+            return []
+        cve_payload = []
+        for p in packages:
+            if not isinstance(p, dict):
+                continue
+            name = p.get("name")
+            version = p.get("version")
+            if not name or not version:
+                continue
+            cve_payload.append({
+                "name": name,
+                "version": str(version),
+                "ecosystem": p.get("ecosystem", "PyPI"),
+            })
+        if not cve_payload:
+            return []
+        try:
+            resp = self.intel_client.cve_lookup(packages=cve_payload)
+        except Exception:  # noqa: BLE001
+            return []
+        cves: list[str] = []
+        for result in resp.get("results", []):
+            for record in result.get("records", []) or []:
+                cid = record.get("cve_id")
+                if cid:
+                    cves.append(cid)
+        return cves
 
 
     def run_from_bytes(

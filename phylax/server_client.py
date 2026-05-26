@@ -199,17 +199,14 @@ class PhylaxServerClient:
     ) -> dict:
         """Resolve threat-intel for a batch of observed hosts/IPs.
 
-        The server proxies to urlhaus (and eventually Spamhaus + AbuseIPDB)
+        Server proxies to urlhaus (hosts) and Spamhaus DROP/EDROP (IPs)
         and returns ``{queried_at, results: [{host, ip, hits: [...]}]}``.
-        A non-empty ``hits`` list for any input means the validator should
-        treat that host/IP as malicious regardless of what the skill's
-        SKILL.md manifest declared — a known C2 doesn't get a free pass
-        just because the developer listed it as allowed.
+        A non-empty ``hits`` list means the validator treats that host/IP
+        as malicious regardless of what the skill's SKILL.md declared
+        — a known C2 doesn't get a free pass just because the developer
+        listed it as allowed.
 
-        This endpoint sits behind the validator-allowlist auth, so miners
-        can't reach it. A miner that wants matching threat-intel coverage
-        has to integrate the same upstream sources themselves at their
-        own operating cost.
+        Gated by validator-only auth; miners can't reach this endpoint.
         """
         return self._request(
             "POST",
@@ -218,6 +215,26 @@ class PhylaxServerClient:
                 "hosts": hosts or [],
                 "ips": ips or [],
             },
+        )
+
+    def cve_lookup(self, packages: list[dict] | None = None) -> dict:
+        """Resolve CVEs for a batch of SBOM packages.
+
+        Each ``packages`` entry is ``{name, version, ecosystem}`` (eco
+        defaults to PyPI). Server queries osv.dev and returns per-package
+        records with severity + reference URL. Hits become
+        ``known_vulns`` entries that ``combine_verdict`` escalates to
+        BLOCK/WARN.
+
+        Like intel_lookup, gated by validator allowlist. Reference miners
+        that don't run their own osv.dev integration miss every CVE in
+        their dependency trees and take a systematic detection penalty
+        when the validator catches them.
+        """
+        return self._request(
+            "POST",
+            "/v1/intel/cve_lookup",
+            json_body={"packages": packages or []},
         )
 
 

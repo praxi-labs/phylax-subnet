@@ -129,15 +129,20 @@ class PhylaxValidator:
                 "PHYLAX_SERVER_URL not configured — validator will not be able to set_weights"
             )
 
-        # BaselineRunner gets the server client so it can query
-        # /v1/intel/lookup for observed domains/IPs. When server_client
-        # is None (offline / local-dev), the runner falls back to
-        # manifest-only discrepancy with no threat-intel layer — still
-        # correct, just less coverage.
+        # BaselineRunner gets a cached intel client so /v1/intel/lookup
+        # and /v1/intel/cve_lookup queries survive transient server
+        # outages — disk-backed cache returns stale-but-usable responses
+        # rather than crashing the round. When the validator has no
+        # server_client (offline / local-dev), intel_client is None and
+        # BaselineRunner falls back to manifest-only discrepancy.
+        from phylax.validator.intel_cache import ServerIntelClient
+        intel_client = (
+            ServerIntelClient(self.server_client) if self.server_client is not None else None
+        )
         self.baseline = BaselineRunner(
             sandbox_image=os.getenv("PHYLAX_SANDBOX_IMAGE", "phylax-sandbox:latest"),
             sandbox_timeout_seconds=int(os.getenv("SANDBOX_TIMEOUT", "60")),
-            intel_client=self.server_client,
+            intel_client=intel_client,
         )
 
         self.allow_offline_fallback = (
