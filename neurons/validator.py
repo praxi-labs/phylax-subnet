@@ -332,13 +332,6 @@ class PhylaxValidator:
 
             axes = score_all_axes(resp.sssa, evaluation_task)
             quality = compute_total_score(axes)
-            bt.logging.info(
-                f"SCORE-DBG corpus uid={uid} bundle={resp.sssa.skill.bundle_hash[:20]} "
-                f"hashes={resp.sssa.evidence.component_hashes()} "
-                f"gt={evaluation_task.get('ground_truth_evidence')} "
-                f"axes(d={axes.detection:.3f},e={axes.evidence:.3f},p={axes.policy:.3f},f={axes.efficiency:.3f}) "
-                f"q={quality:.4f}"
-            )
             per_uid_task_scores[uid].append(quality)
             per_uid_task_axes[uid].append(axes)
             resp.quality = quality
@@ -389,13 +382,6 @@ class PhylaxValidator:
 
             axes = score_all_axes(resp.sssa, evaluation_task)
             quality = compute_total_score(axes)
-            bt.logging.info(
-                f"SCORE-DBG synth uid={uid} bundle={resp.sssa.skill.bundle_hash[:20]} "
-                f"hashes={resp.sssa.evidence.component_hashes()} "
-                f"gt={evaluation_task.get('ground_truth_evidence')} "
-                f"axes(d={axes.detection:.3f},e={axes.evidence:.3f},p={axes.policy:.3f},f={axes.efficiency:.3f}) "
-                f"q={quality:.4f}"
-            )
             per_uid_task_scores[uid].append(quality)
             per_uid_task_axes[uid].append(axes)
             resp.quality = quality

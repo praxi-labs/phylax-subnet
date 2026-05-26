@@ -170,6 +170,57 @@ def test_evidence_zero_when_miner_returns_malformed_hashes():
     assert score_evidence(sssa, {}) == 0.0
 
 
+def test_evidence_vacuous_match_on_null_axes_scores_full():
+    """Honest silence — when both miner and validator observe nothing on
+    an axis (e.g. the skill made no network calls) — must count as
+    agreement, not as a mismatch. Otherwise a miner running a benign skill
+    is punished for the skill being benign instead of for their analysis
+    quality.
+
+    Concretely: skill only touches filesystem + env, doesn't network or
+    spawn. Both sides produce N=None, P=None, F=real_hash, K=real_hash.
+    Honest miner should score 1.0, not 2/4=0.5."""
+    f_hash = "sha256:" + "a" * 64
+    k_hash = "sha256:" + "b" * 64
+    sssa = _sssa(hashes={"N": None, "F": f_hash, "P": None, "K": k_hash})
+    truth = {"N": None, "F": f_hash, "P": None, "K": k_hash}
+    assert score_evidence(sssa, {"ground_truth_evidence": truth}) == pytest.approx(1.0)
+
+
+def test_evidence_canary_gate_fires_on_f_mismatch():
+    """The harness writes + reads a per-task canary file at startup, so the
+    validator's baseline always produces a non-null F (fs_trace_hash). A
+    miner whose F doesn't match validator's F clearly didn't reproduce
+    the canary records — short-circuit to zero regardless of other axes."""
+    truth = {
+        "N": "sha256:" + "a" * 64,
+        "F": "sha256:" + "b" * 64,  # validator's canary-bearing fs hash
+        "P": "sha256:" + "c" * 64,
+        "K": "sha256:" + "d" * 64,
+    }
+    # Miner matches everything EXCEPT F — but F is the canary gate, so 0.
+    miner_hashes = dict(truth)
+    miner_hashes["F"] = "sha256:" + "e" * 64
+    sssa = _sssa(hashes=miner_hashes)
+    assert score_evidence(sssa, {"ground_truth_evidence": truth}) == 0.0
+
+    # And again: miner returns no F at all — same failure mode.
+    miner_hashes2 = dict(truth)
+    miner_hashes2["F"] = None
+    sssa2 = _sssa(hashes=miner_hashes2)
+    assert score_evidence(sssa2, {"ground_truth_evidence": truth}) == 0.0
+
+
+def test_evidence_canary_gate_inactive_when_validator_f_is_null():
+    """If the validator's baseline F is also null (e.g. local-dev bypass
+    with no canary at all), the canary gate doesn't fire — fall through
+    to vacuous matching."""
+    truth = {"N": None, "F": None, "P": None, "K": None}
+    sssa = _sssa(hashes={"N": None, "F": None, "P": None, "K": None})
+    # Both sides null on every axis → vacuous full agreement.
+    assert score_evidence(sssa, {"ground_truth_evidence": truth}) == pytest.approx(1.0)
+
+
 # ---------------------------------------------------------------------------
 # Policy (π)  F0.5 over constraint set
 # ---------------------------------------------------------------------------

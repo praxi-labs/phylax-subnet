@@ -49,14 +49,36 @@ def score_detection(sssa: SSSA, task: dict) -> float:
 
 
 def score_evidence(sssa: SSSA, task: dict) -> float:
+    """Hash-equality between miner's evidence and validator's baseline replay.
+
+    Two semantics that look subtle but matter a lot:
+
+    1. **Canary gate on F (filesystem).** The harness writes + reads a
+       per-task canary file at startup, so the validator's baseline always
+       produces a non-null fs_trace_hash. A miner whose F is null (or
+       different from validator's) demonstrably didn't run the sandbox
+       honestly — short-circuit to 0 regardless of other axes. This is the
+       proof-of-execution gate.
+
+    2. **Vacuous matches count.** When both miner and validator agree
+       there's nothing to observe on an axis (e.g. both N=None because the
+       skill made no network calls), that's a real agreement signal — an
+       honest miner observing a benign skill shouldn't be punished for the
+       skill being benign. Use `==` rather than `is not None and ==`, since
+       `None == None` is True.
+    """
     miner_hashes = sssa.evidence.component_hashes()
     truth = task.get("ground_truth_evidence") or {}
 
     if truth:
+        truth_f = truth.get("F")
+        if truth_f is not None and miner_hashes.get("F") != truth_f:
+            return 0.0
+
         matches = sum(
             1
             for k in ("N", "F", "P", "K")
-            if miner_hashes.get(k) is not None and miner_hashes[k] == truth.get(k)
+            if miner_hashes.get(k) == truth.get(k)
         )
         return matches / 4.0
 
