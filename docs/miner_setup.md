@@ -6,7 +6,7 @@ Run a Phylax miner on testnet (netuid 486) from a clean Ubuntu host. Copy-paste 
 
 - Docker 24+ with the `compose` plugin (`docker compose version` must work).
 - `btcli` ([install guide](https://docs.bittensor.com/getting-started/install-btcli)).
-- 16 GB RAM, 4+ CPU cores, **80 GB free disk** (image layers + bundle staging + evidence dirs add up fast — 50 GB has bitten operators).
+- 16 GB RAM, 4+ CPU cores, **80 GB free disk** (image layers + bundle staging + evidence dirs add up).
 - Inbound TCP **8091** open to the public internet (validators dial this port).
 - Your shell user is in the `docker` group: `sudo usermod -aG docker $USER && newgrp docker`.
 
@@ -35,7 +35,7 @@ btcli wallet overview --wallet.name miner --subtensor.network test
 
 ## 3. Install
 
-One command lays down the compose file, a seeded `.env` (with the host UID/GID and docker group GID needed for the sandbox bind mount), and the evidence directory under `~/phylax/miner/`:
+One command lays down the compose file, a seeded `.env` (with the host UID/GID and docker-group GID needed for the sandbox bind mount), and the evidence directory under `~/phylax/miner/`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/praxi-labs/phylax-subnet/main/scripts/install.sh | bash -s miner
@@ -76,7 +76,7 @@ If you don't see `Layer 3` lines for STANDARD/DEEP-profile requests, the sandbox
 
 ### Automatic (recommended) — opt-in Watchtower
 
-The cleanest way to stay in sync with the network. A small companion container polls GHCR every 6 hours, pulls new miner images, recreates the container, and prunes old layers (which also solves the disk-pressure problem operators kept hitting).
+A small companion container polls GHCR every 6 hours, pulls new miner images, recreates the container, and prunes old layers (which also solves the disk-pressure problem operators kept hitting).
 
 ```bash
 cd ~/phylax/miner
@@ -106,37 +106,47 @@ docker compose up -d
 
 `.env` and your evidence directory persist across updates either way.
 
-## How the miner answers each query
+## What the miner pipeline does
 
-| Step | Description |
-|---|---|
-| Receive | Synapse carries `skill_bundle`, `nonce`, `round_id`, `canary_id`, `canary_val`, `deadline_unix` |
-| Layer 1 | Static pattern scan + prompt-injection rules |
-| Layer 2 | SBOM (cyclonedx) + supply-chain checks |
-| Layer 3 | Sandbox detonation seeded by `synapse.nonce` (refuses to detonate without a real nonce) |
-| Discrepancy | Compares observed sandbox behavior to the bundle's declared SKILL.md manifest (or Implicit Zero-Trust default) |
-| Verdict | Combines discrepancy + static findings + SBOM CVEs into the final verdict |
-| Sign | ed25519 signature with the miner hotkey |
-| Return | Reply within the deadline |
+For every scan request, the miner runs three layers in order and returns a signed Signed Skill Safety Attestation (SSSA):
 
-The miner refuses to detonate if no nonce is supplied — running with a hardcoded seed would break the subnet's anti-copy guarantee, and validators will mark such responses invalid.
-
-## What scoring rewards (and what it punishes)
-
-The validator scores you on four axes. The fastest path to high emissions is **honest, deterministic work**:
-
-| Axis | What earns weight | What loses weight |
+| Layer | Module | What it does |
 |---|---|---|
-| **Evidence** | Sandbox actually executes and produces real trace files | Skipping the sandbox, returning hand-crafted SSSAs, faking trace hashes — all detectable and zero-scored |
-| **Detection** | Your verdict matches the validator's (deterministic given the bundle + manifest) | Wrong verdict, or verdict that disagrees with the validator's independent re-run |
-| **Policy** | Your `recommended_policy` precisely covers what the skill actually does | Over-permissive policies (matters more than under-permissive) |
-| **Efficiency** | Fast, honest responses | Implausibly fast responses are floored to zero (proves you didn't do the work) |
+| 1 — Static | `phylax/pipeline/static.py` | AST + regex scan: dangerous API patterns, prompt-injection signatures, permission discrepancies |
+| 2 — SBOM | `phylax/pipeline/sbom.py` | Dependency graph (cyclonedx + syft), typosquat detection, install-hook scan |
+| 3 — Sandbox | `phylax/pipeline/sandbox.py` | Behavioural detonation inside a locked container; harness records every observable behavior to JSONL traces |
+| Assemble | `neurons/miner.py` | Combines observed behaviour with the skill's declared `SKILL.md` manifest, produces verdict + recommended policy |
+| Sign | `phylax/attestation/signer.py` | ed25519 signature with the miner hotkey |
 
-A few specific things to know:
+The miner refuses to detonate if no nonce is supplied — running with a hardcoded seed would invalidate your response.
 
-- The validator does additional intelligence lookups (threat-intel feeds, CVE databases) that the reference miner doesn't ship with. If your verdict differs from the validator's on a skill that touches a known-bad domain or has a vulnerable dependency, you'll take a **false-negative penalty** (λ=1.0 — heavy). Running your own equivalent integrations is the way to stay competitive.
-- The subnet has built-in **integrity checks** that detect lying and coordinated cheating. The specifics aren't documented intentionally. The robust strategy is to run the pipeline honestly on every request and let your scores speak for themselves.
-- Reference-implementation miners earn baseline weights. Operationally-excellent miners (faster pulls, smarter caching, better infrastructure) earn more. Adding your own intelligence sources on top earns more still.
+## Where you can customize
+
+The reference miner runs out of the box and earns baseline weights. If you want to differentiate yourself, the cleanest places to extend are:
+
+| Module | What's there |
+|---|---|
+| `phylax/pipeline/static.py` | The bandit + custom-rule scanner. Add your own AST checks or regex signatures here. |
+| `phylax/pipeline/sbom.py` | SBOM generation and the typosquat / install-hook heuristics. Plug in additional dependency-graph analysis. |
+| `phylax/pipeline/sandbox.py` | The detonator wrapper around the harness container. Extend if you want richer trace parsing or additional observation hooks. |
+| `phylax/scoring/discrepancy.py` | The manifest-vs-observed comparison that drives the verdict. Add your own discrepancy rules here. |
+| `phylax/policy/generator.py` | Turns observations into a recommended `RecommendedPolicy`. Tighten the constraint logic. |
+| `neurons/miner.py` | The top-level pipeline orchestration. Most customizations don't need to touch this directly. |
+
+You can also integrate external data sources of your own choosing (threat-intel feeds, vulnerability databases, etc.) anywhere in the pipeline — the contract you owe the validator is a well-formed signed SSSA returned within the deadline. How you arrive at the verdict is up to you.
+
+Fork the repo, make your changes, build your own image, and point the compose file at it:
+
+```bash
+# Build your custom image
+docker build -t my-miner:custom -f docker/Dockerfile.miner .
+
+# Edit ~/phylax/miner/docker-compose.yml to use your image:
+#   image: my-miner:custom
+# (or push to your own registry and pull from there)
+
+docker compose up -d --force-recreate
+```
 
 ## Tuning
 
@@ -171,4 +181,4 @@ Edit `~/phylax/miner/.env` and `docker compose up -d` to apply.
 | `Bundle hash mismatch` | Wrong bytes downloaded | Check `bundle_url` reachability from inside the container |
 | Sandbox timeouts | Heavy bundles, `deep` profile | Bump `SANDBOX_TIMEOUT` in `.env`, `docker compose up -d` |
 | Disk fills up | Old image layers accumulating | Either enable the auto-update profile (Watchtower prunes automatically) or `docker image prune -af` manually |
-| Evidence axis stuck at 0 on the leaderboard | Sandbox produced no trace files | `ls ~/phylax/miner/evidence/$(ls -1t ~/phylax/miner/evidence \| head -1)` — should contain `network.jsonl`, `fs.jsonl`, `process.jsonl`, `secrets.jsonl`. If only `log.txt`, read that for the harness error |
+| Sandbox runs but produces no JSONL trace files | Run dir contains only `log.txt`; read it for the harness error | `ls ~/phylax/miner/evidence/$(ls -1t ~/phylax/miner/evidence \| head -1)` |
