@@ -228,6 +228,73 @@ def compute_discrepancy(
     )
 
 
+def apply_intel_hits(
+    report: DiscrepancyReport,
+    intel_results: dict,
+) -> DiscrepancyReport:
+    """Layer threat-intel hits on top of a DiscrepancyReport.
+
+    ``intel_results`` is the dict returned by phylax-server's
+    ``POST /v1/intel/lookup`` — shape:
+        {"results": [{"host": "evil.click", "hits": [{source, threat_type, ...}]}, ...]}
+
+    Any non-empty ``hits`` list produces a CRITICAL DiscrepancyFinding with
+    ``kind="threat_intel_hit"``. These are layered on top of the existing
+    manifest-vs-observed findings because intel applies regardless of
+    what the skill's SKILL.md declared — a known C2 domain is a BLOCK
+    even if the manifest lists it under allowed_domains. The whole
+    report's verdict / risk_score / discrepancy_score are recomputed to
+    reflect the combined finding set.
+
+    Returns a NEW DiscrepancyReport; the input is not mutated.
+    """
+    if not intel_results:
+        return report
+    new_findings: list[DiscrepancyFinding] = list(report.findings)
+    for item in intel_results.get("results", []):
+        hits = item.get("hits") or []
+        if not hits:
+            continue
+        target = item.get("host") or item.get("ip") or "<unknown>"
+        primary = hits[0]
+        source = primary.get("source", "intel")
+        threat = primary.get("threat_type", "unknown")
+        new_findings.append(DiscrepancyFinding(
+            axis="network",
+            kind="threat_intel_hit",
+            detail=(
+                f"skill contacted {target!r} which {source} flags as "
+                f"{threat} (no manifest declaration can override an active threat-intel hit)"
+            ),
+            severity=Severity.CRITICAL,
+        ))
+    if len(new_findings) == len(report.findings):
+        return report
+
+    weighted = sum(_SEVERITY_WEIGHT[f.severity] for f in new_findings)
+    discrepancy_score = min(1.0, weighted / 5.0)
+    critical_count = sum(1 for f in new_findings if f.severity == Severity.CRITICAL)
+    high_count = sum(1 for f in new_findings if f.severity == Severity.HIGH)
+    if critical_count:
+        verdict = Verdict.BLOCK
+        risk_score = min(100, 75 + 5 * critical_count)
+    elif high_count:
+        verdict = Verdict.WARN
+        risk_score = min(74, 40 + 4 * high_count)
+    elif new_findings:
+        verdict = Verdict.WARN
+        risk_score = 20
+    else:
+        verdict = Verdict.ALLOW
+        risk_score = 0
+    return DiscrepancyReport(
+        findings=new_findings,
+        discrepancy_score=discrepancy_score,
+        verdict=verdict,
+        risk_score=risk_score,
+    )
+
+
 def combine_verdict(
     discrepancy: DiscrepancyReport,
     static_findings: list,

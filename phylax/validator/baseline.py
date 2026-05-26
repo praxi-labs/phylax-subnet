@@ -23,7 +23,7 @@ from phylax.protocol import (
     Verdict,
     VerdictBlock,
 )
-from phylax.scoring.discrepancy import combine_verdict, compute_discrepancy
+from phylax.scoring.discrepancy import apply_intel_hits, combine_verdict, compute_discrepancy
 
 
 @dataclass
@@ -64,6 +64,7 @@ class BaselineRunner:
         sandbox_timeout_seconds: int = 120,
         run_bandit: bool = True,
         run_semgrep: bool = False,
+        intel_client=None,
     ):
         self.static_analyzer = StaticAnalyzer(run_bandit=run_bandit, run_semgrep=run_semgrep)
         self.sbom_analyzer = SBOMAnalyzer()
@@ -72,6 +73,13 @@ class BaselineRunner:
             timeout_seconds=int(os.getenv("SANDBOX_TIMEOUT", str(sandbox_timeout_seconds))),
         )
         self.policy_generator = PolicyGenerator()
+        # Optional phylax-server client; when present, every observed
+        # domain/IP gets a threat-intel lookup via /v1/intel/lookup.
+        # Hits become CRITICAL discrepancy findings regardless of the
+        # skill's manifest declaration. Miners can't reach this endpoint
+        # so they have to integrate their own threat-intel pipeline to
+        # match the validator's coverage — that's the moat.
+        self.intel_client = intel_client
 
 
     def run(
@@ -105,6 +113,7 @@ class BaselineRunner:
         findings = list(static_result.findings) + list(sbom_result.findings)
         manifest = load_manifest(bundle_path)
         discrepancy = compute_discrepancy(capabilities, manifest)
+        discrepancy = self._apply_threat_intel(discrepancy, capabilities)
         verdict = combine_verdict(discrepancy, findings, sbom_result.known_vulns)
         policy = self.policy_generator.generate(capabilities, findings)
 
@@ -125,6 +134,24 @@ class BaselineRunner:
             sbom_hash=sbom_result.sbom_hash,
             duration_ms=duration_ms,
         )
+
+
+    def _apply_threat_intel(self, discrepancy, capabilities):
+        """If an intel_client is wired in, look up every observed
+        domain/IP and fold the hits into the discrepancy report. Failure
+        of the intel call is non-fatal — we log it and proceed with the
+        manifest-only discrepancy rather than crater the whole round."""
+        if self.intel_client is None:
+            return discrepancy
+        hosts = list(set(capabilities.network.observed_domains))
+        ips = list(set(capabilities.network.observed_ips))
+        if not hosts and not ips:
+            return discrepancy
+        try:
+            intel_results = self.intel_client.intel_lookup(hosts=hosts, ips=ips)
+        except Exception:  # noqa: BLE001
+            return discrepancy
+        return apply_intel_hits(discrepancy, intel_results)
 
 
     def run_from_bytes(

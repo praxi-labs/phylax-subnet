@@ -18,6 +18,7 @@ from phylax.protocol import (
     Verdict,
 )
 from phylax.scoring.discrepancy import (
+    apply_intel_hits,
     combine_verdict,
     compute_discrepancy,
 )
@@ -246,6 +247,43 @@ def test_combine_verdict_known_vuln_escalates_to_warn():
     discrepancy = compute_discrepancy(_caps(), IMPLICIT_ZERO_TRUST)
     verdict = combine_verdict(discrepancy, [], known_vulns=["CVE-2024-1234"])
     assert verdict.decision == Verdict.WARN
+
+
+def test_apply_intel_hits_layers_critical_finding_on_top_of_clean_discrepancy():
+    """Skill declared and observed the same domain — manifest-side
+    discrepancy is clean (ALLOW). But the server's threat-intel proxy
+    flagged the domain as a known C2. Result must escalate to BLOCK
+    regardless of what the manifest said."""
+    base = compute_discrepancy(
+        _caps(egress=True, domains=["api.suspicious.click"]),
+        _manifest(egress=True, domains=["api.suspicious.click"]),
+    )
+    assert base.verdict == Verdict.ALLOW
+
+    intel = {
+        "results": [
+            {"host": "api.suspicious.click", "ip": None, "hits": [
+                {"source": "urlhaus", "threat_type": "c2", "confidence": 1.0}
+            ]},
+        ],
+    }
+    escalated = apply_intel_hits(base, intel)
+    assert escalated.verdict == Verdict.BLOCK
+    assert any(f.kind == "threat_intel_hit" for f in escalated.findings)
+    assert escalated.risk_score >= 75
+
+
+def test_apply_intel_hits_returns_original_when_no_hits():
+    base = compute_discrepancy(_caps(), IMPLICIT_ZERO_TRUST)
+    intel = {"results": [{"host": "clean.example", "hits": []}]}
+    out = apply_intel_hits(base, intel)
+    assert out is base  # no new findings → return original instance
+
+
+def test_apply_intel_hits_returns_original_when_no_results_key():
+    """Empty / malformed payload doesn't crash; returns original."""
+    base = compute_discrepancy(_caps(), IMPLICIT_ZERO_TRUST)
+    assert apply_intel_hits(base, {}) is base
 
 
 def test_combine_verdict_block_floor_is_discrepancy_when_higher():

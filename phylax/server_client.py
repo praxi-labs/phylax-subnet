@@ -192,6 +192,34 @@ class PhylaxServerClient:
             },
         )
 
+    def intel_lookup(
+        self,
+        hosts: list[str] | None = None,
+        ips: list[str] | None = None,
+    ) -> dict:
+        """Resolve threat-intel for a batch of observed hosts/IPs.
+
+        The server proxies to urlhaus (and eventually Spamhaus + AbuseIPDB)
+        and returns ``{queried_at, results: [{host, ip, hits: [...]}]}``.
+        A non-empty ``hits`` list for any input means the validator should
+        treat that host/IP as malicious regardless of what the skill's
+        SKILL.md manifest declared — a known C2 doesn't get a free pass
+        just because the developer listed it as allowed.
+
+        This endpoint sits behind the validator-allowlist auth, so miners
+        can't reach it. A miner that wants matching threat-intel coverage
+        has to integrate the same upstream sources themselves at their
+        own operating cost.
+        """
+        return self._request(
+            "POST",
+            "/v1/intel/lookup",
+            json_body={
+                "hosts": hosts or [],
+                "ips": ips or [],
+            },
+        )
+
 
     def request_and_verify_weight_attestation(
         self, round_id: str, weights: dict[int, float]
