@@ -164,7 +164,7 @@ def _detonate_entry(entry: Path) -> None:
     detonate(compiled, sandbox_globals)
 
 
-def _run_canary_challenge() -> None:
+def _run_canary_challenge(canary_id: str, canary_val: str) -> None:
     """Functional proof-of-execution: write + read a validator-chosen file.
 
     The validator generates PHYLAX_CANARY_ID and PHYLAX_CANARY_VAL per
@@ -178,11 +178,12 @@ def _run_canary_challenge() -> None:
     from env vars they don't see) AND every record the actual skill
     would have emitted (which they can't fabricate without running it).
 
-    When the env vars are unset (tests, bare-metal local runs) this is
-    a no-op so existing flows aren't disturbed.
+    canary_id and canary_val are read OUTSIDE this function (before
+    install_hooks) so that the env access isn't itself traced into
+    secrets.jsonl — otherwise PHYLAX_CANARY_ID and PHYLAX_CANARY_VAL
+    would end up in every generated SKILL.md as if the skill had read
+    them, polluting the manifest.
     """
-    canary_id = os.environ.get("PHYLAX_CANARY_ID", "").strip()
-    canary_val = os.environ.get("PHYLAX_CANARY_VAL", "").strip()
     if not canary_id or not canary_val:
         return
     EVIDENCE_DIR.mkdir(parents=True, exist_ok=True)
@@ -203,8 +204,11 @@ def main() -> int:
     except ImportError:
         pass
 
+    canary_id = os.environ.get("PHYLAX_CANARY_ID", "").strip()
+    canary_val = os.environ.get("PHYLAX_CANARY_VAL", "").strip()
+
     install_hooks()
-    _run_canary_challenge()
+    _run_canary_challenge(canary_id, canary_val)
     sys.path.insert(0, str(SKILL_DIR))
 
     entry = find_entrypoint()
