@@ -24,6 +24,7 @@ from phylax.scoring import (
     round_median_latency,
     score_all_axes,
 )
+from phylax.scoring.metrics import canary_outcome, task_skill_type
 from phylax.server_client import (
     PhylaxServerClient,
     ServerIdentityMismatch,
@@ -172,17 +173,35 @@ class PhylaxValidator:
 
         per_uid_task_scores: dict[int, list[float]] = {uid: [] for uid in miner_uids}
         per_uid_task_axes: dict[int, list] = {uid: [] for uid in miner_uids}
+        # V2 PR3 — per-skill-type alpha buckets + canary outcome counts.
+        # The tier engine reads these via /v1/rounds/record so trailing
+        # alphas track executable vs declarative competence separately.
+        per_uid_exec_alphas: dict[int, list[float]] = {uid: [] for uid in miner_uids}
+        per_uid_decl_alphas: dict[int, list[float]] = {uid: [] for uid in miner_uids}
+        per_uid_canary_passes: dict[int, int] = {uid: 0 for uid in miner_uids}
+        per_uid_canary_failures: dict[int, int] = {uid: 0 for uid in miner_uids}
+        per_uid_completed_bundles: dict[int, list[str]] = {uid: [] for uid in miner_uids}
 
         for task in corpus_tasks:
             await self._run_task_for_corpus(
                 task, miner_uids, per_uid_task_scores, per_uid_task_axes,
                 round_id=round_id,
+                exec_alphas=per_uid_exec_alphas,
+                decl_alphas=per_uid_decl_alphas,
+                canary_passes=per_uid_canary_passes,
+                canary_failures=per_uid_canary_failures,
+                completed_bundles=per_uid_completed_bundles,
             )
 
         for synth in synth_skills:
             await self._run_task_for_synthetic(
                 synth, miner_uids, per_uid_task_scores, per_uid_task_axes,
                 round_id=round_id,
+                exec_alphas=per_uid_exec_alphas,
+                decl_alphas=per_uid_decl_alphas,
+                canary_passes=per_uid_canary_passes,
+                canary_failures=per_uid_canary_failures,
+                completed_bundles=per_uid_completed_bundles,
             )
 
         new_scores = torch.zeros_like(self.scores)
@@ -220,6 +239,22 @@ class PhylaxValidator:
                     f"phylax-server unreachable while reporting results: {e} — "
                     f"set_weights will be blocked until next successful round"
                 )
+
+            # PR3: post the per-miner per-skill-type round record so the
+            # tier engine has fresh exec/decl alphas + canary outcomes
+            # before the next batch. Non-fatal: if the server doesn't
+            # know this endpoint (older deploy), log and continue.
+            try:
+                self._post_round_record_v2(
+                    round_id, miner_uids,
+                    exec_alphas=per_uid_exec_alphas,
+                    decl_alphas=per_uid_decl_alphas,
+                    canary_passes=per_uid_canary_passes,
+                    canary_failures=per_uid_canary_failures,
+                    completed_bundles=per_uid_completed_bundles,
+                )
+            except Exception as e:  # noqa: BLE001
+                bt.logging.debug(f"round_record post failed (non-fatal): {e}")
                 self.last_completed_round_id = None
             except Exception as e:  # noqa: BLE001
                 bt.logging.warning(f"phylax-server round push failed: {e}")
@@ -333,6 +368,74 @@ class PhylaxValidator:
         return task
 
 
+    def _post_round_record_v2(
+        self,
+        round_id: str,
+        miner_uids: list[int],
+        *,
+        exec_alphas: dict[int, list[float]],
+        decl_alphas: dict[int, list[float]],
+        canary_passes: dict[int, int],
+        canary_failures: dict[int, int],
+        completed_bundles: dict[int, list[str]],
+    ) -> None:
+        """Post V2 PR3 round record. Builds the per-miner-hotkey
+        ``per_miner_scores`` dict + axon IPs from the metagraph + the
+        completed-assignment lookup, then forwards to
+        ``/v1/rounds/record``.
+        """
+        if self.server_client is None:
+            return
+
+        def _mean(xs: list[float]) -> float | None:
+            return float(sum(xs) / len(xs)) if xs else None
+
+        per_miner_scores: dict[str, dict] = {}
+        axon_ips: dict[str, str] = {}
+        completed_assignments: dict[str, list[str]] = {}
+        participated: list[str] = []
+        all_queried: list[str] = []
+
+        for uid in miner_uids:
+            if uid >= len(self.metagraph.hotkeys):
+                continue
+            hotkey = self.metagraph.hotkeys[uid]
+            all_queried.append(hotkey)
+            ex = exec_alphas.get(uid, [])
+            dc = decl_alphas.get(uid, [])
+            if not ex and not dc and canary_passes.get(uid, 0) == 0 \
+                    and canary_failures.get(uid, 0) == 0:
+                continue
+            participated.append(hotkey)
+            per_miner_scores[hotkey] = {
+                "exec_alpha":     _mean(ex),
+                "decl_alpha":     _mean(dc),
+                "exec_tasks":     len(ex),
+                "decl_tasks":     len(dc),
+                "canary_passes":  int(canary_passes.get(uid, 0)),
+                "canary_failures": int(canary_failures.get(uid, 0)),
+            }
+            try:
+                axon = self.metagraph.axons[uid]
+                if axon and axon.ip:
+                    axon_ips[hotkey] = str(axon.ip)
+            except (IndexError, AttributeError):
+                pass
+            cb = completed_bundles.get(uid, [])
+            if cb:
+                completed_assignments[hotkey] = list(cb)
+
+        if not participated:
+            return
+        self.server_client.post_round_record(
+            round_id=round_id,
+            participated=participated,
+            all_queried=all_queried,
+            per_miner_scores=per_miner_scores,
+            axon_ips=axon_ips,
+            completed_assignments=completed_assignments,
+        )
+
     def _push_round_results(
         self,
         round_id: str,
@@ -381,6 +484,11 @@ class PhylaxValidator:
         per_uid_task_axes: dict[int, list],
         *,
         round_id: str,
+        exec_alphas: dict[int, list[float]] | None = None,
+        decl_alphas: dict[int, list[float]] | None = None,
+        canary_passes: dict[int, int] | None = None,
+        canary_failures: dict[int, int] | None = None,
+        completed_bundles: dict[int, list[str]] | None = None,
     ) -> None:
         task_dict = task.as_scoring_dict()
 
@@ -411,6 +519,21 @@ class PhylaxValidator:
             per_uid_task_axes[uid].append(axes)
             resp.quality = quality
 
+            if exec_alphas is not None and decl_alphas is not None:
+                skill_type = task_skill_type(evaluation_task)
+                alpha = float(axes.detection)
+                if skill_type in ("executable", "mixed"):
+                    exec_alphas.setdefault(uid, []).append(alpha)
+                if skill_type in ("declarative", "mixed"):
+                    decl_alphas.setdefault(uid, []).append(alpha)
+                outcome = canary_outcome(resp.sssa, evaluation_task)
+                if outcome == "pass":
+                    canary_passes[uid] = canary_passes.get(uid, 0) + 1
+                elif outcome == "fail":
+                    canary_failures[uid] = canary_failures.get(uid, 0) + 1
+                if completed_bundles is not None:
+                    completed_bundles.setdefault(uid, []).append(task.bundle_hash)
+
         await self._consense_and_publish(task_dict, responses, round_id=round_id)
 
     async def _run_task_for_synthetic(
@@ -421,6 +544,11 @@ class PhylaxValidator:
         per_uid_task_axes: dict[int, list],
         *,
         round_id: str,
+        exec_alphas: dict[int, list[float]] | None = None,
+        decl_alphas: dict[int, list[float]] | None = None,
+        canary_passes: dict[int, int] | None = None,
+        canary_failures: dict[int, int] | None = None,
+        completed_bundles: dict[int, list[str]] | None = None,
     ) -> None:
         bundle = SkillBundle(
             bundle_hash=synth_skill.bundle_hash,
@@ -446,12 +574,18 @@ class PhylaxValidator:
             evaluation_task["submission_latency_ms"] = resp.submission_latency_ms
             evaluation_task["median_latency_ms"] = median_latency
 
+            # PR1: when the server pre-baked intel + CVE findings into
+            # the task metadata, pass them through so BaselineRunner
+            # skips the live urlhaus/Spamhaus/osv.dev round trips.
+            md = evaluation_task.get("metadata") or {}
             gt = await asyncio.to_thread(
                 self.baseline.run_from_bytes,
                 synth_skill.bundle_bytes,
                 resp.nonce,
                 canary_id=resp.canary_id,
                 canary_val=resp.canary_val,
+                pre_baked_intel_findings=md.get("pre_baked_intel_findings"),
+                pre_baked_cve_findings=md.get("pre_baked_cve_findings"),
             )
             _merge_baseline_into_task(evaluation_task, gt)
 
@@ -460,6 +594,26 @@ class PhylaxValidator:
             per_uid_task_scores[uid].append(quality)
             per_uid_task_axes[uid].append(axes)
             resp.quality = quality
+
+            # PR3 per-skill-type bucketing for the round record.
+            if exec_alphas is not None and decl_alphas is not None:
+                skill_type = task_skill_type(evaluation_task)
+                # Detection-α with provenance weight already applied —
+                # this is what the tier engine compares against alpha_threshold.
+                alpha = float(axes.detection)
+                if skill_type in ("executable", "mixed"):
+                    exec_alphas.setdefault(uid, []).append(alpha)
+                if skill_type in ("declarative", "mixed"):
+                    decl_alphas.setdefault(uid, []).append(alpha)
+                outcome = canary_outcome(resp.sssa, evaluation_task)
+                if outcome == "pass":
+                    canary_passes[uid] = canary_passes.get(uid, 0) + 1
+                elif outcome == "fail":
+                    canary_failures[uid] = canary_failures.get(uid, 0) + 1
+                if completed_bundles is not None:
+                    completed_bundles.setdefault(uid, []).append(
+                        evaluation_task.get("bundle_hash") or synth_skill.bundle_hash
+                    )
 
         await self._consense_and_publish(task_dict, responses, round_id=round_id)
 
@@ -485,6 +639,15 @@ class PhylaxValidator:
         deadline_unix = time.time() + self.QUERY_TIMEOUT
         round_id = uuid.uuid4().hex
 
+        # PR1: forward the server's time-reward window so the miner knows
+        # its analysis budget and the validator's scorer evaluates the
+        # right deadline. Pulled from task metadata when present; pre-V2
+        # tasks leave these at 0 and the scorer falls back to the legacy
+        # efficiency curve.
+        task_md = getattr(task, "metadata", None) or {}
+        deadline_seconds = int(task_md.get("deadline_seconds") or 0)
+        t_min_seconds = int(task_md.get("t_min_seconds") or 0)
+
         async def query_one(uid: int) -> MinerResponse:
             axon = self.metagraph.axons[uid]
             nonce = secrets.randbits(63)
@@ -497,6 +660,8 @@ class PhylaxValidator:
                 deadline_unix=deadline_unix,
                 canary_id=canary_id,
                 canary_val=canary_val,
+                deadline_seconds=deadline_seconds,
+                t_min_seconds=t_min_seconds,
             )
             sent_at = time.time()
             try:
@@ -560,10 +725,16 @@ class PhylaxValidator:
         self, task: CorpusTask, nonce: int,
         canary_id: str = "", canary_val: str = "",
     ) -> GroundTruth | None:
-        """Run validator baseline if bundle bytes are retrievable."""
+        """Run validator baseline if bundle bytes are retrievable.
+
+        PR1: forwards ``pre_baked_intel_findings`` / ``pre_baked_cve_findings``
+        from ``task.metadata`` so BaselineRunner skips the live intel calls
+        when the server has already done them.
+        """
         bundle_bytes = await self._fetch_bundle_bytes(task)
         if not bundle_bytes:
             return None
+        md = getattr(task, "metadata", None) or {}
         try:
             return await asyncio.to_thread(
                 self.baseline.run_from_bytes,
@@ -571,6 +742,8 @@ class PhylaxValidator:
                 nonce,
                 canary_id=canary_id,
                 canary_val=canary_val,
+                pre_baked_intel_findings=md.get("pre_baked_intel_findings"),
+                pre_baked_cve_findings=md.get("pre_baked_cve_findings"),
             )
         except Exception as e:  # noqa: BLE001
             bt.logging.debug(f"baseline error for {task.name}: {e}")

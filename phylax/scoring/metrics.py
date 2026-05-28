@@ -24,6 +24,29 @@ LAMBDA_FALSE_NEGATIVE = 1.0
 LAMBDA_FALSE_POSITIVE = 0.4
 
 
+_PROVENANCE_WEIGHT_DEFAULTS = {
+    "human":             1.0,
+    "consensus":         0.7,
+    "consensus_expired": 0.4,
+}
+
+
+def _provenance_weight(task: dict) -> float:
+    metadata = task.get("metadata") or {}
+    annotated_by = metadata.get("annotated_by") or task.get("annotated_by")
+    if annotated_by is None:
+        return 1.0
+    weights = metadata.get("provenance_weights") or _PROVENANCE_WEIGHT_DEFAULTS
+    weight = weights.get(annotated_by)
+    if weight is None:
+        raise ValueError(
+            f"unknown annotated_by={annotated_by!r} on task "
+            f"{task.get('bundle_hash')!r}; row should not be in "
+            "Track A scoring. Check batch construction."
+        )
+    return float(weight)
+
+
 def _verdict_rank(v: str | Verdict) -> int:
     if isinstance(v, str):
         v = Verdict(v.upper())
@@ -36,37 +59,25 @@ def score_detection(sssa: SSSA, task: dict) -> float:
 
     distance = abs(predicted - truth)
     if distance == 0:
-        return 1.0
-
-    lam = LAMBDA_FALSE_POSITIVE if predicted > truth else LAMBDA_FALSE_NEGATIVE
-    base = max(0.0, 1.0 - lam * distance / 2.0)
+        base = 1.0
+    else:
+        lam = LAMBDA_FALSE_POSITIVE if predicted > truth else LAMBDA_FALSE_NEGATIVE
+        base = max(0.0, 1.0 - lam * distance / 2.0)
 
     expected_risk = task.get("expected_risk_score")
     if expected_risk is not None and distance == 0:
         delta = abs(sssa.verdict.risk_score - int(expected_risk)) / 100.0
         base *= max(0.9, 1.0 - 0.1 * delta)
-    return base
+
+    return base * _provenance_weight(task)
 
 
 def score_evidence(sssa: SSSA, task: dict) -> float:
-    """Hash-equality between miner's evidence and validator's baseline replay.
+    metadata = task.get("metadata") or {}
+    skill_type = metadata.get("skill_type") or task.get("skill_type")
+    if skill_type == "declarative":
+        return score_evidence_declarative(sssa, task)
 
-    Two semantics that look subtle but matter a lot:
-
-    1. **Canary gate on F (filesystem).** The harness writes + reads a
-       per-task canary file at startup, so the validator's baseline always
-       produces a non-null fs_trace_hash. A miner whose F is null (or
-       different from validator's) demonstrably didn't run the sandbox
-       honestly — short-circuit to 0 regardless of other axes. This is the
-       proof-of-execution gate.
-
-    2. **Vacuous matches count.** When both miner and validator agree
-       there's nothing to observe on an axis (e.g. both N=None because the
-       skill made no network calls), that's a real agreement signal — an
-       honest miner observing a benign skill shouldn't be punished for the
-       skill being benign. Use `==` rather than `is not None and ==`, since
-       `None == None` is True.
-    """
     miner_hashes = sssa.evidence.component_hashes()
     truth = task.get("ground_truth_evidence") or {}
 
@@ -88,6 +99,49 @@ def score_evidence(sssa: SSSA, task: dict) -> float:
     if any(not _is_sha256_ref(h) for h in components):
         return 0.0
     return 0.5
+
+
+def score_evidence_declarative(sssa: SSSA, task: dict) -> float:
+    expected = (task.get("metadata") or {}).get("declarative_canary_id") \
+               or task.get("declarative_canary_id")
+    miner_canary = _extract_miner_canary(sssa)
+    if expected is None:
+        miner_findings = _miner_declarative_findings_count(sssa)
+        return 0.5 if miner_findings > 0 else 0.0
+    if miner_canary is None or miner_canary != expected:
+        return 0.0
+    return 1.0
+
+
+def _extract_miner_canary(sssa: SSSA) -> str | None:
+    evidence = getattr(sssa, "evidence", None)
+    declarative = getattr(evidence, "declarative", None) if evidence else None
+    if declarative is not None:
+        cid = getattr(declarative, "canary_id_found", None)
+        if cid is None and isinstance(declarative, dict):
+            cid = declarative.get("canary_id_found")
+        if cid:
+            return str(cid)
+    refs = getattr(sssa, "evidence_refs", None) or {}
+    if isinstance(refs, dict):
+        cid = refs.get("declarative_canary_id") or refs.get("canary_id_found")
+        if cid:
+            return str(cid)
+    return None
+
+
+def _miner_declarative_findings_count(sssa: SSSA) -> int:
+    evidence = getattr(sssa, "evidence", None)
+    declarative = getattr(evidence, "declarative", None) if evidence else None
+    if declarative is None:
+        return 0
+    n = getattr(declarative, "findings_count", None)
+    if n is None and isinstance(declarative, dict):
+        n = declarative.get("findings_count", 0)
+    try:
+        return int(n or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _is_sha256_ref(s: str | None) -> bool:
@@ -177,7 +231,50 @@ TAU_MAX_MS = {
 }
 
 
+_TIME_SWEET_SPOT_FRAC = 0.25
+_TIME_DEADLINE_FLOOR = 0.60
+
+
+def score_time_window(
+    completion_ms: int,
+    *,
+    deadline_seconds: int,
+    t_min_seconds: int,
+    has_evidence: bool,
+) -> float:
+    if not has_evidence:
+        return 0.0
+    if deadline_seconds <= t_min_seconds:
+        return _TIME_DEADLINE_FLOOR
+    completion_sec = max(0.0, completion_ms / 1000.0)
+    if completion_sec < t_min_seconds:
+        return 0.0
+    window = deadline_seconds - t_min_seconds
+    elapsed = completion_sec - t_min_seconds
+    fraction = min(1.0, elapsed / window)
+    if fraction <= _TIME_SWEET_SPOT_FRAC:
+        return fraction / _TIME_SWEET_SPOT_FRAC
+    decay = (fraction - _TIME_SWEET_SPOT_FRAC) / (1.0 - _TIME_SWEET_SPOT_FRAC)
+    return 1.0 - decay * (1.0 - _TIME_DEADLINE_FLOOR)
+
+
 def score_efficiency(sssa: SSSA, task: dict) -> float:
+    metadata = task.get("metadata") or {}
+    deadline_s = metadata.get("deadline_seconds") or task.get("deadline_seconds")
+    t_min_s = metadata.get("t_min_seconds") or task.get("t_min_seconds")
+    if deadline_s and t_min_s:
+        tau = task.get("submission_latency_ms")
+        if tau is None:
+            tau = sssa.run_metadata.analysis_duration_ms
+        miner_hashes = sssa.evidence.component_hashes()
+        has_evidence = any(miner_hashes.get(k) for k in ("N", "F", "P", "K"))
+        return score_time_window(
+            int(tau),
+            deadline_seconds=int(deadline_s),
+            t_min_seconds=int(t_min_s),
+            has_evidence=has_evidence,
+        )
+
     profile = task.get("test_profile", "standard")
     tau_min = TAU_MIN_MS.get(profile, TAU_MIN_MS["standard"])
     tau_max = TAU_MAX_MS.get(profile, TAU_MAX_MS["standard"])
@@ -204,6 +301,34 @@ def score_all_axes(sssa: SSSA, task: dict) -> AxisScores:
         policy=score_policy(sssa, task),
         efficiency=score_efficiency(sssa, task),
     )
+
+
+def task_skill_type(task: dict) -> str:
+    metadata = task.get("metadata") or {}
+    skill_type = metadata.get("skill_type") or task.get("skill_type")
+    if skill_type in ("executable", "declarative", "mixed"):
+        return skill_type
+    return "executable"
+
+
+def canary_outcome(sssa: SSSA, task: dict) -> str | None:
+    skill_type = task_skill_type(task)
+    metadata = task.get("metadata") or {}
+
+    if skill_type == "declarative":
+        expected_canary = metadata.get("declarative_canary_id") \
+                          or task.get("declarative_canary_id")
+        if not expected_canary:
+            return None
+        miner_canary = _extract_miner_canary(sssa)
+        return "pass" if miner_canary == expected_canary else "fail"
+
+    truth = task.get("ground_truth_evidence") or {}
+    truth_f = truth.get("F")
+    if truth_f is None:
+        return None
+    miner_hashes = sssa.evidence.component_hashes()
+    return "pass" if miner_hashes.get("F") == truth_f else "fail"
 
 
 def round_median_latency(latencies_ms: Iterable[int]) -> float:

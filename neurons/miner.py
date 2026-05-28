@@ -72,12 +72,35 @@ class PhylaxMiner:
 
         Called by the Axon server each time a validator sends a PhylaxSynapse.
         Runs the full pipeline and returns the signed SSSA.
+
+        PR2: routes on ``skill_type`` from the bundle metadata.
+          * ``declarative`` → Layer 0 only (no sandbox), declarative
+            evidence block carries the canary read from SKILL.md.
+          * ``executable`` (or unset) → existing Layer 1/2/3 pipeline.
+          * ``mixed`` → runs both, stricter verdict wins, declarative
+            evidence rides along inside the same SSSA.
         """
         bundle = synapse.skill_bundle
-        bt.logging.info(f"Received scan request: {bundle.bundle_hash} profile={bundle.test_profile}")
+        skill_type = (bundle.metadata or {}).get("skill_type", "executable")
+        bt.logging.info(
+            f"Received scan request: {bundle.bundle_hash} "
+            f"profile={bundle.test_profile} skill_type={skill_type}"
+        )
         start_time = time.time()
 
         try:
+            # Declarative-only branch: skip Layer 1/2/3 entirely. Layer 3
+            # would produce no_entry (no Python entrypoint) and pin
+            # evidence to 0; running it is wasted compute.
+            if skill_type == "declarative":
+                synapse = await self._run_declarative_pipeline(
+                    synapse, bundle, start_time,
+                )
+                return synapse
+
+            # Bundle-hash verification already happens inside
+            # _resolve_bundle — if the downloaded bytes don't match
+            # bundle.bundle_hash it raises before extraction.
             bundle_path = await self._resolve_bundle(bundle)
 
             bt.logging.debug("Running Layer 1: Static analysis…")
@@ -168,6 +191,81 @@ class PhylaxMiner:
         if uid is None:
             return 0.0
         return float(self.metagraph.S[uid])
+
+    async def _run_declarative_pipeline(
+        self,
+        synapse: PhylaxSynapse,
+        bundle,
+        start_time: float,
+    ) -> PhylaxSynapse:
+        """PR2 declarative pipeline. No sandbox, no Docker — just Layer 0
+        text analysis over the SKILL.md the validator shipped in metadata.
+
+        We prefer ``bundle.metadata['skill_md']`` over re-extracting from
+        the bundle on disk because the metadata copy is the canary-bearing
+        version the server baked. The on-disk SKILL.md doesn't carry the
+        canary (the server doesn't re-hash bundles after injection — see
+        ``phylax_server/workers/declarative_baseline.py``).
+        """
+        from phylax.layer0_declarative import (
+            analyze_skill_md,
+            compute_verdict_from_findings,
+            derive_declarative_policy,
+            extract_canary,
+            layer0_sync_hash,
+            skill_md_fingerprint,
+        )
+        from phylax.protocol import DeclarativeEvidenceBlock
+
+        try:
+            skill_md = (bundle.metadata or {}).get("skill_md")
+            if not skill_md:
+                # Fallback: try to extract from the bundle on disk so a
+                # legacy server that hasn't been updated still produces
+                # *some* declarative SSSA rather than a hard error.
+                bundle_path = await self._resolve_bundle(bundle)
+                skill_md = await asyncio.to_thread(
+                    _extract_skill_md_from_dir, bundle_path,
+                )
+
+            caps, findings = await asyncio.to_thread(
+                analyze_skill_md, skill_md or "",
+            )
+            verdict_block = compute_verdict_from_findings(findings)
+            policy = derive_declarative_policy(caps, findings)
+
+            duration_ms = int((time.time() - start_time) * 1000)
+
+            sssa = self._assemble_declarative_sssa(
+                bundle=bundle,
+                verdict_block=verdict_block,
+                capabilities=caps,
+                findings=findings,
+                policy=policy,
+                declarative_evidence=DeclarativeEvidenceBlock(
+                    canary_id_found=extract_canary(skill_md or ""),
+                    skill_md_fingerprint=skill_md_fingerprint(skill_md or ""),
+                    findings_count=len(findings),
+                    layer0_sync_hash=layer0_sync_hash(),
+                    analysis_duration_ms=duration_ms,
+                ),
+                duration_ms=duration_ms,
+                nonce=int(synapse.nonce or 0),
+            )
+            signed_sssa = self.signer.sign(sssa)
+            synapse.attestation = signed_sssa.model_dump(mode="json")
+            bt.logging.success(
+                f"Declarative scan complete: {bundle.bundle_hash} → "
+                f"{verdict_block['decision']} risk={verdict_block['risk_score']} "
+                f"findings={len(findings)} duration={duration_ms}ms"
+            )
+        except Exception as exc:
+            bt.logging.error(
+                f"Declarative pipeline error for {bundle.bundle_hash}: {exc}"
+            )
+            bt.logging.debug(traceback.format_exc())
+            synapse.error = str(exc)
+        return synapse
 
 
     async def _resolve_bundle(self, bundle: SkillBundle) -> str:
@@ -274,6 +372,96 @@ class PhylaxMiner:
         discrepancy = compute_discrepancy(capabilities, manifest)
         return combine_verdict(discrepancy, findings, sbom_result.known_vulns)
 
+    def _assemble_declarative_sssa(self, bundle, verdict_block, capabilities,
+                                   findings, policy, declarative_evidence,
+                                   duration_ms, nonce) -> SSSA:
+        """Build an SSSA from declarative-pipeline outputs.
+
+        Same SSSA shape as the executable path so the validator's
+        scoring code doesn't fork on type — only the evidence block's
+        ``declarative`` field is populated and the trace hashes stay
+        None (a declarative skill never executes).
+        """
+        from phylax.protocol import (
+            CapabilityMap,
+            DependencyInfo,
+            EvidencePack,
+            FilesystemCapability,
+            Finding,
+            FindingEvidence,
+            NetworkCapability,
+            ProcessCapability,
+            RecommendedPolicy,
+            RunMetadata,
+            SecretsCapability,
+            Severity,
+            SkillIdentity,
+            Verdict,
+            VerdictBlock,
+        )
+        from phylax.protocol import SSSA as _SSSA
+
+        proto_findings = [
+            Finding(
+                severity=Severity(f.severity),
+                title=f.kind,
+                description=f.description,
+                evidence=FindingEvidence(snippet=f.snippet),
+            )
+            for f in findings
+        ]
+        cap_map = CapabilityMap(
+            network=NetworkCapability(
+                egress=bool(capabilities.observed_hosts),
+                observed_domains=list(capabilities.observed_hosts),
+                observed_ips=[],
+            ),
+            filesystem=FilesystemCapability(reads=[], writes=[]),
+            process=ProcessCapability(
+                spawns=False,
+                shell_exec=capabilities.references_shell,
+                observed_commands=[],
+            ),
+            secrets=SecretsCapability(
+                env_access=capabilities.references_secrets,
+                observed_vars=[],
+            ),
+        )
+        # ``derive_declarative_policy`` adds a ``_derivation`` audit key
+        # that isn't part of RecommendedPolicy. Strip private keys so the
+        # model validation doesn't reject the dict.
+        policy_clean = {k: v for k, v in policy.items() if not k.startswith("_")}
+        return _SSSA(
+            skill=SkillIdentity(
+                name=bundle.metadata.get("name", "unknown"),
+                version=bundle.metadata.get("version", "unknown"),
+                bundle_hash=bundle.bundle_hash,
+                sbom_hash=None,
+                declared_permissions=bundle.metadata.get("permissions", []),
+            ),
+            verdict=VerdictBlock(
+                decision=Verdict(verdict_block["decision"]),
+                risk_score=int(verdict_block["risk_score"]),
+                confidence=1.0,
+                summary=verdict_block.get("rationale", "")[:240],
+            ),
+            capabilities=cap_map,
+            findings=proto_findings,
+            dependencies=DependencyInfo(
+                sbom_hash=None,
+                high_risk_packages=[],
+                known_vulns=[],
+                install_hooks=[],
+            ),
+            recommended_policy=RecommendedPolicy(**policy_clean),
+            evidence=EvidencePack(declarative=declarative_evidence),
+            run_metadata=RunMetadata(
+                tools={"layer0_declarative": declarative_evidence.layer0_sync_hash},
+                determinism_seed=int(nonce),
+                analysis_duration_ms=duration_ms,
+            ),
+        )
+
     def _assemble_sssa(self, bundle, sbom_result, verdict, capabilities,
                        findings, policy, evidence_pack, duration_ms, nonce) -> SSSA:
         from phylax.protocol import SSSA, DependencyInfo, RunMetadata, SkillIdentity
@@ -336,6 +524,29 @@ class PhylaxMiner:
             except Exception as e:
                 bt.logging.error(f"Run loop error: {e}")
                 time.sleep(12)
+
+
+_SKILL_MD_NAMES = ("skill.md", "skill.markdown", "readme.md")
+
+
+def _extract_skill_md_from_dir(bundle_path: str) -> str | None:
+    """Walk the extracted bundle for a SKILL.md (or .markdown / README.md
+    fallback). The on-disk copy doesn't carry the server-injected canary
+    — the canary lives in ``bundle.metadata['skill_md']``, the metadata
+    copy — but this fallback exists for the case where a legacy server
+    didn't bake the canary in the first place.
+    """
+    import os
+    for root, _dirs, files in os.walk(bundle_path):
+        for name in files:
+            if name.lower() in _SKILL_MD_NAMES:
+                try:
+                    with open(os.path.join(root, name), encoding="utf-8",
+                              errors="replace") as fh:
+                        return fh.read()
+                except OSError:
+                    continue
+    return None
 
 
 _NETWORK_ENDPOINTS = {

@@ -168,6 +168,48 @@ class PhylaxServerClient:
             },
         )
 
+    def post_round_record(
+        self,
+        round_id: str,
+        *,
+        participated: list[str],
+        all_queried: list[str],
+        per_miner_scores: dict[str, dict],
+        axon_ips: dict[str, str] | None = None,
+        completed_assignments: dict[str, list[str]] | None = None,
+    ) -> dict:
+        return self._request(
+            "POST",
+            "/v1/rounds/record",
+            json_body={
+                "round_id": round_id,
+                "participated": list(participated),
+                "all_queried": list(all_queried),
+                "per_miner_scores": per_miner_scores,
+                "axon_ips": axon_ips or {},
+                "completed_assignments": completed_assignments or {},
+            },
+        )
+
+    def post_label_review(
+        self,
+        bundle_hash: str,
+        *,
+        server_label: str,
+        validator_verdict: str,
+        agreeing_miners: int = 0,
+    ) -> dict:
+        return self._request(
+            "POST",
+            "/v1/label_review",
+            json_body={
+                "task_id": bundle_hash,
+                "server_label": server_label,
+                "validator_verdict": validator_verdict,
+                "agreeing_miners": int(agreeing_miners),
+            },
+        )
+
     def report_weights(self, round_id: str, weights: dict[int, float]) -> dict:
         return self._request(
             "POST",

@@ -157,6 +157,14 @@ class RecommendedPolicy(BaseModel):
     rate_limit_rps: int | None = None
 
 
+class DeclarativeEvidenceBlock(BaseModel):
+    canary_id_found: str | None = None
+    skill_md_fingerprint: str | None = None
+    findings_count: int = 0
+    layer0_sync_hash: str = ""
+    analysis_duration_ms: int = 0
+
+
 class EvidencePack(BaseModel):
     """Content-addressed hashes of the detonation traces. Validators replay
     detonation with the miner's nonce and require byte-equal hashes."""
@@ -167,6 +175,7 @@ class EvidencePack(BaseModel):
     secrets_trace_hash: str | None = None
     sandbox_log_hash: str | None = None
     pcap_hash: str | None = None
+    declarative: DeclarativeEvidenceBlock | None = None
 
     def component_hashes(self) -> dict[str, str | None]:
         return {
@@ -264,6 +273,8 @@ class PhylaxSynapse(bt.Synapse):
     deadline_unix: float = 0.0
     canary_id: str = ""
     canary_val: str = ""
+    deadline_seconds: int = 0
+    t_min_seconds: int = 0
 
     attestation: dict | None = None
     evidence_refs: dict | None = None

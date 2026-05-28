@@ -90,6 +90,8 @@ class BaselineRunner:
         deep: bool = False,
         canary_id: str = "",
         canary_val: str = "",
+        pre_baked_intel_findings: list[dict] | None = None,
+        pre_baked_cve_findings: list[dict] | None = None,
     ) -> GroundTruth:
         start = time.time()
 
@@ -113,8 +115,19 @@ class BaselineRunner:
         findings = list(static_result.findings) + list(sbom_result.findings)
         manifest = load_manifest(bundle_path)
         discrepancy = compute_discrepancy(capabilities, manifest)
-        discrepancy = self._apply_threat_intel(discrepancy, capabilities)
-        cve_vulns = self._lookup_cves(sbom_result)
+        if pre_baked_intel_findings is not None:
+            discrepancy = self._apply_prebaked_intel(
+                discrepancy, pre_baked_intel_findings,
+            )
+        else:
+            discrepancy = self._apply_threat_intel(discrepancy, capabilities)
+        if pre_baked_cve_findings is not None:
+            cve_vulns = [
+                f.get("cve_id") for f in pre_baked_cve_findings
+                if isinstance(f, dict) and f.get("cve_id")
+            ]
+        else:
+            cve_vulns = self._lookup_cves(sbom_result)
         known_vulns = list(sbom_result.known_vulns) + cve_vulns
         verdict = combine_verdict(discrepancy, findings, known_vulns)
         policy = self.policy_generator.generate(capabilities, findings)
@@ -137,6 +150,26 @@ class BaselineRunner:
             duration_ms=duration_ms,
         )
 
+
+    def _apply_prebaked_intel(self, discrepancy, prebaked: list[dict]):
+        if not prebaked:
+            return discrepancy
+        by_indicator: dict[str, list[dict]] = {}
+        for entry in prebaked:
+            if not isinstance(entry, dict):
+                continue
+            indicator = entry.get("indicator")
+            if not indicator:
+                continue
+            hit = {k: v for k, v in entry.items() if k != "indicator"}
+            by_indicator.setdefault(indicator, []).append(hit)
+        intel_results = {
+            "results": [
+                {"host": indicator, "hits": hits}
+                for indicator, hits in by_indicator.items()
+            ],
+        }
+        return apply_intel_hits(discrepancy, intel_results)
 
     def _apply_threat_intel(self, discrepancy, capabilities):
         """If an intel_client is wired in, look up every observed
@@ -205,17 +238,9 @@ class BaselineRunner:
         deep: bool = False,
         canary_id: str = "",
         canary_val: str = "",
+        pre_baked_intel_findings: list[dict] | None = None,
+        pre_baked_cve_findings: list[dict] | None = None,
     ) -> GroundTruth:
-        """Convenience: writes bytes to a temp dir, unpacks if a zip, then runs.
-
-        The staging directory MUST live under PHYLAX_EVIDENCE_DIR (which is
-        bind-mounted from the host) so the sandbox container — launched via
-        the host docker socket — can actually see the bundle. A path under
-        /tmp would only exist inside the validator container; the host
-        dockerd would silently create an empty dir there and mount it into
-        /skill, producing the same "no_entry" baseline for every task and
-        pinning evidence_score to 0 regardless of what miners submit.
-        """
         import zipfile
 
         staging_root = os.path.expanduser(
@@ -238,6 +263,8 @@ class BaselineRunner:
             deep=deep,
             canary_id=canary_id,
             canary_val=canary_val,
+            pre_baked_intel_findings=pre_baked_intel_findings,
+            pre_baked_cve_findings=pre_baked_cve_findings,
         )
 
 
