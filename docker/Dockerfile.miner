@@ -50,8 +50,12 @@ RUN pip install --upgrade pip && pip install -r requirements.txt
 # async-substrate-interface 1.x is the last line that still exposes ScaleObj
 # (2.x removed it). scalecodec gets pulled as a dep but its namespace collides
 # with cyscale (the faster reimplementation we actually want), so swap them.
+# bittensor-wallet 4.0.x deserializes keyfiles as HashMap<String, Option<String>>
+# in Rust, which rejects modern btcli's `"cryptoType": 1` (integer). 4.1.0+
+# accepts it. Pin explicitly so a transitive resolution doesn't drop us back.
 RUN pip install --force-reinstall \
         bittensor==9.12.2 \
+        'bittensor-wallet>=4.1.0' \
         'async-substrate-interface<2' \
  && pip uninstall -y scalecodec cyscale \
  && pip install cyscale
