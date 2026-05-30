@@ -7,9 +7,8 @@ import time
 import zipfile
 from dataclasses import dataclass, field
 
-from phylax.pipeline.static import StaticAnalyzer, StaticAnalysisResult
+from phylax.pipeline.static import StaticAnalysisResult, StaticAnalyzer
 from phylax.protocol import Severity
-
 
 _SEVERITY_RISK = {
     Severity.LOW:      5,
@@ -48,7 +47,7 @@ def _verdict_from_findings(static_result: StaticAnalysisResult) -> tuple[str, in
     if static_result.shell_commands:
         cumulative += 10
         rationales.append("MEDIUM: shell command observed")
-    if any(not w.startswith(("/tmp", "/var/tmp")) for w in static_result.fs_writes):
+    if any(not w.startswith(("/tmp", "/var/tmp")) for w in static_result.fs_writes):  # noqa: S108  # path-prefix check, not a temp file creation
         cumulative += 5
         rationales.append("LOW: write outside /tmp")
     risk_score = min(100, cumulative)

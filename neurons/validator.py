@@ -256,9 +256,6 @@ class PhylaxValidator:
             except Exception as e:  # noqa: BLE001
                 bt.logging.debug(f"round_record post failed (non-fatal): {e}")
                 self.last_completed_round_id = None
-            except Exception as e:  # noqa: BLE001
-                bt.logging.warning(f"phylax-server round push failed: {e}")
-                self.last_completed_round_id = None
         else:
             self.last_completed_round_id = None
 

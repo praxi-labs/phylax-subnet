@@ -6,16 +6,15 @@ import zipfile
 from dataclasses import dataclass, field
 
 from phylax.layer0_declarative import (
+    _CANARY_RE,  # noqa: PLC2701
     DeclarativeCapabilities,
     DeclarativeFinding,
-    _CANARY_RE,  # noqa: PLC2701
     analyze_skill_md,
     compute_verdict_from_findings,
     derive_declarative_policy,
     layer0_sync_hash,
     skill_md_fingerprint,
 )
-
 
 _SKILL_MD_NAMES = ("skill.md", "skill.markdown", "readme.md")
 

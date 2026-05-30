@@ -382,6 +382,7 @@ class PhylaxMiner:
         ``declarative`` field is populated and the trace hashes stay
         None (a declarative skill never executes).
         """
+        from phylax.protocol import SSSA as _SSSA
         from phylax.protocol import (
             CapabilityMap,
             DependencyInfo,
@@ -399,7 +400,6 @@ class PhylaxMiner:
             Verdict,
             VerdictBlock,
         )
-        from phylax.protocol import SSSA as _SSSA
 
         proto_findings = [
             Finding(

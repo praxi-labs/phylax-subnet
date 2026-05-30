@@ -5,7 +5,6 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-
 INJECTION_PATTERNS: list[tuple[str, re.Pattern, str]] = [
     ("ignore_previous",
      re.compile(r"ignore (?:all )?(?:previous|prior|above) (?:instructions?|prompts?)", re.IGNORECASE),
@@ -127,7 +126,7 @@ def layer0_sync_hash() -> str:
     for bank_name, bank in _PATTERN_BANKS:
         severity = _SEVERITY_BY_BANK[bank_name]
         for kind, regex, _description in bank:
-            h.update(f"{bank_name}|{kind}|{regex.pattern}|{severity}\n".encode("utf-8"))
+            h.update(f"{bank_name}|{kind}|{regex.pattern}|{severity}\n".encode())
     return "sha256:" + h.hexdigest()
 
 
