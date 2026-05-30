@@ -45,7 +45,35 @@ The script is idempotent — re-running upgrades the compose file but never clob
 
 If your AWS Security Group / firewall is restrictive, open **TCP 8091 inbound** to the public internet now. Without it, validators can't dial your axon.
 
-## 4. Run
+## 4. Configure `.env`
+
+Open `~/phylax/miner/.env` and confirm these values **before** the first `docker compose up`. The template ships with placeholders that will silently leave you on the wrong subnet or with the wrong wallet:
+
+| Variable | What to set | Why it matters |
+|---|---|---|
+| `PHYLAX_NETUID` | `486` | The template defaults to `1`. If left unchanged the miner registers/serves on the wrong subnet and is invisible to phylax validators. |
+| `SUBTENSOR_NETWORK` | `test` | `finney` (mainnet) won't see netuid 486. |
+| `WALLET_NAME` | `miner` | Must match the **folder name** in `~/.bittensor/wallets/`, not a role. If your folder is called something else (e.g. you transferred a wallet from another host), use that name. Mismatch = container fails to find the hotkey. |
+| `WALLET_HOTKEY` | `default` | Whatever hotkey under that wallet you registered with. |
+| `PHYLAX_SERVER_URL` | `https://<phylax-server-host>` | Same URL the operator gave the validator. Miners that don't talk to phylax-server can't receive curated tasks and never appear in scored rounds. |
+| `PHYLAX_SERVER_HOTKEY` | `<hex from /v1/server-identity>` | Pins the server signing key so a rogue impostor server can't trick you. Fetch with `curl <PHYLAX_SERVER_URL>/v1/server-identity`. |
+
+Quick sanity check after editing:
+
+```bash
+grep -E '^(PHYLAX_NETUID|SUBTENSOR_NETWORK|WALLET_NAME|WALLET_HOTKEY|PHYLAX_SERVER_URL|PHYLAX_SERVER_HOTKEY)=' ~/phylax/miner/.env
+```
+
+You should see all six lines populated with non-placeholder values.
+
+If you started the miner before fixing these, edit `.env` and recreate the container — `docker compose restart` is not enough because env vars are only read at container creation:
+
+```bash
+cd ~/phylax/miner
+docker compose up -d --force-recreate
+```
+
+## 5. Run
 
 ```bash
 cd ~/phylax/miner
@@ -72,7 +100,7 @@ Scan complete: sha256:... → Verdict.ALLOW risk=X duration=...ms
 
 If you don't see `Layer 3` lines for STANDARD/DEEP-profile requests, the sandbox isn't launching — check the troubleshooting table below.
 
-## 5. Updating
+## 6. Updating
 
 ### Automatic (recommended) — opt-in Watchtower
 
@@ -171,6 +199,9 @@ Edit `~/phylax/miner/.env` and `docker compose up -d` to apply.
 |---|---|---|
 | `docker compose: command not found` | docker compose plugin missing | `sudo apt install docker-compose-plugin` |
 | Container exits immediately | Hotkey not found in `~/.bittensor` | Check `ls ~/.bittensor/wallets/miner/hotkeys/default` |
+| Container starts but uses the wrong hotkey | `WALLET_NAME` in `.env` doesn't match your wallet folder | `btcli w list` to see the actual folder names; align `WALLET_NAME` with the folder containing the registered miner hotkey, then `docker compose up -d --force-recreate` |
+| Miner registers on the wrong subnet | `PHYLAX_NETUID` left at the template default `1` | Set to `486` in `.env`, then `docker compose up -d --force-recreate`. Existing on-chain registration on netuid 1 stays orphaned (re-register on 486). |
+| Validator dials `0.0.0.0:8091` instead of your public IP | Miner and validator on the same host (e.g. same EC2) — bittensor's dendrite anti-loopback rewrites a destination IP that equals the validator's own external IP | Run the miner on a different host than the validator. The chain registration uses the miner host's public IP, dendrite sees it as a different machine, and dials normally. |
 | `PermissionError: '~/phylax/evidence/...'` (literal tilde) | Old `.env` with `~/...` in `PHYLAX_EVIDENCE_DIR` | Set it to `/opt/phylax/evidence` (the in-container path); see the Tuning table |
 | `permission denied while trying to connect to the docker API` | Container UID not in host docker group | Confirm `DOCKER_GID` in `.env` matches `getent group docker`, re-run `up -d` |
 | Sandbox produces only `log.txt`, no `network.jsonl` etc. | `PHYLAX_EVIDENCE_HOST_DIR` not set or wrong | Re-run `scripts/install.sh`, or set it to the absolute host path of `~/phylax/miner/evidence` |

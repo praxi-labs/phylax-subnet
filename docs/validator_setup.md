@@ -63,15 +63,19 @@ curl -fsSL https://raw.githubusercontent.com/praxi-labs/phylax-subnet/main/scrip
 
 The script is idempotent — re-running upgrades the compose file but never clobbers `.env`.
 
-## 5. Configure phylax-server access
+## 5. Configure `.env`
 
-Edit `~/phylax/validator/.env` and fill in:
+Open `~/phylax/validator/.env` and confirm these values **before** the first `docker compose up`. The template ships with placeholders that will silently leave you on the wrong subnet or pointing at the wrong wallet:
 
-```bash
-PHYLAX_SERVER_URL=https://<your-phylax-server>
-PHYLAX_SERVER_HOTKEY=<hex from /v1/server-identity — pins the server identity>
-PHYLAX_VALIDATOR_LABEL=my-org-validator
-```
+| Variable | What to set | Why it matters |
+|---|---|---|
+| `PHYLAX_NETUID` | `486` | Template defaults to `1`. Wrong netuid = the validator never sees Phylax miners. |
+| `SUBTENSOR_NETWORK` | `test` | `finney` (mainnet) won't see netuid 486. |
+| `WALLET_NAME` | `validator` | Must match the **folder name** in `~/.bittensor/wallets/`, not a role. If your folder is called something else (e.g. you transferred a wallet from another host), use that name. Mismatch = container fails to find the hotkey. |
+| `WALLET_HOTKEY` | `default` | Whatever hotkey under that wallet you registered with. |
+| `PHYLAX_SERVER_URL` | `https://<your-phylax-server>` | Required. Without it the validator can't pull task batches or push weights. |
+| `PHYLAX_SERVER_HOTKEY` | `<hex from /v1/server-identity>` | Recommended. Pins the server signing key so a rogue impostor server can't trick you. |
+| `PHYLAX_VALIDATOR_LABEL` | `my-org-validator` | Friendly label that shows up in server-side dashboards. |
 
 Fetch and pin the server signing key (defends against impersonators):
 
@@ -80,7 +84,22 @@ curl -fsSL https://<your-phylax-server>/v1/server-identity
 # Copy the "hotkey" field into PHYLAX_SERVER_HOTKEY in .env
 ```
 
+Quick sanity check after editing:
+
+```bash
+grep -E '^(PHYLAX_NETUID|SUBTENSOR_NETWORK|WALLET_NAME|WALLET_HOTKEY|PHYLAX_SERVER_URL|PHYLAX_SERVER_HOTKEY)=' ~/phylax/validator/.env
+```
+
+You should see all six lines populated with non-placeholder values.
+
 `PHYLAX_OFFLINE_FALLBACK=true` lets the validator keep scoring against the local corpus when the server is unreachable, but weights stay blocked because no fresh attestation can be issued. Default is `false` (skip the round entirely).
+
+If you started the validator before fixing these, edit `.env` and recreate the container — `docker compose restart` is not enough because env vars are only read at container creation:
+
+```bash
+cd ~/phylax/validator
+docker compose up -d --force-recreate
+```
 
 ## 6. Run
 
@@ -218,6 +237,10 @@ Edit `~/phylax/validator/.env` and `docker compose up -d` to apply.
 |---|---|---|
 | `docker compose: command not found` | docker compose plugin missing | `sudo apt install docker-compose-plugin` |
 | Container exits immediately | Hotkey not found in `~/.bittensor` | Check `ls ~/.bittensor/wallets/validator/hotkeys/default` |
+| Container starts but uses the wrong hotkey | `WALLET_NAME` in `.env` doesn't match your wallet folder | `btcli w list` to see actual folder names; align `WALLET_NAME` with the folder containing the registered validator hotkey, then `docker compose up -d --force-recreate` |
+| Validator subscribes to the wrong subnet | `PHYLAX_NETUID` left at template default `1` | Set to `486` in `.env`, then `docker compose up -d --force-recreate` |
+| Validator dials `0.0.0.0:<port>` instead of the miner's public IP | Validator and miner on the same host (e.g. same EC2) — bittensor's dendrite anti-loopback rewrites a destination IP that equals the validator's own external IP | Run the miner on a different host. Same-host validator+miner is not a supported topology. |
+| `.env` edits not taking effect | `docker compose restart` reuses the existing container's baked-in env | Use `docker compose up -d --force-recreate` instead — env vars are only read at container creation |
 | `PermissionError: '~/phylax/evidence/...'` (literal tilde) | Old `.env` with `~/...` in `PHYLAX_EVIDENCE_DIR` | Set it to `/opt/phylax/evidence` (the in-container path) |
 | `permission denied while trying to connect to the docker API` | Container UID not in host docker group | Confirm `DOCKER_GID` in `.env` matches `getent group docker`, re-run `up -d` |
 | Sandbox produces only `log.txt`, no `network.jsonl` etc. | `PHYLAX_EVIDENCE_HOST_DIR` not set or wrong | Re-run `scripts/install.sh`, or set it to the absolute host path of `~/phylax/validator/evidence` |
