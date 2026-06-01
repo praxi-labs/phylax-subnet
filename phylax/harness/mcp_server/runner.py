@@ -11,11 +11,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from phylax.protocol import (
-    EvidenceBaseV04,
+    EvidenceBase,
+    Finding,
     FindingLayer,
-    FindingSeverityV04,
+    FindingSeverity,
     FindingType,
-    FindingV04,
     MCPServerEvidence,
 )
 
@@ -25,8 +25,8 @@ DEFAULT_HARNESS_IMAGE = "ghcr.io/praxi-labs/phylax-harness-mcp:latest"
 @dataclass
 class MCPServerHarnessResult:
     evidence: MCPServerEvidence
-    base_evidence: EvidenceBaseV04
-    findings: list[FindingV04] = field(default_factory=list)
+    base_evidence: EvidenceBase
+    findings: list[Finding] = field(default_factory=list)
     evidence_dir: Path | None = None
     exit_code: int = 0
     log: str = ""
@@ -81,7 +81,7 @@ class MCPServerHarness:
             manifest_path, tool_records
         )
 
-        base = EvidenceBaseV04(
+        base = EvidenceBase(
             network_trace_hash=_sha256_file(evidence_root / "network.jsonl"),
             fs_trace_hash=_sha256_file(evidence_root / "fs.jsonl"),
             process_trace_hash=_sha256_file(evidence_root / "process.jsonl"),
@@ -225,8 +225,8 @@ class MCPServerHarness:
         manifest_path: Path,
         tool_records: list[dict],
         poisoning_score: float,
-    ) -> list[FindingV04]:
-        findings: list[FindingV04] = []
+    ) -> list[Finding]:
+        findings: list[Finding] = []
         if not manifest_path.exists():
             return findings
         try:
@@ -245,9 +245,9 @@ class MCPServerHarness:
             sig = _poisoning_signal(desc)
             if sig >= 0.3:
                 findings.append(
-                    FindingV04(
+                    Finding(
                         finding_id=str(uuid.uuid4()),
-                        severity=FindingSeverityV04.HIGH if sig >= 0.6 else FindingSeverityV04.MEDIUM,
+                        severity=FindingSeverity.HIGH if sig >= 0.6 else FindingSeverity.MEDIUM,
                         title=f"mcp_tool_poisoning:{name}",
                         description=(
                             f"MCP tool '{name}' description contains poisoning signal "
@@ -263,9 +263,9 @@ class MCPServerHarness:
 
         if poisoning_score >= 0.5:
             findings.append(
-                FindingV04(
+                Finding(
                     finding_id=str(uuid.uuid4()),
-                    severity=FindingSeverityV04.HIGH,
+                    severity=FindingSeverity.HIGH,
                     title="mcp_manifest:elevated_poisoning_score",
                     description=(
                         f"Aggregate tool-poisoning score {poisoning_score:.2f} above threshold."

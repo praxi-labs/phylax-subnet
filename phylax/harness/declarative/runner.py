@@ -8,28 +8,28 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from phylax.protocol import (
-    DeclarativeEvidenceV04,
+    DeclarativeEvidence,
+    Finding,
     FindingLayer,
-    FindingSeverityV04,
+    FindingSeverity,
     FindingType,
-    FindingV04,
 )
 
 _SKILL_MD_CANDIDATES = ("SKILL.md", "skill.md", "skill.markdown", "README.md", "readme.md")
 
 _CANARY_PATTERN = re.compile(r"<!--\s*CANARY\s*:\s*([a-f0-9]{8,})\s*-->", re.IGNORECASE)
 
-_INJECTION_PATTERNS: list[tuple[str, re.Pattern[str], float, FindingSeverityV04]] = [
-    ("ignore_previous", re.compile(r"ignore\s+(?:all\s+)?(?:previous|prior|above)\s+(?:instructions?|prompts?)", re.IGNORECASE), 0.30, FindingSeverityV04.HIGH),
-    ("override_system", re.compile(r"(?:override|disregard|bypass)\s+(?:the\s+)?(?:system|safety|policy|guardrail)", re.IGNORECASE), 0.25, FindingSeverityV04.HIGH),
-    ("you_are_now", re.compile(r"you\s+are\s+now\s+(?:a|an|the)?\s*[A-Z]", re.IGNORECASE), 0.15, FindingSeverityV04.MEDIUM),
-    ("fake_system_prompt", re.compile(r"\bsystem\s*[:=]\s*[\"']", re.IGNORECASE), 0.20, FindingSeverityV04.HIGH),
-    ("dan_jailbreak", re.compile(r"\b(?:DAN|do\s+anything\s+now|developer\s+mode|jailbreak)\b", re.IGNORECASE), 0.30, FindingSeverityV04.HIGH),
-    ("reveal_prompt", re.compile(r"\b(?:reveal|print|show|leak)\s+(?:your|the)\s+(?:system\s+)?(?:prompt|instructions?)", re.IGNORECASE), 0.20, FindingSeverityV04.MEDIUM),
-    ("exfiltrate", re.compile(r"\b(?:send|post|forward|exfiltrat\w+)\s+(?:to|the|all)?\s*(?:https?://|api|secrets?|credentials?)", re.IGNORECASE), 0.20, FindingSeverityV04.MEDIUM),
-    ("execute_command", re.compile(r"\b(?:exec|eval|os\.system|subprocess|shell|popen)\s*\(", re.IGNORECASE), 0.20, FindingSeverityV04.HIGH),
-    ("html_injection", re.compile(r"<!--\s*(?:system|admin|hidden|secret|prompt|inject)\s*[:=][^>]+-->", re.IGNORECASE), 0.20, FindingSeverityV04.MEDIUM),
-    ("base64_blob", re.compile(r"\b[A-Za-z0-9+/]{120,}={0,2}\b"), 0.10, FindingSeverityV04.LOW),
+_INJECTION_PATTERNS: list[tuple[str, re.Pattern[str], float, FindingSeverity]] = [
+    ("ignore_previous", re.compile(r"ignore\s+(?:all\s+)?(?:previous|prior|above)\s+(?:instructions?|prompts?)", re.IGNORECASE), 0.30, FindingSeverity.HIGH),
+    ("override_system", re.compile(r"(?:override|disregard|bypass)\s+(?:the\s+)?(?:system|safety|policy|guardrail)", re.IGNORECASE), 0.25, FindingSeverity.HIGH),
+    ("you_are_now", re.compile(r"you\s+are\s+now\s+(?:a|an|the)?\s*[A-Z]", re.IGNORECASE), 0.15, FindingSeverity.MEDIUM),
+    ("fake_system_prompt", re.compile(r"\bsystem\s*[:=]\s*[\"']", re.IGNORECASE), 0.20, FindingSeverity.HIGH),
+    ("dan_jailbreak", re.compile(r"\b(?:DAN|do\s+anything\s+now|developer\s+mode|jailbreak)\b", re.IGNORECASE), 0.30, FindingSeverity.HIGH),
+    ("reveal_prompt", re.compile(r"\b(?:reveal|print|show|leak)\s+(?:your|the)\s+(?:system\s+)?(?:prompt|instructions?)", re.IGNORECASE), 0.20, FindingSeverity.MEDIUM),
+    ("exfiltrate", re.compile(r"\b(?:send|post|forward|exfiltrat\w+)\s+(?:to|the|all)?\s*(?:https?://|api|secrets?|credentials?)", re.IGNORECASE), 0.20, FindingSeverity.MEDIUM),
+    ("execute_command", re.compile(r"\b(?:exec|eval|os\.system|subprocess|shell|popen)\s*\(", re.IGNORECASE), 0.20, FindingSeverity.HIGH),
+    ("html_injection", re.compile(r"<!--\s*(?:system|admin|hidden|secret|prompt|inject)\s*[:=][^>]+-->", re.IGNORECASE), 0.20, FindingSeverity.MEDIUM),
+    ("base64_blob", re.compile(r"\b[A-Za-z0-9+/]{120,}={0,2}\b"), 0.10, FindingSeverity.LOW),
 ]
 
 _ZERO_WIDTH = frozenset(
@@ -65,8 +65,8 @@ _HOMOGLYPH_LATIN_CYRILLIC = {
 
 @dataclass
 class DeclarativeResult:
-    evidence: DeclarativeEvidenceV04
-    findings: list[FindingV04] = field(default_factory=list)
+    evidence: DeclarativeEvidence
+    findings: list[Finding] = field(default_factory=list)
 
 
 class DeclarativeHarness:
@@ -89,7 +89,7 @@ class DeclarativeHarness:
         findings = ml_findings + uni_findings + homoglyph_findings
         layer0_sync = self._layer0_sync_hash(text, canary_id, ml_score, unicode_anomaly)
 
-        evidence = DeclarativeEvidenceV04(
+        evidence = DeclarativeEvidence(
             canary_id_found=canary_id_found,
             findings_count=len(findings),
             skill_md_fingerprint=skill_md_hash,
@@ -129,9 +129,9 @@ class DeclarativeHarness:
                 return True
         return False
 
-    def _inject_score(self, text: str, path: str) -> tuple[float, list[FindingV04]]:
+    def _inject_score(self, text: str, path: str) -> tuple[float, list[Finding]]:
         score = 0.0
-        findings: list[FindingV04] = []
+        findings: list[Finding] = []
         for kind, pattern, weight, severity in _INJECTION_PATTERNS:
             matches = list(pattern.finditer(text))
             if not matches:
@@ -139,7 +139,7 @@ class DeclarativeHarness:
             count = len(matches)
             score += weight * min(1.0, count / 3.0)
             findings.append(
-                FindingV04(
+                Finding(
                     finding_id=str(uuid.uuid4()),
                     severity=severity,
                     title=f"declarative_injection:{kind}",
@@ -162,17 +162,17 @@ class DeclarativeHarness:
         end = min(len(text), match.end() + context)
         return text[start:end].replace("\n", " ").strip()
 
-    def _unicode_anomaly(self, text: str, path: str) -> tuple[bool, list[FindingV04]]:
+    def _unicode_anomaly(self, text: str, path: str) -> tuple[bool, list[Finding]]:
         zw = [c for c in text if c in _ZERO_WIDTH]
         bidi = [c for c in text if c in _BIDI]
         if not zw and not bidi:
             return False, []
-        findings: list[FindingV04] = []
+        findings: list[Finding] = []
         if zw:
             findings.append(
-                FindingV04(
+                Finding(
                     finding_id=str(uuid.uuid4()),
-                    severity=FindingSeverityV04.MEDIUM,
+                    severity=FindingSeverity.MEDIUM,
                     title="declarative_unicode:zero_width",
                     description=(
                         f"Found {len(zw)} zero-width character(s) in {path or 'SKILL.md'}; "
@@ -187,9 +187,9 @@ class DeclarativeHarness:
             )
         if bidi:
             findings.append(
-                FindingV04(
+                Finding(
                     finding_id=str(uuid.uuid4()),
-                    severity=FindingSeverityV04.MEDIUM,
+                    severity=FindingSeverity.MEDIUM,
                     title="declarative_unicode:bidi_override",
                     description=(
                         f"Found {len(bidi)} bidi-override character(s) in {path or 'SKILL.md'}; "
@@ -205,15 +205,15 @@ class DeclarativeHarness:
         return True, findings
 
     @staticmethod
-    def _homoglyph_findings(text: str, path: str) -> list[FindingV04]:
+    def _homoglyph_findings(text: str, path: str) -> list[Finding]:
         offenders = [(ch, lat) for ch, lat in _HOMOGLYPH_LATIN_CYRILLIC.items() if ch in text]
         if not offenders:
             return []
         sample = ", ".join(f"{ch}->{lat}" for ch, lat in offenders[:6])
         return [
-            FindingV04(
+            Finding(
                 finding_id=str(uuid.uuid4()),
-                severity=FindingSeverityV04.LOW,
+                severity=FindingSeverity.LOW,
                 title="declarative_unicode:homoglyph_cyrillic",
                 description=(
                     f"Found {len(offenders)} Cyrillic homoglyph(s) for Latin letters in "

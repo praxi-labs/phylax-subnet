@@ -11,12 +11,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from phylax.protocol import (
-    EvidenceBaseV04,
+    EvidenceBase,
     ExecutableScriptEvidence,
+    Finding,
     FindingLayer,
-    FindingSeverityV04,
+    FindingSeverity,
     FindingType,
-    FindingV04,
 )
 
 DEFAULT_HARNESS_IMAGE = "ghcr.io/praxi-labs/phylax-harness-script:latest"
@@ -25,8 +25,8 @@ DEFAULT_HARNESS_IMAGE = "ghcr.io/praxi-labs/phylax-harness-script:latest"
 @dataclass
 class ExecutableScriptResult:
     evidence: ExecutableScriptEvidence
-    base_evidence: EvidenceBaseV04
-    findings: list[FindingV04] = field(default_factory=list)
+    base_evidence: EvidenceBase
+    findings: list[Finding] = field(default_factory=list)
     evidence_dir: Path | None = None
     exit_code: int = 0
     log: str = ""
@@ -71,7 +71,7 @@ class ExecutableScriptHarness:
         for f in ("network.jsonl", "fs.jsonl", "process.jsonl", "secrets.jsonl", "shell_commands.jsonl"):
             (evidence_root / f).touch(exist_ok=True)
 
-        base = EvidenceBaseV04(
+        base = EvidenceBase(
             network_trace_hash=_hash_file(evidence_root / "network.jsonl"),
             fs_trace_hash=_hash_file(evidence_root / "fs.jsonl"),
             process_trace_hash=_hash_file(evidence_root / "process.jsonl"),
@@ -159,13 +159,13 @@ class ExecutableScriptHarness:
         except subprocess.TimeoutExpired:
             return 124, "in-process tracer timed out"
 
-    def _distill_findings(self, evidence_root: Path, bundle: Path) -> list[FindingV04]:
-        findings: list[FindingV04] = []
+    def _distill_findings(self, evidence_root: Path, bundle: Path) -> list[Finding]:
+        findings: list[Finding] = []
         for s in _jsonl_records(evidence_root / "secrets.jsonl"):
             findings.append(
-                FindingV04(
+                Finding(
                     finding_id=str(uuid.uuid4()),
-                    severity=FindingSeverityV04.HIGH,
+                    severity=FindingSeverity.HIGH,
                     title=f"secrets_leak:{s.get('type', 'unknown')}",
                     description=f"Secret-like token detected at ts={s.get('ts')}",
                     owasp_ref="A02",
@@ -182,7 +182,7 @@ class ExecutableScriptHarness:
                 continue
             kind, severity, owasp, mitre = danger
             findings.append(
-                FindingV04(
+                Finding(
                     finding_id=str(uuid.uuid4()),
                     severity=severity,
                     title=f"shell_command:{kind}",
@@ -196,9 +196,9 @@ class ExecutableScriptHarness:
             )
         for n in _jsonl_records(evidence_root / "network.jsonl"):
             findings.append(
-                FindingV04(
+                Finding(
                     finding_id=str(uuid.uuid4()),
-                    severity=FindingSeverityV04.MEDIUM,
+                    severity=FindingSeverity.MEDIUM,
                     title=f"network_egress:{n.get('proto', 'tcp')}",
                     description=(
                         f"Outbound {n.get('proto')} {n.get('dst_ip')}:{n.get('dst_port')}"
@@ -215,24 +215,24 @@ class ExecutableScriptHarness:
     @staticmethod
     def _classify_command(
         cmd: str,
-    ) -> tuple[str, FindingSeverityV04, str | None, str | None] | None:
+    ) -> tuple[str, FindingSeverity, str | None, str | None] | None:
         low = cmd.lower()
         if "curl" in low and "|" in low and ("sh" in low or "bash" in low):
-            return ("pipe_to_shell", FindingSeverityV04.CRITICAL, "A08", "T1059.004")
+            return ("pipe_to_shell", FindingSeverity.CRITICAL, "A08", "T1059.004")
         if "wget" in low and ("|" in low or "-O" in cmd):
-            return ("remote_fetch", FindingSeverityV04.HIGH, "A08", "T1105")
+            return ("remote_fetch", FindingSeverity.HIGH, "A08", "T1105")
         if "eval " in low or "eval(" in low:
-            return ("eval", FindingSeverityV04.HIGH, "A03", "T1059.004")
+            return ("eval", FindingSeverity.HIGH, "A03", "T1059.004")
         if "chmod" in low and ("+x" in low or "777" in low):
-            return ("chmod_exec", FindingSeverityV04.MEDIUM, None, "T1222")
+            return ("chmod_exec", FindingSeverity.MEDIUM, None, "T1222")
         if "crontab" in low or "/etc/cron." in low:
-            return ("cron_persistence", FindingSeverityV04.HIGH, None, "T1053.003")
+            return ("cron_persistence", FindingSeverity.HIGH, None, "T1053.003")
         if "rm -rf /" in low or "rm -fr /" in low:
-            return ("destructive_rm", FindingSeverityV04.CRITICAL, None, "T1485")
+            return ("destructive_rm", FindingSeverity.CRITICAL, None, "T1485")
         if "nc " in low and ("-e " in low or "-c " in low):
-            return ("netcat_shell", FindingSeverityV04.CRITICAL, None, "T1059")
+            return ("netcat_shell", FindingSeverity.CRITICAL, None, "T1059")
         if "ssh-keygen" in low or "/.ssh/" in cmd:
-            return ("ssh_key_touch", FindingSeverityV04.MEDIUM, None, "T1098.004")
+            return ("ssh_key_touch", FindingSeverity.MEDIUM, None, "T1098.004")
         return None
 
 

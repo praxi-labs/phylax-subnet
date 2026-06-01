@@ -12,11 +12,11 @@ from pathlib import Path
 
 from phylax.protocol import (
     AgentCompositionEvidence,
-    EvidenceBaseV04,
+    EvidenceBase,
+    Finding,
     FindingLayer,
-    FindingSeverityV04,
+    FindingSeverity,
     FindingType,
-    FindingV04,
 )
 
 DEFAULT_HARNESS_IMAGE = "ghcr.io/praxi-labs/phylax-harness-agent-composition:latest"
@@ -32,8 +32,8 @@ _COMPOSITION_CANDIDATES = (
 @dataclass
 class AgentCompositionHarnessResult:
     evidence: AgentCompositionEvidence
-    base_evidence: EvidenceBaseV04
-    findings: list[FindingV04] = field(default_factory=list)
+    base_evidence: EvidenceBase
+    findings: list[Finding] = field(default_factory=list)
     evidence_dir: Path | None = None
     exit_code: int = 0
     log: str = ""
@@ -105,7 +105,7 @@ class AgentCompositionHarness:
         observed_depth = max((int(r.get("depth", 0)) for r in agent_calls), default=0)
         transitive_risk = self._compute_transitive_risk(graph, agent_calls)
 
-        base = EvidenceBaseV04(
+        base = EvidenceBase(
             network_trace_hash=_sha256_file(evidence_root / "network.jsonl"),
             fs_trace_hash=_sha256_file(evidence_root / "fs.jsonl"),
             process_trace_hash=_sha256_file(evidence_root / "process.jsonl"),
@@ -242,15 +242,15 @@ class AgentCompositionHarness:
         graph: dict,
         agent_calls: list[dict],
         transitive_risk: float,
-    ) -> list[FindingV04]:
-        findings: list[FindingV04] = []
+    ) -> list[Finding]:
+        findings: list[Finding] = []
         if transitive_risk >= 0.5:
             findings.append(
-                FindingV04(
+                Finding(
                     finding_id=str(uuid.uuid4()),
-                    severity=FindingSeverityV04.HIGH
+                    severity=FindingSeverity.HIGH
                     if transitive_risk >= 0.8
-                    else FindingSeverityV04.MEDIUM,
+                    else FindingSeverity.MEDIUM,
                     title="composition_transitive_risk",
                     description=(
                         f"Composition propagates risk={transitive_risk:.2f} from descendants. "
@@ -267,9 +267,9 @@ class AgentCompositionHarness:
             cycle = _detect_cycle(graph)
             if cycle:
                 findings.append(
-                    FindingV04(
+                    Finding(
                         finding_id=str(uuid.uuid4()),
-                        severity=FindingSeverityV04.HIGH,
+                        severity=FindingSeverity.HIGH,
                         title="composition_cycle",
                         description="Cycle detected in composition dependency graph: " + " -> ".join(cycle),
                         owasp_ref=None,
@@ -282,9 +282,9 @@ class AgentCompositionHarness:
         for call in agent_calls:
             if str(call.get("call_type") or "").lower() == "spawn":
                 findings.append(
-                    FindingV04(
+                    Finding(
                         finding_id=str(uuid.uuid4()),
-                        severity=FindingSeverityV04.MEDIUM,
+                        severity=FindingSeverity.MEDIUM,
                         title="composition_unbounded_spawn",
                         description=(
                             f"{call.get('caller_skill')} spawned {call.get('callee_skill')} at "

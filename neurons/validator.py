@@ -7,55 +7,29 @@ import secrets
 import time
 import traceback
 import uuid
-from pathlib import Path
 
 import bittensor as bt
 import torch
 
-from phylax.attestation import (
-    ValidatorCountersigner,
-    VerificationResult,
-    verify_attestation,
-)
 from phylax.protocol import (
     SSSA,
-    SSSAV04,
-    BundleMetadataV04,
+    BundleMetadata,
     InferenceConfig,
     LLMAllowedUse,
     PhylaxSynapse,
-    PhylaxSynapseV04,
     SkillBundle,
-    SkillBundleV04,
     SkillType,
-    TaskMetadataV04,
+    TaskMetadata,
     TaskType,
     TestProfile,
+    Verdict,
 )
 from phylax.scoring import (
-    aggregate_epoch,
-    compute_total_score,
-    round_median_latency,
+    TaskContext,
+    classify_tier,
+    compute_Q,
+    compute_task_emissions_score,
     score_all_axes,
-)
-from phylax.scoring.legacy_metrics import canary_outcome, task_skill_type
-from phylax.scoring.metrics import (
-    TaskContext as V04TaskContext,
-)
-from phylax.scoring.metrics import (
-    Tier as V04Tier,
-)
-from phylax.scoring.metrics import (
-    classify_tier as v04_classify_tier,
-)
-from phylax.scoring.metrics import (
-    compute_Q as v04_compute_Q,
-)
-from phylax.scoring.metrics import (
-    compute_task_emissions_score as v04_emissions_score,
-)
-from phylax.scoring.metrics import (
-    score_all_axes as v04_score_all_axes,
 )
 from phylax.server_client import (
     PhylaxServerClient,
@@ -63,22 +37,11 @@ from phylax.server_client import (
     ServerUnreachable,
 )
 from phylax.utils.logging import get_logger
-from phylax.validator.baseline import BaselineRunner, GroundTruth
-from phylax.validator.consensus import ConsensusAggregator, MinerSubmission
-from phylax.validator.corpus import CorpusLoader, CorpusTask
-from phylax.validator.registry import AttestationRegistry
-from phylax.validator.synth import SyntheticGenerator
 
 logger = get_logger(__name__)
 
-CORPORA_DIR = Path(__file__).parent.parent / "corpora"
-DEFAULT_REGISTRY_PATH = Path(__file__).parent.parent / "phylax_registry.sqlite3"
-
 
 def _metagraph_size(metagraph) -> int:
-    """Return neuron count as a Python int. bittensor 10.x's metagraph.n can be
-    a multi-element tensor (especially when sync hasn't populated it yet),
-    which breaks a naive int() cast."""
     if metagraph is None:
         return 0
     val = getattr(metagraph, "n", 0)
@@ -99,15 +62,13 @@ def _metagraph_size(metagraph) -> int:
 
 
 class PhylaxValidator:
-    """Phylax validator neuron."""
-
     neuron_type: str = "ValidatorNeuron"
 
     TASKS_PER_ROUND: int = int(os.getenv("TASKS_PER_ROUND", "8"))
-    SYNTHETIC_TASKS_PER_ROUND: int = int(os.getenv("SYNTHETIC_TASKS_PER_ROUND", "2"))
-    QUERY_TIMEOUT: int = int(os.getenv("QUERY_TIMEOUT", "60"))
+    QUERY_TIMEOUT: int = int(os.getenv("QUERY_TIMEOUT", "150"))
     WEIGHT_UPDATE_INTERVAL: int = int(os.getenv("WEIGHT_UPDATE_INTERVAL", "100"))
     EMA_ALPHA: float = float(os.getenv("EMA_ALPHA", "0.2"))
+    THRESHOLD_CACHE_TTL_S: int = 300
 
     def __init__(self, config=None, wallet=None, subtensor=None):
         self.config = config
@@ -120,27 +81,19 @@ class PhylaxValidator:
         self.metagraph = self.subtensor.metagraph(netuid=config.netuid)
         self.dendrite = bt.Dendrite(wallet=self.wallet)
         self.should_exit = False
-        self.corpus = CorpusLoader(CORPORA_DIR).load()
-        for err in self.corpus.errors:
-            bt.logging.warning(f"corpus: {err}")
 
-        self.synth = SyntheticGenerator()
-        self.consensus = ConsensusAggregator()
-        self.registry = AttestationRegistry(
-            os.getenv("PHYLAX_REGISTRY_PATH") or str(DEFAULT_REGISTRY_PATH)
-        )
-        self.countersigner: ValidatorCountersigner | None = None
-        if hasattr(self, "wallet") and self.wallet is not None:
-            self.countersigner = ValidatorCountersigner(wallet=self.wallet)
-
-        n = _metagraph_size(getattr(self, "metagraph", None))
+        n = _metagraph_size(self.metagraph)
         self.scores = torch.zeros(n)
         self.step = 0
+        self.last_completed_round_id: str | None = None
+
+        self._threshold_cache: dict[str, float] = {}
+        self._threshold_cached_at: float = 0.0
 
         server_url = os.getenv("PHYLAX_SERVER_URL", "")
         expected_server_hotkey = os.getenv("PHYLAX_SERVER_HOTKEY", "").strip() or None
         self.server_client: PhylaxServerClient | None = None
-        if server_url and hasattr(self, "wallet") and self.wallet is not None:
+        if server_url:
             self.server_client = PhylaxServerClient(
                 base_url=server_url,
                 wallet=self.wallet,
@@ -162,772 +115,117 @@ class PhylaxValidator:
                 "PHYLAX_SERVER_URL not configured — validator will not be able to set_weights"
             )
 
-        # BaselineRunner gets a cached intel client so /v1/intel/lookup
-        # and /v1/intel/cve_lookup queries survive transient server
-        # outages — disk-backed cache returns stale-but-usable responses
-        # rather than crashing the round. When the validator has no
-        # server_client (offline / local-dev), intel_client is None and
-        # BaselineRunner falls back to manifest-only discrepancy.
-        from phylax.validator.intel_cache import ServerIntelClient
-        intel_client = (
-            ServerIntelClient(self.server_client) if self.server_client is not None else None
-        )
-        self.baseline = BaselineRunner(
-            sandbox_image=os.getenv("PHYLAX_SANDBOX_IMAGE", "phylax-sandbox:latest"),
-            sandbox_timeout_seconds=int(os.getenv("SANDBOX_TIMEOUT", "60")),
-            intel_client=intel_client,
-        )
-
-        self.allow_offline_fallback = (
-            os.getenv("PHYLAX_OFFLINE_FALLBACK", "false").lower() == "true"
-        )
-
-        self.last_completed_round_id: str | None = None
-
-
     async def run_round(self) -> None:
-        miner_uids = self._get_active_miner_uids()
-        if not miner_uids:
-            bt.logging.warning("no active miners on metagraph")
+        if self.server_client is None:
+            bt.logging.warning("no server client; skipping round")
             return
 
-        migration = await self._v04_migration_state()
-        if not bool(migration.get("accepts_v03", True)):
-            bt.logging.info(
-                f"v0.3 schema rejected by migration policy "
-                f"(window={migration.get('window')}); skipping legacy round"
+        try:
+            batch = await asyncio.to_thread(
+                self.server_client.fetch_task_batch,
+                self.TASKS_PER_ROUND,
+                include_canaries=True,
             )
+        except ServerUnreachable as e:
+            bt.logging.warning(f"phylax-server unreachable for task batch: {e}")
             return
-        v03_multiplier = float(migration.get("v03_multiplier", 1.0))
-
-        round_id, corpus_tasks, server_owned_round = await self._fetch_curated_batch()
-        if round_id is None:
+        except ServerIdentityMismatch as e:
+            bt.logging.error(f"phylax-server identity mismatch: {e}; skipping round")
+            return
+        except Exception as e:  # noqa: BLE001
+            bt.logging.warning(f"phylax-server task fetch failed: {e}")
             return
 
-        synth_skills = [self.synth.generate() for _ in range(self.SYNTHETIC_TASKS_PER_ROUND)]
+        tasks = batch.get("tasks", []) or []
+        round_id = batch.get("round_id") or uuid.uuid4().hex
+        if not tasks:
+            bt.logging.info(f"round {round_id[:8]}: server returned no tasks")
+            return
 
         bt.logging.info(
-            f"round {round_id[:8]} | miners={len(miner_uids)} "
-            f"server_curated={len(corpus_tasks)} local_synth={len(synth_skills)} "
-            f"server_owned={server_owned_round}"
+            f"round {round_id[:8]} | metagraph_n={_metagraph_size(self.metagraph)} "
+            f"tasks={len(tasks)}"
         )
 
-        per_uid_task_scores: dict[int, list[float]] = {uid: [] for uid in miner_uids}
-        per_uid_task_axes: dict[int, list] = {uid: [] for uid in miner_uids}
-        # V2 PR3 — per-skill-type alpha buckets + canary outcome counts.
-        # The tier engine reads these via /v1/rounds/record so trailing
-        # alphas track executable vs declarative competence separately.
-        per_uid_exec_alphas: dict[int, list[float]] = {uid: [] for uid in miner_uids}
-        per_uid_decl_alphas: dict[int, list[float]] = {uid: [] for uid in miner_uids}
-        per_uid_canary_passes: dict[int, int] = {uid: 0 for uid in miner_uids}
-        per_uid_canary_failures: dict[int, int] = {uid: 0 for uid in miner_uids}
-        per_uid_completed_bundles: dict[int, list[str]] = {uid: [] for uid in miner_uids}
+        per_uid_q: dict[int, list[float]] = {}
+        per_miner_payload: list[dict] = []
 
-        for task in corpus_tasks:
-            await self._run_task_for_corpus(
-                task, miner_uids, per_uid_task_scores, per_uid_task_axes,
-                round_id=round_id,
-                exec_alphas=per_uid_exec_alphas,
-                decl_alphas=per_uid_decl_alphas,
-                canary_passes=per_uid_canary_passes,
-                canary_failures=per_uid_canary_failures,
-                completed_bundles=per_uid_completed_bundles,
-            )
+        for task in tasks:
+            raw_type = task.get("skill_type") or task.get("metadata", {}).get("skill_type")
+            if raw_type not in {t.value for t in SkillType}:
+                bt.logging.debug(f"round {round_id[:8]}: unknown skill_type={raw_type!r}; skipping")
+                continue
+            skill_type = SkillType(raw_type)
+            miners = await self._route_miners_for_skill_type(skill_type)
+            if not miners:
+                bt.logging.info(
+                    f"round {round_id[:8]} {skill_type.value}: no routed miners"
+                )
+                continue
+            bundle = self._bundle_from_task(task, skill_type)
+            ctx = self._task_context(task, skill_type)
 
-        for synth in synth_skills:
-            await self._run_task_for_synthetic(
-                synth, miner_uids, per_uid_task_scores, per_uid_task_axes,
-                round_id=round_id,
-                exec_alphas=per_uid_exec_alphas,
-                decl_alphas=per_uid_decl_alphas,
-                canary_passes=per_uid_canary_passes,
-                canary_failures=per_uid_canary_failures,
-                completed_bundles=per_uid_completed_bundles,
-            )
+            for hotkey, uid in miners:
+                resp = await self._dial_miner(uid, bundle, task, skill_type)
+                if resp is None or resp.error or resp.attestation is None:
+                    continue
+                try:
+                    sssa = SSSA(**resp.attestation)
+                except Exception as e:  # noqa: BLE001
+                    bt.logging.warning(f"SSSA parse failed for uid={uid}: {e}")
+                    continue
+                ctx.submission_latency_ms = getattr(resp, "latency_ms", 0)
+                axes = score_all_axes(sssa, ctx)
+                q = compute_Q(axes, skill_type)
+                threshold = self._novel_thresholds().get(skill_type.value, 0.6)
+                tier = classify_tier(q, skill_type, threshold)
+                emission = compute_task_emissions_score(q, skill_type, tier)
+                per_uid_q.setdefault(uid, []).append(q)
+                per_miner_payload.append(
+                    {
+                        "miner_uid": int(uid),
+                        "miner_hotkey": hotkey,
+                        "bundle_hash": bundle.bundle_hash,
+                        "skill_type": skill_type.value,
+                        "composite_q": float(q),
+                        "tier": tier.value,
+                        "emission_score": float(emission),
+                        "verdict": sssa.verdict.decision.value,
+                        "risk_score": int(sssa.verdict.risk_score),
+                        "submission_latency_ms": int(getattr(resp, "latency_ms", 0)),
+                    }
+                )
+                bt.logging.info(
+                    f"{skill_type.value} hk={hotkey[:10]} Q={q:.3f} "
+                    f"tier={tier.value} emission={emission:.3f}"
+                )
+
+        if not per_uid_q:
+            bt.logging.info(f"round {round_id[:8]} produced no scores; not publishing")
+            return
 
         new_scores = torch.zeros_like(self.scores)
-        for uid, ts in per_uid_task_scores.items():
-            new_scores[uid] = float(aggregate_epoch(ts))
+        for uid, qs in per_uid_q.items():
+            if uid < new_scores.numel():
+                new_scores[uid] = float(sum(qs) / len(qs))
 
-        if v03_multiplier < 1.0:
-            bt.logging.info(
-                f"v0.3 penalty window active (multiplier={v03_multiplier:.2f}); "
-                f"scaling legacy schema scores"
-            )
-            new_scores = new_scores * v03_multiplier
-
-        # Reputation multiplier: pull the server's canary-derived
-        # per-miner reputation and use it to de-weight suspected
-        # colluders smoothly. reputation is in [0.5, 1.0] — a 0.5 here
-        # halves the miner's emission for this round. The signal is
-        # cached server-side, so per-round polling is cheap. On any
-        # error (server unreachable, parse failure, no data yet), every
-        # miner gets reputation=1.0 — fail-open is the right semantics
-        # here since the reputation system is a defense layer on top of
-        # already-validated work, not the primary scoring axis.
-        reputation_by_hotkey = self._fetch_miner_reputation()
-        if reputation_by_hotkey:
-            for uid in range(min(len(new_scores), len(self.metagraph.hotkeys))):
-                hk = self.metagraph.hotkeys[uid]
-                rep = reputation_by_hotkey.get(hk, 1.0)
+        reputation = self._fetch_miner_reputation()
+        if reputation:
+            for uid in range(min(new_scores.numel(), len(self.metagraph.hotkeys))):
+                rep = reputation.get(self.metagraph.hotkeys[uid], 1.0)
                 if rep < 1.0:
                     new_scores[uid] = float(new_scores[uid]) * rep
 
         self.scores = self.EMA_ALPHA * new_scores + (1.0 - self.EMA_ALPHA) * self.scores
-
         top = float(self.scores.max().item()) if self.scores.numel() else 0.0
         bt.logging.info(f"round {round_id[:8]} done | top_score={top:.3f}")
 
-        if server_owned_round and self.server_client is not None:
-            try:
-                self._push_round_results(round_id, per_uid_task_scores, per_uid_task_axes, new_scores)
-                self.last_completed_round_id = round_id
-            except ServerUnreachable as e:
-                bt.logging.warning(
-                    f"phylax-server unreachable while reporting results: {e} — "
-                    f"set_weights will be blocked until next successful round"
-                )
-
-            # PR3: post the per-miner per-skill-type round record so the
-            # tier engine has fresh exec/decl alphas + canary outcomes
-            # before the next batch. Non-fatal: if the server doesn't
-            # know this endpoint (older deploy), log and continue.
-            try:
-                self._post_round_record_v2(
-                    round_id, miner_uids,
-                    exec_alphas=per_uid_exec_alphas,
-                    decl_alphas=per_uid_decl_alphas,
-                    canary_passes=per_uid_canary_passes,
-                    canary_failures=per_uid_canary_failures,
-                    completed_bundles=per_uid_completed_bundles,
-                )
-            except Exception as e:  # noqa: BLE001
-                bt.logging.debug(f"round_record post failed (non-fatal): {e}")
-                self.last_completed_round_id = None
-        else:
-            self.last_completed_round_id = None
-
-
-    def _fetch_miner_reputation(self) -> dict[str, float]:
-        """Pull current miner-reputation snapshot from phylax-server.
-
-        Returns a ``{hotkey: reputation_float}`` map. Server caches the
-        snapshot for 5min so per-round polls are cheap. Any failure
-        (no server, server unreachable, malformed response) returns an
-        empty dict — fail-open semantics, since the reputation layer
-        is a defense on top of already-validated work.
-        """
-        if self.server_client is None:
-            return {}
-        try:
-            payload = self.server_client.fetch_miner_reputation()
-        except Exception as e:  # noqa: BLE001
-            bt.logging.debug(f"reputation fetch failed: {e}")
-            return {}
-        out: dict[str, float] = {}
-        for entry in payload.get("miners", []) or []:
-            hk = entry.get("miner_hotkey")
-            rep = entry.get("reputation")
-            if hk and isinstance(rep, int | float):
-                out[hk] = float(rep)
-        clusters = payload.get("collusion_clusters") or []
-        if clusters:
-            bt.logging.warning(
-                f"reputation: {len(clusters)} active collusion cluster(s) "
-                f"flagged by server; affected miners de-weighted"
-            )
-        return out
-
-    async def _fetch_curated_batch(self):
-        """Return ``(round_id, corpus_tasks, server_owned_round)``.
-
-        ``round_id`` is None when the round should be skipped entirely.
-        """
-        if self.server_client is not None:
-            try:
-                batch = await asyncio.to_thread(
-                    self.server_client.fetch_task_batch,
-                    self.TASKS_PER_ROUND,
-                    include_canaries=True,
-                )
-                tasks = [self._server_task_to_corpus_task(t) for t in batch.get("tasks", [])]
-                return batch["round_id"], tasks, True
-            except ServerUnreachable as e:
-                bt.logging.warning(f"phylax-server unreachable for task batch: {e}")
-            except ServerIdentityMismatch as e:
-                bt.logging.error(f"phylax-server identity mismatch: {e}; skipping round")
-                return None, [], False
-            except Exception as e:  # noqa: BLE001
-                bt.logging.warning(f"phylax-server task fetch failed: {e}")
-
-        if not self.allow_offline_fallback:
-            bt.logging.error(
-                "phylax-server task fetch failed and PHYLAX_OFFLINE_FALLBACK=false — skipping round"
-            )
-            return None, [], False
-
-        bt.logging.warning(
-            "running OFFLINE round from local corpus (set_weights will be blocked)"
-        )
-        local_tasks = self.corpus.sample_stratified(self.TASKS_PER_ROUND)
-        return f"offline-{uuid.uuid4().hex}", local_tasks, False
-
-    @staticmethod
-    def _server_task_to_corpus_task(server_task: dict) -> CorpusTask:
-        """Adapt a phylax-server TaskItem payload into the validator's
-        CorpusTask shape.
-
-        Note: ``expected_verdict`` falls back to ``"ALLOW"`` for legacy
-        server payloads that don't include it, but the validator's scoring
-        path now tags the task with ``_has_server_label`` so a missing
-        label can be distinguished from a curated ALLOW. When the server
-        provided no label, the validator's baseline verdict is used as
-        ground truth; when it did, the server's label takes precedence and
-        baseline is only consulted for ``ground_truth_evidence`` (which
-        depends on per-nonce sandbox replay and can't be curated upstream).
-        """
-        bundle_hash = server_task["bundle_hash"]
-        has_label = server_task.get("expected_verdict") in ("ALLOW", "WARN", "BLOCK")
-        task = CorpusTask(
-            name=server_task.get("name", "unnamed"),
-            family=server_task.get("family", "known_good"),
-            path=f"server://{bundle_hash}",
-            bundle_hash=bundle_hash,
-            bundle_url=server_task.get("bundle_url"),
-            bundle_bytes_b64=server_task.get("bundle_bytes_b64"),
-            metadata=server_task.get("metadata") or {},
-            test_profile=server_task.get("test_profile", "standard"),
-            expected_verdict=server_task.get("expected_verdict") or "ALLOW",
-            expected_risk_score=(
-                int(server_task["expected_risk_score"])
-                if server_task.get("expected_risk_score") is not None
-                else None
-            ),
-            expected_capabilities=server_task.get("expected_capabilities") or {},
-            expected_policy=server_task.get("expected_policy") or {},
-            expected_findings=server_task.get("expected_findings") or [],
-            tags=server_task.get("tags") or [],
-        )
-        task.metadata = dict(task.metadata)
-        task.metadata["_has_server_label"] = has_label
-        return task
-
-
-    def _post_round_record_v2(
-        self,
-        round_id: str,
-        miner_uids: list[int],
-        *,
-        exec_alphas: dict[int, list[float]],
-        decl_alphas: dict[int, list[float]],
-        canary_passes: dict[int, int],
-        canary_failures: dict[int, int],
-        completed_bundles: dict[int, list[str]],
-    ) -> None:
-        """Post V2 PR3 round record. Builds the per-miner-hotkey
-        ``per_miner_scores`` dict + axon IPs from the metagraph + the
-        completed-assignment lookup, then forwards to
-        ``/v1/rounds/record``.
-        """
-        if self.server_client is None:
-            return
-
-        def _mean(xs: list[float]) -> float | None:
-            return float(sum(xs) / len(xs)) if xs else None
-
-        per_miner_scores: dict[str, dict] = {}
-        axon_ips: dict[str, str] = {}
-        completed_assignments: dict[str, list[str]] = {}
-        participated: list[str] = []
-        all_queried: list[str] = []
-
-        for uid in miner_uids:
-            if uid >= len(self.metagraph.hotkeys):
-                continue
-            hotkey = self.metagraph.hotkeys[uid]
-            all_queried.append(hotkey)
-            ex = exec_alphas.get(uid, [])
-            dc = decl_alphas.get(uid, [])
-            if not ex and not dc and canary_passes.get(uid, 0) == 0 \
-                    and canary_failures.get(uid, 0) == 0:
-                continue
-            participated.append(hotkey)
-            per_miner_scores[hotkey] = {
-                "exec_alpha":     _mean(ex),
-                "decl_alpha":     _mean(dc),
-                "exec_tasks":     len(ex),
-                "decl_tasks":     len(dc),
-                "canary_passes":  int(canary_passes.get(uid, 0)),
-                "canary_failures": int(canary_failures.get(uid, 0)),
-            }
-            try:
-                axon = self.metagraph.axons[uid]
-                if axon and axon.ip:
-                    axon_ips[hotkey] = str(axon.ip)
-            except (IndexError, AttributeError):
-                pass
-            cb = completed_bundles.get(uid, [])
-            if cb:
-                completed_assignments[hotkey] = list(cb)
-
-        if not participated:
-            return
-        self.server_client.post_round_record(
-            round_id=round_id,
-            participated=participated,
-            all_queried=all_queried,
-            per_miner_scores=per_miner_scores,
-            axon_ips=axon_ips,
-            completed_assignments=completed_assignments,
-        )
-
-    def _push_round_results(
-        self,
-        round_id: str,
-        per_uid_task_scores: dict[int, list[float]],
-        per_uid_task_axes: dict[int, list],
-        new_scores,
-    ) -> None:
-        """Submit per-miner scores to /v1/rounds/{round_id}/results."""
-        assert self.server_client is not None
-
-        def _axis_mean(axes_list, attr: str) -> float:
-            if not axes_list:
-                return 0.0
-            return float(sum(getattr(a, attr) for a in axes_list) / len(axes_list))
-
-        miner_scores_payload = []
-        for uid in per_uid_task_scores:
-            axes = per_uid_task_axes.get(uid, [])
-            miner_scores_payload.append(
-                {
-                    "miner_uid": int(uid),
-                    "miner_hotkey": self.metagraph.hotkeys[uid]
-                    if uid < len(self.metagraph.hotkeys)
-                    else "",
-                    "bundle_hash": "sha256:" + "0" * 64,
-                    "quality_score": float(new_scores[uid].item()),
-                    "detection_score": _axis_mean(axes, "detection"),
-                    "evidence_score": _axis_mean(axes, "evidence"),
-                    "policy_score": _axis_mean(axes, "policy"),
-                    "efficiency_score": _axis_mean(axes, "efficiency"),
-                    "submission_latency_ms": 0,
-                    "verdict": "ALLOW",
-                    "risk_score": 0,
-                }
-            )
-        self.server_client.submit_round_results(
-            round_id=round_id, miner_scores=miner_scores_payload
-        )
-
-
-    async def _run_task_for_corpus(
-        self,
-        task: CorpusTask,
-        miner_uids: list[int],
-        per_uid_task_scores: dict[int, list[float]],
-        per_uid_task_axes: dict[int, list],
-        *,
-        round_id: str,
-        exec_alphas: dict[int, list[float]] | None = None,
-        decl_alphas: dict[int, list[float]] | None = None,
-        canary_passes: dict[int, int] | None = None,
-        canary_failures: dict[int, int] | None = None,
-        completed_bundles: dict[int, list[str]] | None = None,
-    ) -> None:
-        task_dict = task.as_scoring_dict()
-
-        responses = await self._query_miners_per_nonce(miner_uids, task)
-        latencies = [r.submission_latency_ms for r in responses if r is not None]
-        median_latency = round_median_latency(latencies)
-
-        for resp in responses:
-            uid = resp.uid
-            if not resp.ok:
-                per_uid_task_scores[uid].append(0.0)
-                continue
-
-            evaluation_task = dict(task_dict)
-            evaluation_task["submission_latency_ms"] = resp.submission_latency_ms
-            evaluation_task["median_latency_ms"] = median_latency
-
-            gt = await self._baseline_for_corpus_task(
-                task, resp.nonce,
-                canary_id=resp.canary_id, canary_val=resp.canary_val,
-            )
-            if gt is not None:
-                _merge_baseline_into_task(evaluation_task, gt)
-
-            axes = score_all_axes(resp.sssa, evaluation_task)
-            quality = compute_total_score(axes)
-            per_uid_task_scores[uid].append(quality)
-            per_uid_task_axes[uid].append(axes)
-            resp.quality = quality
-
-            if exec_alphas is not None and decl_alphas is not None:
-                skill_type = task_skill_type(evaluation_task)
-                alpha = float(axes.detection)
-                if skill_type in ("executable", "mixed"):
-                    exec_alphas.setdefault(uid, []).append(alpha)
-                if skill_type in ("declarative", "mixed"):
-                    decl_alphas.setdefault(uid, []).append(alpha)
-                outcome = canary_outcome(resp.sssa, evaluation_task)
-                if outcome == "pass":
-                    canary_passes[uid] = canary_passes.get(uid, 0) + 1
-                elif outcome == "fail":
-                    canary_failures[uid] = canary_failures.get(uid, 0) + 1
-                if completed_bundles is not None:
-                    completed_bundles.setdefault(uid, []).append(task.bundle_hash)
-
-        await self._consense_and_publish(task_dict, responses, round_id=round_id)
-
-    async def _run_task_for_synthetic(
-        self,
-        synth_skill,
-        miner_uids: list[int],
-        per_uid_task_scores: dict[int, list[float]],
-        per_uid_task_axes: dict[int, list],
-        *,
-        round_id: str,
-        exec_alphas: dict[int, list[float]] | None = None,
-        decl_alphas: dict[int, list[float]] | None = None,
-        canary_passes: dict[int, int] | None = None,
-        canary_failures: dict[int, int] | None = None,
-        completed_bundles: dict[int, list[str]] | None = None,
-    ) -> None:
-        bundle = SkillBundle(
-            bundle_hash=synth_skill.bundle_hash,
-            bundle_bytes=synth_skill.bundle_bytes,
-            metadata=synth_skill.task.get("metadata", {}),
-            test_profile=TestProfile(synth_skill.task.get("test_profile", "standard")),
-        )
-        task_dict = dict(synth_skill.task)
-        task_dict["_family"] = "synthetic"
-        task_dict["_path"] = "synth://" + synth_skill.name
-        task_dict["test_profile"] = bundle.test_profile.value
-
-        responses = await self._query_miners_per_nonce(miner_uids, _SyntheticTaskAdapter(bundle, task_dict))
-        latencies = [r.submission_latency_ms for r in responses if r is not None]
-        median_latency = round_median_latency(latencies)
-
-        for resp in responses:
-            uid = resp.uid
-            if not resp.ok:
-                per_uid_task_scores[uid].append(0.0)
-                continue
-            evaluation_task = dict(task_dict)
-            evaluation_task["submission_latency_ms"] = resp.submission_latency_ms
-            evaluation_task["median_latency_ms"] = median_latency
-
-            # PR1: when the server pre-baked intel + CVE findings into
-            # the task metadata, pass them through so BaselineRunner
-            # skips the live urlhaus/Spamhaus/osv.dev round trips.
-            md = evaluation_task.get("metadata") or {}
-            gt = await asyncio.to_thread(
-                self.baseline.run_from_bytes,
-                synth_skill.bundle_bytes,
-                resp.nonce,
-                canary_id=resp.canary_id,
-                canary_val=resp.canary_val,
-                pre_baked_intel_findings=md.get("pre_baked_intel_findings"),
-                pre_baked_cve_findings=md.get("pre_baked_cve_findings"),
-            )
-            _merge_baseline_into_task(evaluation_task, gt)
-
-            axes = score_all_axes(resp.sssa, evaluation_task)
-            quality = compute_total_score(axes)
-            per_uid_task_scores[uid].append(quality)
-            per_uid_task_axes[uid].append(axes)
-            resp.quality = quality
-
-            # PR3 per-skill-type bucketing for the round record.
-            if exec_alphas is not None and decl_alphas is not None:
-                skill_type = task_skill_type(evaluation_task)
-                # Detection-α with provenance weight already applied —
-                # this is what the tier engine compares against alpha_threshold.
-                alpha = float(axes.detection)
-                if skill_type in ("executable", "mixed"):
-                    exec_alphas.setdefault(uid, []).append(alpha)
-                if skill_type in ("declarative", "mixed"):
-                    decl_alphas.setdefault(uid, []).append(alpha)
-                outcome = canary_outcome(resp.sssa, evaluation_task)
-                if outcome == "pass":
-                    canary_passes[uid] = canary_passes.get(uid, 0) + 1
-                elif outcome == "fail":
-                    canary_failures[uid] = canary_failures.get(uid, 0) + 1
-                if completed_bundles is not None:
-                    completed_bundles.setdefault(uid, []).append(
-                        evaluation_task.get("bundle_hash") or synth_skill.bundle_hash
-                    )
-
-        await self._consense_and_publish(task_dict, responses, round_id=round_id)
-
-
-    async def _query_miners_per_nonce(
-        self,
-        miner_uids: list[int],
-        task,
-    ) -> list[MinerResponse]:
-        """One synapse per miner, each with its own nonce. Returns ordered list."""
-
-        if hasattr(task, "_synapse_bundle"):
-            bundle = task._synapse_bundle  # type: ignore[attr-defined]
-        else:
-            ct: CorpusTask = task
-            bundle = SkillBundle(
-                bundle_hash=ct.bundle_hash,
-                bundle_url=ct.bundle_url,
-                metadata=ct.metadata,
-                test_profile=TestProfile(ct.test_profile),
-            )
-
-        deadline_unix = time.time() + self.QUERY_TIMEOUT
-        round_id = uuid.uuid4().hex
-
-        # PR1: forward the server's time-reward window so the miner knows
-        # its analysis budget and the validator's scorer evaluates the
-        # right deadline. Pulled from task metadata when present; pre-V2
-        # tasks leave these at 0 and the scorer falls back to the legacy
-        # efficiency curve.
-        task_md = getattr(task, "metadata", None) or {}
-        deadline_seconds = int(task_md.get("deadline_seconds") or 0)
-        t_min_seconds = int(task_md.get("t_min_seconds") or 0)
-
-        async def query_one(uid: int) -> MinerResponse:
-            axon = self.metagraph.axons[uid]
-            nonce = secrets.randbits(63)
-            canary_id = secrets.token_hex(8)
-            canary_val = secrets.token_hex(32)
-            synapse = PhylaxSynapse(
-                skill_bundle=bundle,
-                nonce=nonce,
-                round_id=round_id,
-                deadline_unix=deadline_unix,
-                canary_id=canary_id,
-                canary_val=canary_val,
-                deadline_seconds=deadline_seconds,
-                t_min_seconds=t_min_seconds,
-            )
-            sent_at = time.time()
-            try:
-                resp = await self.dendrite(
-                    axons=[axon],
-                    synapse=synapse,
-                    deserialize=False,
-                    timeout=self.QUERY_TIMEOUT,
-                )
-                returned = resp[0] if isinstance(resp, list) else resp
-            except Exception as e:  # noqa: BLE001
-                bt.logging.debug(f"uid {uid}: dendrite error: {e}")
-                return MinerResponse(
-                    uid=uid, nonce=nonce, ok=False, reason=str(e),
-                    canary_id=canary_id, canary_val=canary_val,
-                )
-
-            latency_ms = int((time.time() - sent_at) * 1000)
-            if returned is None or not returned.is_valid_response():
-                return MinerResponse(
-                    uid=uid, nonce=nonce, ok=False, reason="invalid response",
-                    canary_id=canary_id, canary_val=canary_val,
-                )
-
-            sssa = returned.get_sssa()
-            if sssa is None or sssa.attestation is None:
-                return MinerResponse(
-                    uid=uid, nonce=nonce, ok=False, reason="missing attestation",
-                    canary_id=canary_id, canary_val=canary_val,
-                )
-
-            v = verify_attestation(sssa, local_bundle_hash=bundle.bundle_hash)
-            if not v.ok:
-                return MinerResponse(
-                    uid=uid, nonce=nonce, ok=False, reason=f"verify: {v.reason}",
-                    canary_id=canary_id, canary_val=canary_val,
-                )
-
-            hotkey = self.metagraph.hotkeys[uid] if uid < len(self.metagraph.hotkeys) else None
-            if hotkey and sssa.attestation.miner_hotkey != hotkey:
-                return MinerResponse(
-                    uid=uid, nonce=nonce, ok=False, reason="hotkey mismatch",
-                    canary_id=canary_id, canary_val=canary_val,
-                )
-
-            return MinerResponse(
-                uid=uid,
-                nonce=nonce,
-                ok=True,
-                sssa=sssa,
-                submission_latency_ms=latency_ms,
-                verification=v,
-                canary_id=canary_id,
-                canary_val=canary_val,
-            )
-
-        return await asyncio.gather(*(query_one(u) for u in miner_uids))
-
-
-    async def _baseline_for_corpus_task(
-        self, task: CorpusTask, nonce: int,
-        canary_id: str = "", canary_val: str = "",
-    ) -> GroundTruth | None:
-        """Run validator baseline if bundle bytes are retrievable.
-
-        PR1: forwards ``pre_baked_intel_findings`` / ``pre_baked_cve_findings``
-        from ``task.metadata`` so BaselineRunner skips the live intel calls
-        when the server has already done them.
-        """
-        bundle_bytes = await self._fetch_bundle_bytes(task)
-        if not bundle_bytes:
-            return None
-        md = getattr(task, "metadata", None) or {}
-        try:
-            return await asyncio.to_thread(
-                self.baseline.run_from_bytes,
-                bundle_bytes,
-                nonce,
-                canary_id=canary_id,
-                canary_val=canary_val,
-                pre_baked_intel_findings=md.get("pre_baked_intel_findings"),
-                pre_baked_cve_findings=md.get("pre_baked_cve_findings"),
-            )
-        except Exception as e:  # noqa: BLE001
-            bt.logging.debug(f"baseline error for {task.name}: {e}")
-            return None
-
-    async def _fetch_bundle_bytes(self, task: CorpusTask) -> bytes | None:
-        if task.bundle_bytes_b64:
-            import base64
-
-            try:
-                return base64.b64decode(task.bundle_bytes_b64)
-            except Exception:  # noqa: BLE001
-                return None
-        if task.bundle_url:
-            from phylax.utils.safe_http import safe_get_bytes
-
-            return await asyncio.to_thread(safe_get_bytes, task.bundle_url)
-        return None
-
-
-    async def _consense_and_publish(
-        self,
-        task_dict: dict,
-        responses: list[MinerResponse],
-        *,
-        round_id: str,
-    ) -> None:
-        submissions: list[MinerSubmission] = []
-        for r in responses:
-            if not r.ok or r.sssa is None:
-                continue
-            hotkey = (
-                self.metagraph.hotkeys[r.uid]
-                if r.uid < len(self.metagraph.hotkeys)
-                else r.sssa.attestation.miner_hotkey
-            )
-            submissions.append(
-                MinerSubmission(
-                    uid=r.uid,
-                    hotkey=hotkey,
-                    sssa=r.sssa,
-                    quality_score=r.quality,
-                    submission_latency_ms=r.submission_latency_ms,
-                )
-            )
-
-        result = self.consensus.aggregate(submissions)
-        if result is None or result.winning_submission is None:
-            return
-
-        sssa = result.winning_submission.sssa
-        if self.countersigner is not None:
-            try:
-                sssa = self.countersigner.countersign(
-                    sssa, round_id=round_id, quality_score=result.quality_score
-                )
-            except Exception as e:  # noqa: BLE001
-                bt.logging.warning(f"countersign failed: {e}")
-
-        try:
-            self.registry.put(sssa, round_id=round_id, quality_score=result.quality_score)
-        except Exception as e:  # noqa: BLE001
-            bt.logging.warning(f"registry write failed: {e}")
-
-        if self.server_client is not None and not round_id.startswith("offline-"):
-            try:
-                sssa_payload = sssa.model_dump(mode="json")
-                await asyncio.to_thread(
-                    self.server_client.push_attestation,
-                    bundle_hash=sssa.skill.bundle_hash,
-                    sssa=sssa_payload,
-                    quality_score=float(result.quality_score),
-                    round_id=round_id,
-                )
-            except ServerUnreachable as e:
-                bt.logging.debug(f"server attestation push skipped (unreachable): {e}")
-            except Exception as e:  # noqa: BLE001
-                bt.logging.warning(f"server attestation push failed: {e}")
-
-
-    def _get_active_miner_uids(self) -> list[int]:
-        out: list[int] = []
-        for uid, axon in enumerate(self.metagraph.axons):
-            if axon.ip == "0.0.0.0":
-                continue
-            if self.metagraph.validator_permit[uid]:
-                continue
-            out.append(uid)
-        return out
-
-    _LEGACY_SKILL_TYPE_MAP = {"executable": "executable_python", "mixed": "executable_python"}
-    _DEFAULT_SPECIALIZATION = ("executable_python", "declarative")
-
-    async def run_v04_round(self, v04_tasks: list[dict]) -> dict[str, float]:
-        if not v04_tasks:
-            return {}
-        round_id = uuid.uuid4().hex
-        per_hotkey_q: dict[str, list[float]] = {}
-        emissions_by_hotkey: dict[str, float] = {}
-        await self._v04_migration_state()
-
-        for task in v04_tasks:
-            raw_type = task.get("skill_type") or task.get("metadata", {}).get("skill_type")
-            skill_type_value = self._LEGACY_SKILL_TYPE_MAP.get(raw_type, raw_type)
-            if skill_type_value not in {t.value for t in SkillType}:
-                continue
-            skill_type = SkillType(skill_type_value)
-            miners = await self._v04_route_miners(skill_type)
-            if not miners:
-                bt.logging.info(f"v0.4 round {round_id[:8]} {skill_type.value}: no routed miners")
-                continue
-            bundle = self._v04_bundle_from_task(task, skill_type)
-            ctx = self._v04_task_context(task, skill_type)
-            for hotkey, uid in miners:
-                resp = await self._v04_dial(uid, bundle, task, skill_type, round_id)
-                if resp is None or resp.error or resp.attestation is None:
-                    continue
-                try:
-                    sssa = SSSAV04(**resp.attestation)
-                except Exception as e:  # noqa: BLE001
-                    bt.logging.warning(f"v0.4 SSSA parse failed for uid={uid}: {e}")
-                    continue
-                ctx.submission_latency_ms = resp.latency_ms
-                axes = v04_score_all_axes(sssa, ctx)
-                q = v04_compute_Q(axes, skill_type)
-                novel_thresholds = self._v04_novel_thresholds()
-                tier = v04_classify_tier(q, skill_type, novel_thresholds.get(skill_type.value, 0.6))
-                emission = v04_emissions_score(q, skill_type, tier)
-                per_hotkey_q.setdefault(hotkey, []).append(q)
-                emissions_by_hotkey[hotkey] = emissions_by_hotkey.get(hotkey, 0.0) + emission
-                bt.logging.info(
-                    f"v0.4 {skill_type.value} hk={hotkey[:10]} Q={q:.3f} "
-                    f"tier={tier.value} emission={emission:.3f}"
-                )
-                self._v04_push_record(round_id, sssa, hotkey, q, tier, emission, skill_type)
-
-        return emissions_by_hotkey
-
-    async def _v04_route_miners(self, skill_type: SkillType) -> list[tuple[str, int]]:
+        self._publish_round_results(round_id, per_miner_payload)
+        self.last_completed_round_id = round_id
+
+    async def _route_miners_for_skill_type(
+        self, skill_type: SkillType
+    ) -> list[tuple[str, int]]:
         routed: list[tuple[str, int]] = []
         if self.server_client is not None:
             try:
@@ -937,7 +235,7 @@ class PhylaxValidator:
                     params={"skill_type": skill_type.value},
                 )
             except Exception as e:  # noqa: BLE001
-                bt.logging.debug(f"v0.4 routing fetch failed: {e}")
+                bt.logging.debug(f"routing fetch failed: {e}")
                 routing = {}
             miners_payload = routing.get("miners", []) if isinstance(routing, dict) else []
             hotkey_to_uid = {h: i for i, h in enumerate(self.metagraph.hotkeys)}
@@ -950,7 +248,7 @@ class PhylaxValidator:
                 if axon.ip == "0.0.0.0":
                     continue
                 routed.append((hotkey, uid))
-        if routed or skill_type.value not in self._DEFAULT_SPECIALIZATION:
+        if routed:
             return routed
         for uid in self._get_active_miner_uids():
             if uid >= len(self.metagraph.hotkeys):
@@ -958,38 +256,14 @@ class PhylaxValidator:
             routed.append((self.metagraph.hotkeys[uid], uid))
         return routed
 
-    async def _v04_migration_state(self) -> dict:
-        cached = getattr(self, "_migration_state_cache", None)
-        cached_at = getattr(self, "_migration_state_cached_at", 0.0)
-        if cached is not None and (time.time() - cached_at) < 300:
-            return cached
-        fallback = {
-            "v03_multiplier": 1.0,
-            "accepts_v03": True,
-            "window": "acceptance",
-            "current_epoch": 0,
-        }
-        if self.server_client is None:
-            return fallback
-        try:
-            data = await asyncio.to_thread(self.server_client.get, "/v1/migration/state")
-        except Exception as e:  # noqa: BLE001
-            bt.logging.debug(f"migration state fetch failed: {e}")
-            return cached or fallback
-        if not isinstance(data, dict):
-            return cached or fallback
-        self._migration_state_cache = data
-        self._migration_state_cached_at = time.time()
-        return data
-
-    def _v04_bundle_from_task(self, task: dict, skill_type: SkillType) -> SkillBundleV04:
-        metadata = task.get("metadata") or task
+    def _bundle_from_task(self, task: dict, skill_type: SkillType) -> SkillBundle:
+        metadata = task.get("metadata") or {}
         profile_str = (metadata.get("profile") or metadata.get("test_profile") or "standard").lower()
-        return SkillBundleV04(
+        return SkillBundle(
             bundle_hash=task["bundle_hash"],
             bundle_url=task.get("bundle_url"),
             bundle_bytes=task.get("bundle_bytes"),
-            metadata=BundleMetadataV04(
+            metadata=BundleMetadata(
                 skill_name=metadata.get("skill_name") or task.get("name") or "unknown",
                 skill_version=metadata.get("skill_version") or "unknown",
                 skill_type=skill_type,
@@ -999,12 +273,11 @@ class PhylaxValidator:
             ),
         )
 
-    def _v04_task_context(self, task: dict, skill_type: SkillType) -> V04TaskContext:
+    def _task_context(self, task: dict, skill_type: SkillType) -> TaskContext:
         metadata = task.get("metadata") or {}
         expected_verdict_str = task.get("expected_verdict") or metadata.get("expected_verdict")
-        from phylax.protocol import Verdict as _V
-        expected_verdict = _V(expected_verdict_str) if expected_verdict_str else None
-        return V04TaskContext(
+        expected_verdict = Verdict(expected_verdict_str) if expected_verdict_str else None
+        return TaskContext(
             skill_type=skill_type,
             expected_verdict=expected_verdict,
             expected_risk=task.get("expected_risk_score") or metadata.get("expected_risk_score"),
@@ -1016,16 +289,19 @@ class PhylaxValidator:
             t_min_s=int(metadata.get("t_min_s") or metadata.get("t_min_seconds") or 15),
         )
 
-    async def _v04_dial(self, uid, bundle, task, skill_type, round_id) -> PhylaxSynapseV04 | None:
+    async def _dial_miner(
+        self, uid: int, bundle: SkillBundle, task: dict, skill_type: SkillType,
+    ) -> PhylaxSynapse | None:
         axon = self.metagraph.axons[uid]
+        metadata = task.get("metadata") or {}
         task_id = task.get("task_id") or uuid.uuid4().hex
-        deadline_s = int(task.get("metadata", {}).get("deadline_s") or 150)
-        t_min_s = int(task.get("metadata", {}).get("t_min_s") or 15)
+        deadline_s = int(metadata.get("deadline_s") or metadata.get("deadline_seconds") or 150)
+        t_min_s = int(metadata.get("t_min_s") or metadata.get("t_min_seconds") or 15)
         nonce = secrets.token_hex(16)
-        synapse = PhylaxSynapseV04(
+        synapse = PhylaxSynapse(
             skill_bundle=bundle,
             nonce=nonce,
-            task_metadata=TaskMetadataV04(
+            task_metadata=TaskMetadata(
                 task_id=task_id,
                 task_type=TaskType(task.get("task_type", "server_curated")),
                 deadline_s=deadline_s,
@@ -1047,10 +323,10 @@ class PhylaxValidator:
                 axons=[axon],
                 synapse=synapse,
                 deserialize=False,
-                timeout=deadline_s,
+                timeout=min(deadline_s, self.QUERY_TIMEOUT),
             )
         except Exception as e:  # noqa: BLE001
-            bt.logging.debug(f"v0.4 uid={uid} dendrite error: {e}")
+            bt.logging.debug(f"uid={uid} dendrite error: {e}")
             return None
         returned = resp[0] if isinstance(resp, list) else resp
         if returned is None:
@@ -1058,62 +334,71 @@ class PhylaxValidator:
         returned.latency_ms = int((time.time() - sent_at) * 1000)
         return returned
 
-    def _v04_novel_thresholds(self) -> dict[str, float]:
+    def _novel_thresholds(self) -> dict[str, float]:
         if self.server_client is None:
             return {}
-        cached = getattr(self, "_v04_threshold_cache", None)
-        cached_at = getattr(self, "_v04_threshold_cached_at", 0.0)
-        if cached is not None and (time.time() - cached_at) < 300:
-            return cached
+        if self._threshold_cache and (time.time() - self._threshold_cached_at) < self.THRESHOLD_CACHE_TTL_S:
+            return self._threshold_cache
         try:
             data = self.server_client.get("/v1/specialization/tier-table")
         except Exception as e:  # noqa: BLE001
             bt.logging.debug(f"tier-table fetch failed: {e}")
-            return cached or {}
+            return self._threshold_cache
         out = (data or {}).get("novel_thresholds", {}) if isinstance(data, dict) else {}
-        self._v04_threshold_cache = out
-        self._v04_threshold_cached_at = time.time()
+        self._threshold_cache = out
+        self._threshold_cached_at = time.time()
         return out
 
-    def _v04_push_record(
-        self,
-        round_id: str,
-        sssa: SSSAV04,
-        hotkey: str,
-        q: float,
-        tier: V04Tier,
-        emission: float,
-        skill_type: SkillType,
-    ) -> None:
-        if self.server_client is None:
+    def _publish_round_results(self, round_id: str, per_miner_payload: list[dict]) -> None:
+        if self.server_client is None or not per_miner_payload:
             return
         try:
-            self.server_client.post(
-                "/v1/rounds/record",
-                {
-                    "round_id": round_id,
-                    "miner_hotkey": hotkey,
-                    "skill_type": skill_type.value,
-                    "composite_q": q,
-                    "tier": tier.value,
-                    "emission_score": emission,
-                    "sssa": sssa.model_dump(mode="json"),
-                    "schema_version": "0.4",
-                },
+            self.server_client.submit_round_results(
+                round_id=round_id, miner_scores=per_miner_payload,
             )
+        except ServerUnreachable as e:
+            bt.logging.warning(
+                f"phylax-server unreachable while reporting results: {e} — "
+                f"set_weights will be blocked until next successful round"
+            )
+            self.last_completed_round_id = None
         except Exception as e:  # noqa: BLE001
-            bt.logging.debug(f"v0.4 round record push failed: {e}")
+            bt.logging.warning(f"round results submit failed: {e}")
+            self.last_completed_round_id = None
+
+    def _fetch_miner_reputation(self) -> dict[str, float]:
+        if self.server_client is None:
+            return {}
+        try:
+            payload = self.server_client.fetch_miner_reputation()
+        except Exception as e:  # noqa: BLE001
+            bt.logging.debug(f"reputation fetch failed: {e}")
+            return {}
+        out: dict[str, float] = {}
+        for entry in payload.get("miners", []) or []:
+            hk = entry.get("miner_hotkey")
+            rep = entry.get("reputation")
+            if hk and isinstance(rep, int | float):
+                out[hk] = float(rep)
+        clusters = payload.get("collusion_clusters") or []
+        if clusters:
+            bt.logging.warning(
+                f"reputation: {len(clusters)} active collusion cluster(s) "
+                f"flagged by server; affected miners de-weighted"
+            )
+        return out
+
+    def _get_active_miner_uids(self) -> list[int]:
+        out: list[int] = []
+        for uid, axon in enumerate(self.metagraph.axons):
+            if axon.ip == "0.0.0.0":
+                continue
+            if self.metagraph.validator_permit[uid]:
+                continue
+            out.append(uid)
+        return out
 
     def set_weights(self) -> None:
-        """Push current scores on-chain — gated by a phylax-server weight attestation.
-
-        The canonical validator software refuses to call
-        ``subtensor.set_weights`` without a fresh, valid WeightAttestation
-        from phylax-server. If the server is unreachable or has revoked
-        this validator, the call is aborted before it touches the chain.
-        Operators running modified validator code can bypass this — that's
-        a chain-level concern (see docs/chain-level-controls.md).
-        """
         if self.scores.sum().item() <= 0.0:
             bt.logging.info("set_weights: all-zero scores; skipping")
             return
@@ -1121,14 +406,12 @@ class PhylaxValidator:
         weights = weights / weights.sum()
         bt.logging.info(f"set_weights | non-zero={int((weights > 0).sum().item())}")
 
-        server_client = getattr(self, "server_client", None)
-        last_round_id = getattr(self, "last_completed_round_id", None)
-        if server_client is None:
+        if self.server_client is None:
             bt.logging.error(
                 "set_weights: phylax-server client not initialised; refusing to push weights"
             )
             return
-        if last_round_id is None:
+        if self.last_completed_round_id is None:
             bt.logging.warning(
                 "set_weights: no completed round to attest to; skipping this push"
             )
@@ -1136,8 +419,8 @@ class PhylaxValidator:
 
         weights_dict = {int(uid): float(w) for uid, w in enumerate(weights.tolist()) if w > 0.0}
         try:
-            attestation = server_client.request_and_verify_weight_attestation(
-                last_round_id, weights_dict
+            attestation = self.server_client.request_and_verify_weight_attestation(
+                self.last_completed_round_id, weights_dict
             )
         except Exception as e:  # noqa: BLE001
             bt.logging.error(f"set_weights: weight attestation request failed: {e}")
@@ -1170,7 +453,6 @@ class PhylaxValidator:
         else:
             bt.logging.warning(f"set_weights returned False: {msg}")
 
-
     def run(self) -> None:
         bt.logging.info(
             f"starting Phylax validator on netuid={self.config.netuid} "
@@ -1180,11 +462,9 @@ class PhylaxValidator:
         asyncio.set_event_loop(loop)
         last_weight_block = 0
         try:
-            while not getattr(self, "should_exit", False):
+            while not self.should_exit:
                 try:
                     self.metagraph.sync(subtensor=self.subtensor, lite=False)
-                    if self.countersigner is None and hasattr(self, "wallet"):
-                        self.countersigner = ValidatorCountersigner(wallet=self.wallet)
                     mg_n = _metagraph_size(self.metagraph)
                     if self.scores.numel() != mg_n:
                         new = torch.zeros(mg_n)
@@ -1213,85 +493,6 @@ class PhylaxValidator:
             loop.close()
 
 
-
-
-def _merge_baseline_into_task(evaluation_task: dict, gt) -> None:
-    """Fold the validator's BaselineRunner output into the evaluation_task,
-    but only fill fields the server didn't already provide.
-
-    Why this isn't just ``evaluation_task.update(gt.as_task_dict())``:
-    when phylax-server provides a curated ``expected_verdict`` (and the
-    rest), it represents privileged ground truth that miners cannot
-    derive from public subnet code alone. Overwriting it with the
-    validator's locally-computed verdict reduces the Detection axis to
-    'miner-agrees-with-validator's-public-pipeline' — the very tautology
-    the discrepancy engine + curated corpus together are supposed to
-    close.
-
-    ``ground_truth_evidence`` is the one field always taken from the
-    baseline, because it's per-nonce sandbox-replay hashes that can
-    only be produced by the validator running the same sandbox the
-    miner did. The server can't curate those upstream.
-    """
-    gt_dict = gt.as_task_dict()
-    has_server_label = (
-        evaluation_task.get("metadata", {}).get("_has_server_label")
-        if isinstance(evaluation_task.get("metadata"), dict)
-        else False
-    )
-    if has_server_label:
-        # Preserve server-curated ground truth for verdict / risk /
-        # capabilities / policy. Only take the evidence hashes from
-        # baseline since the server can't know them ahead of time.
-        evaluation_task["ground_truth_evidence"] = gt_dict.get("ground_truth_evidence")
-    else:
-        # No server label — fall back to baseline-derived ground truth
-        # for everything. This is the offline / synthetic / unlabelled
-        # corpus path; the tautology applies here but there's no
-        # alternative source of truth.
-        evaluation_task.update(gt_dict)
-
-
-class MinerResponse:
-    __slots__ = (
-        "uid", "nonce", "canary_id", "canary_val",
-        "ok", "sssa", "submission_latency_ms", "quality", "reason", "verification",
-    )
-
-    def __init__(
-        self,
-        *,
-        uid: int,
-        nonce: int,
-        ok: bool,
-        sssa: SSSA | None = None,
-        submission_latency_ms: int = 0,
-        reason: str = "",
-        verification: VerificationResult | None = None,
-        canary_id: str = "",
-        canary_val: str = "",
-    ):
-        self.uid = uid
-        self.nonce = nonce
-        self.canary_id = canary_id
-        self.canary_val = canary_val
-        self.ok = ok
-        self.sssa = sssa
-        self.submission_latency_ms = submission_latency_ms
-        self.quality = 0.0
-        self.reason = reason
-        self.verification = verification
-
-
-class _SyntheticTaskAdapter:
-    """Lightweight task wrapper used to feed synthetic skills through the same
-    query path the corpus tasks use."""
-
-    def __init__(self, bundle: SkillBundle, task_dict: dict):
-        self._synapse_bundle = bundle
-        self.task_dict = task_dict
-
-
 _NETWORK_ENDPOINTS = {
     "finney":  "wss://entrypoint-finney.opentensor.ai:443",
     "test":    "wss://test.finney.opentensor.ai:443",
@@ -1301,15 +502,6 @@ _NETWORK_ENDPOINTS = {
 
 
 def _resolve_endpoint(network: str | None) -> str:
-    """Resolve a bittensor network name to its WebSocket endpoint.
-
-    bittensor 9.x's bt.Subtensor(network=...) and bt.Subtensor(config=...)
-    both honour config.subtensor.chain_endpoint whose default is the
-    mainnet finney URL — so passing network='test' silently ends up on
-    finney. Bypass that magic by translating the known names ourselves
-    and handing bt.Subtensor a chain_endpoint directly. If `network` is
-    already a ws:// or wss:// URL, use it as-is.
-    """
     if not network:
         return _NETWORK_ENDPOINTS["finney"]
     if network.startswith(("ws://", "wss://")):
@@ -1319,8 +511,7 @@ def _resolve_endpoint(network: str | None) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Phylax validator neuron")
-    parser.add_argument("--netuid", type=int, required=True,
-                        help="Subnet netuid to validate on")
+    parser.add_argument("--netuid", type=int, required=True, help="Subnet netuid to validate on")
     bt.Wallet.add_args(parser)
     bt.Subtensor.add_args(parser)
     bt.logging.add_args(parser)
@@ -1334,4 +525,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

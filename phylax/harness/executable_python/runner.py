@@ -11,12 +11,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from phylax.protocol import (
-    EvidenceBaseV04,
+    EvidenceBase,
     ExecutablePythonEvidence,
+    Finding,
     FindingLayer,
-    FindingSeverityV04,
+    FindingSeverity,
     FindingType,
-    FindingV04,
 )
 
 DEFAULT_HARNESS_IMAGE = "ghcr.io/praxi-labs/phylax-harness-python:latest"
@@ -25,8 +25,8 @@ DEFAULT_HARNESS_IMAGE = "ghcr.io/praxi-labs/phylax-harness-python:latest"
 @dataclass
 class ExecutablePythonResult:
     evidence: ExecutablePythonEvidence
-    base_evidence: EvidenceBaseV04
-    findings: list[FindingV04] = field(default_factory=list)
+    base_evidence: EvidenceBase
+    findings: list[Finding] = field(default_factory=list)
     evidence_dir: Path | None = None
     exit_code: int = 0
     log: str = ""
@@ -69,7 +69,7 @@ class ExecutablePythonHarness:
         for f in ("network.jsonl", "fs.jsonl", "process.jsonl", "secrets.jsonl", "imports.jsonl"):
             (evidence_root / f).touch(exist_ok=True)
 
-        base = EvidenceBaseV04(
+        base = EvidenceBase(
             network_trace_hash=_hash_file(evidence_root / "network.jsonl"),
             fs_trace_hash=_hash_file(evidence_root / "fs.jsonl"),
             process_trace_hash=_hash_file(evidence_root / "process.jsonl"),
@@ -158,14 +158,14 @@ class ExecutablePythonHarness:
         except subprocess.TimeoutExpired:
             return 124, "in-process tracer timed out"
 
-    def _distill_findings(self, evidence_root: Path) -> list[FindingV04]:
-        findings: list[FindingV04] = []
+    def _distill_findings(self, evidence_root: Path) -> list[Finding]:
+        findings: list[Finding] = []
         secrets = _jsonl_records(evidence_root / "secrets.jsonl")
         for s in secrets:
             findings.append(
-                FindingV04(
+                Finding(
                     finding_id=str(uuid.uuid4()),
-                    severity=FindingSeverityV04.HIGH,
+                    severity=FindingSeverity.HIGH,
                     title=f"secrets_leak:{s.get('type', 'unknown')}",
                     description=f"Secret-like token detected at ts={s.get('ts')}",
                     owasp_ref="A02",
@@ -178,9 +178,9 @@ class ExecutablePythonHarness:
         net = _jsonl_records(evidence_root / "network.jsonl")
         for n in net:
             findings.append(
-                FindingV04(
+                Finding(
                     finding_id=str(uuid.uuid4()),
-                    severity=FindingSeverityV04.MEDIUM,
+                    severity=FindingSeverity.MEDIUM,
                     title=f"network_egress:{n.get('proto', 'tcp')}",
                     description=(
                         f"Outbound {n.get('proto')} {n.get('dst_ip')}:{n.get('dst_port')}"
@@ -198,9 +198,9 @@ class ExecutablePythonHarness:
             cmd = p.get("cmd", "")
             if cmd and cmd not in {"python", "python3", "/usr/bin/python", "/usr/bin/python3"}:
                 findings.append(
-                    FindingV04(
+                    Finding(
                         finding_id=str(uuid.uuid4()),
-                        severity=FindingSeverityV04.MEDIUM,
+                        severity=FindingSeverity.MEDIUM,
                         title="process_spawn",
                         description=f"Subprocess spawned: {cmd}",
                         owasp_ref=None,

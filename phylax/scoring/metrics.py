@@ -6,7 +6,7 @@ from enum import Enum
 from statistics import median
 from typing import Any
 
-from phylax.protocol import SSSAV04, SkillType, Verdict
+from phylax.protocol import SSSA, SkillType, Verdict
 
 LAMBDA_FALSE_NEGATIVE = 1.0
 LAMBDA_FALSE_POSITIVE = 0.4
@@ -58,7 +58,7 @@ TIER_MULTIPLIERS: dict[Tier, float] = {
 
 
 @dataclass
-class AxesV04:
+class Axes:
     alpha: float = 0.0
     epsilon: float = 0.0
     pi: float = 0.0
@@ -101,7 +101,7 @@ def _provenance_weight(ctx: TaskContext) -> float:
     return float(w)
 
 
-def score_alpha(sssa: SSSAV04, ctx: TaskContext) -> float:
+def score_alpha(sssa: SSSA, ctx: TaskContext) -> float:
     if ctx.expected_verdict is None:
         return 0.0
     predicted = _VERDICT_RANK[sssa.verdict.decision]
@@ -119,7 +119,7 @@ def score_alpha(sssa: SSSAV04, ctx: TaskContext) -> float:
     return _clip01(base * _provenance_weight(ctx))
 
 
-def _rag_evidence_score(sssa: SSSAV04, ctx: TaskContext) -> float:
+def _rag_evidence_score(sssa: SSSA, ctx: TaskContext) -> float:
     block = sssa.evidence.type_specific.rag_knowledge
     if block is None or not block.rag_content_fingerprint:
         return 0.0
@@ -133,7 +133,7 @@ def _rag_evidence_score(sssa: SSSAV04, ctx: TaskContext) -> float:
     return 0.2
 
 
-def _declarative_evidence_score(sssa: SSSAV04, ctx: TaskContext) -> float:
+def _declarative_evidence_score(sssa: SSSA, ctx: TaskContext) -> float:
     block = sssa.evidence.type_specific.declarative
     if block is None or not block.canary_id_found:
         return 0.0
@@ -145,7 +145,7 @@ def _declarative_evidence_score(sssa: SSSAV04, ctx: TaskContext) -> float:
     return _clip01(score)
 
 
-def _base_trace_matches(sssa: SSSAV04, ctx: TaskContext) -> float:
+def _base_trace_matches(sssa: SSSA, ctx: TaskContext) -> float:
     miner = sssa.evidence.base
     truth = ctx.expected_evidence
     keys = ("network_trace_hash", "fs_trace_hash", "process_trace_hash", "secrets_trace_hash")
@@ -153,7 +153,7 @@ def _base_trace_matches(sssa: SSSAV04, ctx: TaskContext) -> float:
     return matches / 4.0
 
 
-def _executable_python_evidence_score(sssa: SSSAV04, ctx: TaskContext) -> float:
+def _executable_python_evidence_score(sssa: SSSA, ctx: TaskContext) -> float:
     truth = ctx.expected_evidence
     miner = sssa.evidence
     if truth.get("fs_trace_hash") and miner.base.fs_trace_hash != truth["fs_trace_hash"]:
@@ -166,7 +166,7 @@ def _executable_python_evidence_score(sssa: SSSAV04, ctx: TaskContext) -> float:
     return base
 
 
-def _executable_script_evidence_score(sssa: SSSAV04, ctx: TaskContext) -> float:
+def _executable_script_evidence_score(sssa: SSSA, ctx: TaskContext) -> float:
     truth = ctx.expected_evidence
     miner = sssa.evidence
     if truth.get("fs_trace_hash") and miner.base.fs_trace_hash != truth["fs_trace_hash"]:
@@ -179,7 +179,7 @@ def _executable_script_evidence_score(sssa: SSSAV04, ctx: TaskContext) -> float:
     return base
 
 
-def _mcp_server_evidence_score(sssa: SSSAV04, ctx: TaskContext) -> float:
+def _mcp_server_evidence_score(sssa: SSSA, ctx: TaskContext) -> float:
     truth = ctx.expected_evidence
     block = sssa.evidence.type_specific.mcp_server
     if block is None:
@@ -194,7 +194,7 @@ def _mcp_server_evidence_score(sssa: SSSAV04, ctx: TaskContext) -> float:
     return base
 
 
-def _agent_composition_evidence_score(sssa: SSSAV04, ctx: TaskContext) -> float:
+def _agent_composition_evidence_score(sssa: SSSA, ctx: TaskContext) -> float:
     truth = ctx.expected_evidence
     block = sssa.evidence.type_specific.agent_composition
     if block is None:
@@ -220,7 +220,7 @@ _EVIDENCE_FNS = {
 }
 
 
-def score_epsilon(sssa: SSSAV04, ctx: TaskContext) -> float:
+def score_epsilon(sssa: SSSA, ctx: TaskContext) -> float:
     fn = _EVIDENCE_FNS[ctx.skill_type]
     return _clip01(fn(sssa, ctx))
 
@@ -260,7 +260,7 @@ def _envelope_factor(actual: int, expected: int) -> float:
     return max(0.0, 1.0 - abs(math.log2(ratio)) / 4.0)
 
 
-def score_pi(sssa: SSSAV04, ctx: TaskContext) -> float:
+def score_pi(sssa: SSSA, ctx: TaskContext) -> float:
     miner = _policy_constraint_set(sssa.recommended_policy)
     expected = _policy_constraint_set(ctx.expected_policy)
     if not miner and not expected:
@@ -287,7 +287,7 @@ def score_pi(sssa: SSSAV04, ctx: TaskContext) -> float:
     return _clip01(f_beta * (0.8 + 0.2 * envelope_penalty))
 
 
-def score_eta(sssa: SSSAV04, ctx: TaskContext) -> float:
+def score_eta(sssa: SSSA, ctx: TaskContext) -> float:
     if ctx.submission_latency_ms is None:
         return 0.0
     completion = ctx.submission_latency_ms / 1000.0
@@ -306,7 +306,7 @@ def score_eta(sssa: SSSAV04, ctx: TaskContext) -> float:
     return _clip01(eta)
 
 
-def _has_minimum_evidence(sssa: SSSAV04, skill_type: SkillType) -> bool:
+def _has_minimum_evidence(sssa: SSSA, skill_type: SkillType) -> bool:
     ts = sssa.evidence.type_specific
     if skill_type == SkillType.RAG_KNOWLEDGE:
         return ts.rag_knowledge is not None and bool(ts.rag_knowledge.rag_content_fingerprint)
@@ -323,7 +323,7 @@ def _has_minimum_evidence(sssa: SSSAV04, skill_type: SkillType) -> bool:
     return False
 
 
-def score_mu(sssa: SSSAV04, ctx: TaskContext) -> float:
+def score_mu(sssa: SSSA, ctx: TaskContext) -> float:
     block = sssa.evidence.type_specific.declarative
     if block is None or block.prompt_injection_ml_score is None:
         return 0.0
@@ -333,7 +333,7 @@ def score_mu(sssa: SSSAV04, ctx: TaskContext) -> float:
     return _clip01(1.0 - abs(block.prompt_injection_ml_score - float(truth)))
 
 
-def score_sigma(sssa: SSSAV04, ctx: TaskContext) -> float:
+def score_sigma(sssa: SSSA, ctx: TaskContext) -> float:
     observed = ctx.ground_truth.get("observed_shell_commands")
     if observed is None:
         return 0.5
@@ -345,7 +345,7 @@ def score_sigma(sssa: SSSAV04, ctx: TaskContext) -> float:
     return _clip01(matches / len(observed_set))
 
 
-def score_psi(sssa: SSSAV04, ctx: TaskContext) -> float:
+def score_psi(sssa: SSSA, ctx: TaskContext) -> float:
     block = sssa.evidence.type_specific.mcp_server
     if block is None or not block.mcp_manifest_hash:
         return 0.0
@@ -355,7 +355,7 @@ def score_psi(sssa: SSSAV04, ctx: TaskContext) -> float:
     return 1.0 if block.mcp_manifest_hash == truth else 0.0
 
 
-def score_tau(sssa: SSSAV04, ctx: TaskContext) -> float:
+def score_tau(sssa: SSSA, ctx: TaskContext) -> float:
     known = ctx.ground_truth.get("poisoned_tool_names")
     if not known:
         return 1.0
@@ -366,7 +366,7 @@ def score_tau(sssa: SSSAV04, ctx: TaskContext) -> float:
     return _clip01(len(known_set & flagged) / len(known_set))
 
 
-def score_chi(sssa: SSSAV04, ctx: TaskContext) -> float:
+def score_chi(sssa: SSSA, ctx: TaskContext) -> float:
     block = sssa.evidence.type_specific.agent_composition
     if block is None:
         return 0.0
@@ -377,7 +377,7 @@ def score_chi(sssa: SSSAV04, ctx: TaskContext) -> float:
     return _clip01(1.0 - error * 2.0)
 
 
-def score_rho(sssa: SSSAV04, ctx: TaskContext) -> float:
+def score_rho(sssa: SSSA, ctx: TaskContext) -> float:
     block = sssa.evidence.type_specific.rag_knowledge
     if block is None:
         return 0.0
@@ -393,8 +393,8 @@ def score_rho(sssa: SSSAV04, ctx: TaskContext) -> float:
     return _clip01(1.0 - error * 3.0)
 
 
-def score_all_axes(sssa: SSSAV04, ctx: TaskContext) -> AxesV04:
-    axes = AxesV04(
+def score_all_axes(sssa: SSSA, ctx: TaskContext) -> Axes:
+    axes = Axes(
         alpha=score_alpha(sssa, ctx),
         epsilon=score_epsilon(sssa, ctx),
         pi=score_pi(sssa, ctx),
@@ -414,7 +414,7 @@ def score_all_axes(sssa: SSSAV04, ctx: TaskContext) -> AxesV04:
     return axes
 
 
-def compute_Q(axes: AxesV04, skill_type: SkillType) -> float:
+def compute_Q(axes: Axes, skill_type: SkillType) -> float:
     if axes.epsilon < EVIDENCE_GATE:
         return 0.0
     if skill_type == SkillType.RAG_KNOWLEDGE:

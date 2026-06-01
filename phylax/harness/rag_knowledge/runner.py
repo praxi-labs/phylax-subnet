@@ -9,10 +9,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from phylax.protocol import (
+    Finding,
     FindingLayer,
-    FindingSeverityV04,
+    FindingSeverity,
     FindingType,
-    FindingV04,
     RAGKnowledgeEvidence,
 )
 
@@ -63,7 +63,7 @@ class _Document:
 @dataclass
 class RAGKnowledgeResult:
     evidence: RAGKnowledgeEvidence
-    findings: list[FindingV04] = field(default_factory=list)
+    findings: list[Finding] = field(default_factory=list)
     manifest: list[dict] = field(default_factory=list)
 
 
@@ -167,9 +167,9 @@ class RAGKnowledgeHarness:
 
     def _score_hidden_instructions(
         self, documents: list[_Document]
-    ) -> tuple[float, list[FindingV04]]:
+    ) -> tuple[float, list[Finding]]:
         score = 0.0
-        findings: list[FindingV04] = []
+        findings: list[Finding] = []
         for d in documents:
             for kind, pattern, weight in _HIDDEN_INSTRUCTION_PATTERNS:
                 matches = list(pattern.finditer(d.text))
@@ -179,7 +179,7 @@ class RAGKnowledgeHarness:
                 score += weight * min(1.0, count / 3.0)
                 snippet = self._snippet(d.text, matches[0])
                 findings.append(
-                    FindingV04(
+                    Finding(
                         finding_id=str(uuid.uuid4()),
                         severity=self._severity_for_kind(kind),
                         title=f"rag_hidden_instruction:{kind}",
@@ -197,12 +197,12 @@ class RAGKnowledgeHarness:
         return min(1.0, score), findings
 
     @staticmethod
-    def _severity_for_kind(kind: str) -> FindingSeverityV04:
+    def _severity_for_kind(kind: str) -> FindingSeverity:
         if kind in {"ignore_previous", "override_system", "fake_system_prompt"}:
-            return FindingSeverityV04.HIGH
+            return FindingSeverity.HIGH
         if kind in {"html_comment_injection", "execute_command", "you_are_now"}:
-            return FindingSeverityV04.MEDIUM
-        return FindingSeverityV04.LOW
+            return FindingSeverity.MEDIUM
+        return FindingSeverity.LOW
 
     @staticmethod
     def _snippet(text: str, match: re.Match[str], context: int = 60) -> str:
