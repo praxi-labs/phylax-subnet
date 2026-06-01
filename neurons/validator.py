@@ -17,7 +17,21 @@ from phylax.attestation import (
     VerificationResult,
     verify_attestation,
 )
-from phylax.protocol import SSSA, PhylaxSynapse, SkillBundle, TestProfile
+from phylax.protocol import (
+    SSSA,
+    SSSAV04,
+    BundleMetadataV04,
+    InferenceConfig,
+    LLMAllowedUse,
+    PhylaxSynapse,
+    PhylaxSynapseV04,
+    SkillBundle,
+    SkillBundleV04,
+    SkillType,
+    TaskMetadataV04,
+    TaskType,
+    TestProfile,
+)
 from phylax.scoring import (
     aggregate_epoch,
     compute_total_score,
@@ -25,6 +39,24 @@ from phylax.scoring import (
     score_all_axes,
 )
 from phylax.scoring.legacy_metrics import canary_outcome, task_skill_type
+from phylax.scoring.metrics import (
+    TaskContext as V04TaskContext,
+)
+from phylax.scoring.metrics import (
+    Tier as V04Tier,
+)
+from phylax.scoring.metrics import (
+    classify_tier as v04_classify_tier,
+)
+from phylax.scoring.metrics import (
+    compute_Q as v04_compute_Q,
+)
+from phylax.scoring.metrics import (
+    compute_task_emissions_score as v04_emissions_score,
+)
+from phylax.scoring.metrics import (
+    score_all_axes as v04_score_all_axes,
+)
 from phylax.server_client import (
     PhylaxServerClient,
     ServerIdentityMismatch,
@@ -830,6 +862,197 @@ class PhylaxValidator:
                 continue
             out.append(uid)
         return out
+
+    async def run_v04_round(self, v04_tasks: list[dict]) -> dict[str, float]:
+        if not v04_tasks:
+            return {}
+        round_id = uuid.uuid4().hex
+        per_hotkey_q: dict[str, list[float]] = {}
+        emissions_by_hotkey: dict[str, float] = {}
+
+        for task in v04_tasks:
+            skill_type_value = task.get("skill_type") or task.get("metadata", {}).get("skill_type")
+            if skill_type_value not in {t.value for t in SkillType}:
+                continue
+            skill_type = SkillType(skill_type_value)
+            miners = await self._v04_route_miners(skill_type)
+            if not miners:
+                bt.logging.info(f"v0.4 round {round_id[:8]} {skill_type.value}: no routed miners")
+                continue
+            bundle = self._v04_bundle_from_task(task, skill_type)
+            ctx = self._v04_task_context(task, skill_type)
+            for hotkey, uid in miners:
+                resp = await self._v04_dial(uid, bundle, task, skill_type, round_id)
+                if resp is None or resp.error or resp.attestation is None:
+                    continue
+                try:
+                    sssa = SSSAV04(**resp.attestation)
+                except Exception as e:  # noqa: BLE001
+                    bt.logging.warning(f"v0.4 SSSA parse failed for uid={uid}: {e}")
+                    continue
+                ctx.submission_latency_ms = resp.latency_ms
+                axes = v04_score_all_axes(sssa, ctx)
+                q = v04_compute_Q(axes, skill_type)
+                novel_thresholds = self._v04_novel_thresholds()
+                tier = v04_classify_tier(q, skill_type, novel_thresholds.get(skill_type.value, 0.6))
+                emission = v04_emissions_score(q, skill_type, tier)
+                per_hotkey_q.setdefault(hotkey, []).append(q)
+                emissions_by_hotkey[hotkey] = emissions_by_hotkey.get(hotkey, 0.0) + emission
+                bt.logging.info(
+                    f"v0.4 {skill_type.value} hk={hotkey[:10]} Q={q:.3f} "
+                    f"tier={tier.value} emission={emission:.3f}"
+                )
+                self._v04_push_record(round_id, sssa, hotkey, q, tier, emission, skill_type)
+
+        return emissions_by_hotkey
+
+    async def _v04_route_miners(self, skill_type: SkillType) -> list[tuple[str, int]]:
+        if self.server_client is None:
+            return []
+        try:
+            routing = await asyncio.to_thread(
+                self.server_client.get,
+                "/v1/specialization/routing",
+                params={"skill_type": skill_type.value},
+            )
+        except Exception as e:  # noqa: BLE001
+            bt.logging.debug(f"v0.4 routing fetch failed: {e}")
+            return []
+        miners_payload = routing.get("miners", []) if isinstance(routing, dict) else []
+        out: list[tuple[str, int]] = []
+        hotkey_to_uid = {h: i for i, h in enumerate(self.metagraph.hotkeys)}
+        for entry in miners_payload:
+            hotkey = entry.get("hotkey", "")
+            uid = hotkey_to_uid.get(hotkey)
+            if uid is None:
+                continue
+            axon = self.metagraph.axons[uid]
+            if axon.ip == "0.0.0.0":
+                continue
+            out.append((hotkey, uid))
+        return out
+
+    def _v04_bundle_from_task(self, task: dict, skill_type: SkillType) -> SkillBundleV04:
+        metadata = task.get("metadata") or task
+        profile_str = (metadata.get("profile") or metadata.get("test_profile") or "standard").lower()
+        return SkillBundleV04(
+            bundle_hash=task["bundle_hash"],
+            bundle_url=task.get("bundle_url"),
+            bundle_bytes=task.get("bundle_bytes"),
+            metadata=BundleMetadataV04(
+                skill_name=metadata.get("skill_name") or task.get("name") or "unknown",
+                skill_version=metadata.get("skill_version") or "unknown",
+                skill_type=skill_type,
+                profile=TestProfile(profile_str),
+                composition_depth=metadata.get("composition_depth"),
+                child_skill_hashes=metadata.get("child_skill_hashes") or [],
+            ),
+        )
+
+    def _v04_task_context(self, task: dict, skill_type: SkillType) -> V04TaskContext:
+        metadata = task.get("metadata") or {}
+        expected_verdict_str = task.get("expected_verdict") or metadata.get("expected_verdict")
+        from phylax.protocol import Verdict as _V
+        expected_verdict = _V(expected_verdict_str) if expected_verdict_str else None
+        return V04TaskContext(
+            skill_type=skill_type,
+            expected_verdict=expected_verdict,
+            expected_risk=task.get("expected_risk_score") or metadata.get("expected_risk_score"),
+            annotated_by=task.get("annotated_by") or metadata.get("annotated_by"),
+            expected_evidence=task.get("ground_truth_evidence") or {},
+            expected_policy=task.get("expected_policy") or {},
+            ground_truth=task.get("ground_truth") or {},
+            deadline_s=int(metadata.get("deadline_s") or metadata.get("deadline_seconds") or 150),
+            t_min_s=int(metadata.get("t_min_s") or metadata.get("t_min_seconds") or 15),
+        )
+
+    async def _v04_dial(self, uid, bundle, task, skill_type, round_id) -> PhylaxSynapseV04 | None:
+        axon = self.metagraph.axons[uid]
+        task_id = task.get("task_id") or uuid.uuid4().hex
+        deadline_s = int(task.get("metadata", {}).get("deadline_s") or 150)
+        t_min_s = int(task.get("metadata", {}).get("t_min_s") or 15)
+        nonce = secrets.token_hex(16)
+        synapse = PhylaxSynapseV04(
+            skill_bundle=bundle,
+            nonce=nonce,
+            task_metadata=TaskMetadataV04(
+                task_id=task_id,
+                task_type=TaskType(task.get("task_type", "server_curated")),
+                deadline_s=deadline_s,
+                t_min_s=t_min_s,
+            ),
+            inference_config=InferenceConfig(
+                proxy_url=task.get("inference_proxy_url"),
+                allowed_models=task.get("allowed_models", []),
+                allowed_uses=[
+                    LLMAllowedUse.FINDING_ENRICHMENT,
+                    LLMAllowedUse.MITRE_OWASP_MAPPING,
+                    LLMAllowedUse.CVE_EXPLANATION,
+                ],
+            ),
+        )
+        sent_at = time.time()
+        try:
+            resp = await self.dendrite(
+                axons=[axon],
+                synapse=synapse,
+                deserialize=False,
+                timeout=deadline_s,
+            )
+        except Exception as e:  # noqa: BLE001
+            bt.logging.debug(f"v0.4 uid={uid} dendrite error: {e}")
+            return None
+        returned = resp[0] if isinstance(resp, list) else resp
+        if returned is None:
+            return None
+        returned.latency_ms = int((time.time() - sent_at) * 1000)
+        return returned
+
+    def _v04_novel_thresholds(self) -> dict[str, float]:
+        if self.server_client is None:
+            return {}
+        cached = getattr(self, "_v04_threshold_cache", None)
+        cached_at = getattr(self, "_v04_threshold_cached_at", 0.0)
+        if cached is not None and (time.time() - cached_at) < 300:
+            return cached
+        try:
+            data = self.server_client.get("/v1/specialization/tier-table")
+        except Exception as e:  # noqa: BLE001
+            bt.logging.debug(f"tier-table fetch failed: {e}")
+            return cached or {}
+        out = (data or {}).get("novel_thresholds", {}) if isinstance(data, dict) else {}
+        self._v04_threshold_cache = out
+        self._v04_threshold_cached_at = time.time()
+        return out
+
+    def _v04_push_record(
+        self,
+        round_id: str,
+        sssa: SSSAV04,
+        hotkey: str,
+        q: float,
+        tier: V04Tier,
+        emission: float,
+        skill_type: SkillType,
+    ) -> None:
+        if self.server_client is None:
+            return
+        try:
+            self.server_client.post(
+                "/v1/rounds/record",
+                {
+                    "round_id": round_id,
+                    "miner_hotkey": hotkey,
+                    "skill_type": skill_type.value,
+                    "composite_q": q,
+                    "tier": tier.value,
+                    "emission_score": emission,
+                    "sssa": sssa.model_dump(mode="json"),
+                    "schema_version": "0.4",
+                },
+            )
+        except Exception as e:  # noqa: BLE001
+            bt.logging.debug(f"v0.4 round record push failed: {e}")
 
     def set_weights(self) -> None:
         """Push current scores on-chain — gated by a phylax-server weight attestation.
