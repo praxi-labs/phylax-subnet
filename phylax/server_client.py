@@ -90,7 +90,7 @@ class PhylaxServerClient:
         }
 
     def _request(self, method: str, path: str, *, json_body: dict | None = None,
-                 signed: bool = True) -> dict:
+                 params: dict | None = None, signed: bool = True) -> dict:
         import httpx
 
         body = (
@@ -103,11 +103,20 @@ class PhylaxServerClient:
         if signed:
             headers.update(self._signed_headers(method, path, body))
         try:
-            r = httpx.request(method, url, headers=headers, content=body, timeout=self.timeout)
+            r = httpx.request(
+                method, url, headers=headers, content=body,
+                params=params, timeout=self.timeout,
+            )
         except (httpx.ConnectError, httpx.ReadTimeout, httpx.TransportError) as exc:
             raise ServerUnreachable(f"{method} {path}: {exc}") from exc
         r.raise_for_status()
         return r.json() if r.content else {}
+
+    def get(self, path: str, *, params: dict | None = None, signed: bool = True) -> dict:
+        return self._request("GET", path, params=params, signed=signed)
+
+    def post(self, path: str, json_body: dict | None = None, *, signed: bool = True) -> dict:
+        return self._request("POST", path, json_body=json_body, signed=signed)
 
 
     def fetch_server_identity(self) -> str:

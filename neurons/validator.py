@@ -191,6 +191,15 @@ class PhylaxValidator:
             bt.logging.warning("no active miners on metagraph")
             return
 
+        migration = await self._v04_migration_state()
+        if not bool(migration.get("accepts_v03", True)):
+            bt.logging.info(
+                f"v0.3 schema rejected by migration policy "
+                f"(window={migration.get('window')}); skipping legacy round"
+            )
+            return
+        v03_multiplier = float(migration.get("v03_multiplier", 1.0))
+
         round_id, corpus_tasks, server_owned_round = await self._fetch_curated_batch()
         if round_id is None:
             return
@@ -239,6 +248,13 @@ class PhylaxValidator:
         new_scores = torch.zeros_like(self.scores)
         for uid, ts in per_uid_task_scores.items():
             new_scores[uid] = float(aggregate_epoch(ts))
+
+        if v03_multiplier < 1.0:
+            bt.logging.info(
+                f"v0.3 penalty window active (multiplier={v03_multiplier:.2f}); "
+                f"scaling legacy schema scores"
+            )
+            new_scores = new_scores * v03_multiplier
 
         # Reputation multiplier: pull the server's canary-derived
         # per-miner reputation and use it to de-weight suspected
@@ -863,15 +879,20 @@ class PhylaxValidator:
             out.append(uid)
         return out
 
+    _LEGACY_SKILL_TYPE_MAP = {"executable": "executable_python", "mixed": "executable_python"}
+    _DEFAULT_SPECIALIZATION = ("executable_python", "declarative")
+
     async def run_v04_round(self, v04_tasks: list[dict]) -> dict[str, float]:
         if not v04_tasks:
             return {}
         round_id = uuid.uuid4().hex
         per_hotkey_q: dict[str, list[float]] = {}
         emissions_by_hotkey: dict[str, float] = {}
+        await self._v04_migration_state()
 
         for task in v04_tasks:
-            skill_type_value = task.get("skill_type") or task.get("metadata", {}).get("skill_type")
+            raw_type = task.get("skill_type") or task.get("metadata", {}).get("skill_type")
+            skill_type_value = self._LEGACY_SKILL_TYPE_MAP.get(raw_type, raw_type)
             if skill_type_value not in {t.value for t in SkillType}:
                 continue
             skill_type = SkillType(skill_type_value)
@@ -907,30 +928,59 @@ class PhylaxValidator:
         return emissions_by_hotkey
 
     async def _v04_route_miners(self, skill_type: SkillType) -> list[tuple[str, int]]:
+        routed: list[tuple[str, int]] = []
+        if self.server_client is not None:
+            try:
+                routing = await asyncio.to_thread(
+                    self.server_client.get,
+                    "/v1/specialization/routing",
+                    params={"skill_type": skill_type.value},
+                )
+            except Exception as e:  # noqa: BLE001
+                bt.logging.debug(f"v0.4 routing fetch failed: {e}")
+                routing = {}
+            miners_payload = routing.get("miners", []) if isinstance(routing, dict) else []
+            hotkey_to_uid = {h: i for i, h in enumerate(self.metagraph.hotkeys)}
+            for entry in miners_payload:
+                hotkey = entry.get("hotkey", "")
+                uid = hotkey_to_uid.get(hotkey)
+                if uid is None:
+                    continue
+                axon = self.metagraph.axons[uid]
+                if axon.ip == "0.0.0.0":
+                    continue
+                routed.append((hotkey, uid))
+        if routed or skill_type.value not in self._DEFAULT_SPECIALIZATION:
+            return routed
+        for uid in self._get_active_miner_uids():
+            if uid >= len(self.metagraph.hotkeys):
+                continue
+            routed.append((self.metagraph.hotkeys[uid], uid))
+        return routed
+
+    async def _v04_migration_state(self) -> dict:
+        cached = getattr(self, "_migration_state_cache", None)
+        cached_at = getattr(self, "_migration_state_cached_at", 0.0)
+        if cached is not None and (time.time() - cached_at) < 300:
+            return cached
+        fallback = {
+            "v03_multiplier": 1.0,
+            "accepts_v03": True,
+            "window": "acceptance",
+            "current_epoch": 0,
+        }
         if self.server_client is None:
-            return []
+            return fallback
         try:
-            routing = await asyncio.to_thread(
-                self.server_client.get,
-                "/v1/specialization/routing",
-                params={"skill_type": skill_type.value},
-            )
+            data = await asyncio.to_thread(self.server_client.get, "/v1/migration/state")
         except Exception as e:  # noqa: BLE001
-            bt.logging.debug(f"v0.4 routing fetch failed: {e}")
-            return []
-        miners_payload = routing.get("miners", []) if isinstance(routing, dict) else []
-        out: list[tuple[str, int]] = []
-        hotkey_to_uid = {h: i for i, h in enumerate(self.metagraph.hotkeys)}
-        for entry in miners_payload:
-            hotkey = entry.get("hotkey", "")
-            uid = hotkey_to_uid.get(hotkey)
-            if uid is None:
-                continue
-            axon = self.metagraph.axons[uid]
-            if axon.ip == "0.0.0.0":
-                continue
-            out.append((hotkey, uid))
-        return out
+            bt.logging.debug(f"migration state fetch failed: {e}")
+            return cached or fallback
+        if not isinstance(data, dict):
+            return cached or fallback
+        self._migration_state_cache = data
+        self._migration_state_cached_at = time.time()
+        return data
 
     def _v04_bundle_from_task(self, task: dict, skill_type: SkillType) -> SkillBundleV04:
         metadata = task.get("metadata") or task
