@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import shutil
@@ -237,11 +236,8 @@ class ExecutableScriptHarness:
 
 
 def _hash_file(path: Path) -> str | None:
-    try:
-        raw = path.read_bytes()
-    except FileNotFoundError:
-        return None
-    return "sha256:" + hashlib.sha256(raw).hexdigest()
+    from phylax.harness.trace_normalisation import hash_jsonl_file
+    return hash_jsonl_file(path)
 
 
 def _jsonl_records(path: Path) -> list[dict]:

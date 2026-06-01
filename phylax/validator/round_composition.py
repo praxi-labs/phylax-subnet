@@ -7,8 +7,12 @@ from typing import Any
 
 from phylax.protocol import SkillType, TaskType, TestProfile
 from phylax.validator.canary import (
+    build_minimal_agent_composition_bundle,
     build_minimal_declarative_bundle,
+    build_minimal_executable_python_bundle,
+    build_minimal_executable_script_bundle,
     build_minimal_mcp_bundle,
+    build_minimal_rag_bundle,
 )
 
 LEGACY_SKILL_TYPE_MAP: dict[str, str] = {
@@ -117,54 +121,44 @@ def generate_canary_task(skill_type: SkillType) -> RoundTask:
     raise ValueError(f"no canary generator for skill_type={skill_type.value}")
 
 
+_SYNTH_BUILDERS = {
+    SkillType.RAG_KNOWLEDGE: ("synth_rag", build_minimal_rag_bundle),
+    SkillType.DECLARATIVE: ("synth_declarative", build_minimal_declarative_bundle),
+    SkillType.EXECUTABLE_PYTHON: ("synth_executable_python", build_minimal_executable_python_bundle),
+    SkillType.EXECUTABLE_SCRIPT: ("synth_executable_script", build_minimal_executable_script_bundle),
+    SkillType.MCP_SERVER: ("synth_mcp_server", build_minimal_mcp_bundle),
+    SkillType.AGENT_COMPOSITION: ("synth_agent_composition", build_minimal_agent_composition_bundle),
+}
+
+
 def generate_local_synth_task(skill_type: SkillType) -> RoundTask | None:
-    if skill_type == SkillType.DECLARATIVE:
-        nonce = secrets.token_hex(16)
-        injection = build_minimal_declarative_bundle(nonce)
-        metadata = {
-            "skill_name": "synth_declarative",
-            "skill_version": "1.0.0",
-            "skill_type": skill_type.value,
-            "profile": TestProfile.STANDARD.value,
-            "nonce": nonce,
-        }
-        return RoundTask(
-            task_id=str(uuid.uuid4()),
-            skill_type=skill_type,
-            task_type=TaskType.LOCAL_SYNTH,
-            profile=TestProfile.STANDARD,
-            bundle_hash=injection.bundle_hash,
-            bundle_bytes=injection.bundle_bytes,
-            metadata=metadata,
-            expected_verdict="ALLOW",
-            ground_truth=injection.ground_truth,
-            annotated_by="consensus",
-        )
-    if skill_type == SkillType.RAG_KNOWLEDGE:
-        nonce = secrets.token_hex(16)
-        clean_bytes = b"# Reference Knowledge\n\nDeterministic synthetic document used to validate harness output.\n"
-        from phylax.validator.canary import inject_rag_canary
-        injection = inject_rag_canary(clean_bytes, nonce)
-        metadata = {
-            "skill_name": "synth_rag",
-            "skill_version": "1.0.0",
-            "skill_type": skill_type.value,
-            "profile": TestProfile.STANDARD.value,
-            "nonce": nonce,
-        }
-        return RoundTask(
-            task_id=str(uuid.uuid4()),
-            skill_type=skill_type,
-            task_type=TaskType.LOCAL_SYNTH,
-            profile=TestProfile.STANDARD,
-            bundle_hash=injection.bundle_hash,
-            bundle_bytes=injection.bundle_bytes,
-            metadata=metadata,
-            expected_verdict="ALLOW",
-            ground_truth=injection.ground_truth,
-            annotated_by="consensus",
-        )
-    return None
+    entry = _SYNTH_BUILDERS.get(skill_type)
+    if entry is None:
+        return None
+    skill_name, builder = entry
+    nonce = secrets.token_hex(16)
+    injection = builder(nonce)
+    metadata = {
+        "skill_name": skill_name,
+        "skill_version": "1.0.0",
+        "skill_type": skill_type.value,
+        "profile": TestProfile.STANDARD.value,
+        "nonce": nonce,
+    }
+    if skill_type == SkillType.AGENT_COMPOSITION:
+        metadata["composition_depth"] = 1
+    return RoundTask(
+        task_id=str(uuid.uuid4()),
+        skill_type=skill_type,
+        task_type=TaskType.LOCAL_SYNTH,
+        profile=TestProfile.STANDARD,
+        bundle_hash=injection.bundle_hash,
+        bundle_bytes=injection.bundle_bytes,
+        metadata=metadata,
+        expected_verdict="ALLOW",
+        ground_truth=injection.ground_truth,
+        annotated_by="consensus",
+    )
 
 
 def task_from_server_dict(raw: dict) -> RoundTask | None:

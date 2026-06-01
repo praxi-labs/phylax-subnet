@@ -205,6 +205,13 @@ _PREPARERS = {
 }
 
 
-def prepare_bundle(skill_type: SkillType, bundle_bytes: bytes, nonce: str | None = None) -> BundlePreparation:
+def prepare_bundle(
+    skill_type: SkillType,
+    bundle_bytes: bytes,
+    nonce: str | None = None,
+    composition_depth: int = 5,
+) -> BundlePreparation:
+    if skill_type == SkillType.AGENT_COMPOSITION:
+        return prepare_agent_composition(bundle_bytes, nonce, composition_depth)
     fn = _PREPARERS[skill_type]
     return fn(bundle_bytes, nonce)

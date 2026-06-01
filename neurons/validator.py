@@ -29,6 +29,7 @@ from phylax.scoring import (
     classify_tier,
     compute_Q,
     compute_round_score,
+    compute_task_emissions_score,
     recalibrate_novel_threshold,
     score_all_axes,
 )
@@ -39,6 +40,7 @@ from phylax.server_client import (
 )
 from phylax.utils.logging import get_logger
 from phylax.validator import (
+    ROUND_COMPOSITION,
     RoundTask,
     compose_round,
     prepare_bundle,
@@ -83,6 +85,11 @@ class PhylaxValidator:
     EMA_ALPHA: float = float(os.getenv("EMA_ALPHA", "0.2"))
     THRESHOLD_CACHE_TTL_S: int = 300
     REPUTATION_CACHE_TTL_S: int = 60
+    INFERENCE_PROXY_URL: str | None = os.getenv("PHYLAX_INFERENCE_PROXY_URL") or None
+    ALLOWED_MODELS: list[str] = [
+        m.strip() for m in os.getenv("PHYLAX_ALLOWED_MODELS", "").split(",") if m.strip()
+    ]
+    DEFAULT_COMPOSITION_DEPTH: int = int(os.getenv("PHYLAX_COMPOSITION_DEPTH", "5"))
 
     def __init__(self, config=None, wallet=None, subtensor=None):
         self.config = config
@@ -107,6 +114,8 @@ class PhylaxValidator:
         self._threshold_cached_at: float = 0.0
         self._per_type_rep_cache: dict[str, dict[str, float]] = {}
         self._per_type_rep_cached_at: float = 0.0
+        self._recent_bundle_hashes: list[str] = []
+        self._declared_types_by_hotkey: dict[str, set[str]] = {}
 
         server_url = os.getenv("PHYLAX_SERVER_URL", "")
         expected_server_hotkey = os.getenv("PHYLAX_SERVER_HOTKEY", "").strip() or None
@@ -152,9 +161,14 @@ class PhylaxValidator:
 
         prepared: list[tuple[RoundTask, object]] = []
         for task in round_tasks:
+            depth = int(task.metadata.get("composition_depth") or self.DEFAULT_COMPOSITION_DEPTH)
             try:
                 prep = await asyncio.to_thread(
-                    prepare_bundle, task.skill_type, task.bundle_bytes or b"", task.metadata.get("nonce"),
+                    prepare_bundle,
+                    task.skill_type,
+                    task.bundle_bytes or b"",
+                    task.metadata.get("nonce"),
+                    depth,
                 )
             except Exception as e:  # noqa: BLE001
                 bt.logging.warning(
@@ -171,8 +185,12 @@ class PhylaxValidator:
         round_results: list[dict] = []
         per_miner_payload: list[dict] = []
 
+        miner_types_responded: dict[str, set[str]] = {}
         for task, prep in prepared:
-            miners = await self._route_miners_for_skill_type(task.skill_type)
+            self._recent_bundle_hashes.append(prep.bundle_hash)
+            if len(self._recent_bundle_hashes) > 256:
+                self._recent_bundle_hashes = self._recent_bundle_hashes[-256:]
+            miners = await self._route_miners_for_skill_type(task.skill_type, task.task_type)
             if not miners:
                 bt.logging.info(
                     f"round {round_id[:8]} {task.skill_type.value}: no routed miners"
@@ -200,6 +218,7 @@ class PhylaxValidator:
                 threshold = self._novel_thresholds().get(task.skill_type.value, 0.6)
                 tier = classify_tier(q, task.skill_type, threshold)
                 self._epoch_q_scores.setdefault(task.skill_type.value, []).append(float(q))
+                miner_types_responded.setdefault(hotkey, set()).add(task.skill_type.value)
                 per_uid_results.setdefault(uid, []).append(
                     {
                         "composite_q": float(q),
@@ -219,6 +238,9 @@ class PhylaxValidator:
                         "tier": tier.value,
                     }
                 )
+                emission = compute_task_emissions_score(
+                    float(q), task.skill_type, tier, self.current_epoch,
+                )
                 per_miner_payload.append(
                     {
                         "miner_uid": int(uid),
@@ -227,7 +249,7 @@ class PhylaxValidator:
                         "skill_type": task.skill_type.value,
                         "composite_q": float(q),
                         "tier": tier.value,
-                        "emission_score": float(q),
+                        "emission_score": float(emission),
                         "verdict": sssa.verdict.decision.value,
                         "risk_score": int(sssa.verdict.risk_score),
                         "submission_latency_ms": int(getattr(resp, "latency_ms", 0)),
@@ -259,66 +281,175 @@ class PhylaxValidator:
             f"round {round_id[:8]} done | top_score={top:.3f} epoch={self.current_epoch}"
         )
 
+        self._append_coverage_violations(round_results, miner_types_responded)
         self._publish_round_results(round_id, per_miner_payload)
         self._push_reputation_updates(round_results)
         self.last_completed_round_id = round_id
 
+    def _append_coverage_violations(
+        self,
+        round_results: list[dict],
+        responded: dict[str, set[str]],
+    ) -> None:
+        for hotkey, declared in self._declared_types_by_hotkey.items():
+            responded_types = responded.get(hotkey, set())
+            for skill_type_value in declared - responded_types:
+                round_results.append(
+                    {
+                        "hotkey": hotkey,
+                        "skill_type": skill_type_value,
+                        "task_type": "coverage",
+                        "epsilon": 0.0,
+                        "composite_q": 0.0,
+                        "tier": Tier.BELOW_REFERENCE.value,
+                        "violation": True,
+                    }
+                )
+
     async def _fetch_server_tasks(self) -> list[dict]:
         if self.server_client is None:
             return []
-        try:
-            batch = await asyncio.to_thread(
-                self.server_client.fetch_task_batch,
-                self.SERVER_CURATED_PULL,
-                include_canaries=False,
-            )
-        except ServerUnreachable as e:
-            bt.logging.warning(f"phylax-server unreachable for task batch: {e}")
-            return []
-        except ServerIdentityMismatch as e:
-            bt.logging.error(f"phylax-server identity mismatch: {e}; skipping round")
-            return []
-        except Exception as e:  # noqa: BLE001
-            bt.logging.warning(f"phylax-server task fetch failed: {e}")
-            return []
-        return batch.get("tasks", []) or []
+        collected: list[dict] = []
+        recent = list(self._recent_bundle_hashes)
+        for skill_type, slots in ROUND_COMPOSITION.items():
+            needed = sum(1 for s in slots if s == TaskType.SERVER_CURATED)
+            if needed <= 0:
+                continue
+            try:
+                payload = await asyncio.to_thread(
+                    self.server_client.post,
+                    "/v1/tasks/by-type",
+                    {
+                        "skill_type": skill_type.value,
+                        "count": needed,
+                        "exclude_bundle_hashes": recent[-128:],
+                    },
+                )
+            except ServerUnreachable as e:
+                bt.logging.warning(f"by-type fetch unreachable for {skill_type.value}: {e}")
+                continue
+            except ServerIdentityMismatch as e:
+                bt.logging.error(f"phylax-server identity mismatch: {e}; skipping round")
+                return []
+            except Exception as e:  # noqa: BLE001
+                bt.logging.debug(f"by-type fetch failed for {skill_type.value}: {e}")
+                continue
+            tasks = (payload or {}).get("tasks", []) if isinstance(payload, dict) else []
+            for t in tasks:
+                t.setdefault("skill_type", skill_type.value)
+                t.setdefault("task_type", TaskType.SERVER_CURATED.value)
+                collected.append(t)
+        return collected
 
     async def _route_miners_for_skill_type(
-        self, skill_type: SkillType
+        self, skill_type: SkillType, task_type: TaskType,
     ) -> list[tuple[str, int]]:
-        routed: list[tuple[str, int]] = []
         hotkey_to_uid = {h: i for i, h in enumerate(self.metagraph.hotkeys)}
+        include_recovery = task_type == TaskType.CANARY
+
+        routed = await self._routing_call(
+            skill_type, hotkey_to_uid, include_recovery=include_recovery,
+        )
+        if routed:
+            self._record_declared_for(skill_type, routed)
+            return routed
+
         if self.server_client is not None:
-            for fallback_type in self._fallback_chain(skill_type):
-                try:
-                    routing = await asyncio.to_thread(
-                        self.server_client.get,
-                        "/v1/specialization/routing",
-                        params={"skill_type": fallback_type.value},
-                    )
-                except Exception as e:  # noqa: BLE001
-                    bt.logging.debug(f"routing fetch failed for {fallback_type.value}: {e}")
-                    routing = {}
-                payload = routing.get("miners", []) if isinstance(routing, dict) else []
-                for entry in payload:
-                    hotkey = entry.get("hotkey", "")
-                    uid = hotkey_to_uid.get(hotkey)
-                    if uid is None:
-                        continue
-                    axon = self.metagraph.axons[uid]
-                    if axon.ip == "0.0.0.0":
-                        continue
-                    routed.append((hotkey, uid))
-                if routed:
-                    return routed
+            generalists = await self._generalists_call(hotkey_to_uid)
+            if generalists:
+                self._record_declared_for(skill_type, generalists, declared_all=True)
+                return generalists
+
+        for adjacent in self._adjacent_types(skill_type):
+            routed = await self._routing_call(
+                adjacent, hotkey_to_uid, include_recovery=include_recovery,
+            )
+            if routed:
+                self._record_declared_for(adjacent, routed)
+                return routed
+
+        cold: list[tuple[str, int]] = []
         for uid in self._get_active_miner_uids():
             if uid >= len(self.metagraph.hotkeys):
                 continue
-            routed.append((self.metagraph.hotkeys[uid], uid))
-        return routed
+            cold.append((self.metagraph.hotkeys[uid], uid))
+        return cold
+
+    async def _routing_call(
+        self,
+        skill_type: SkillType,
+        hotkey_to_uid: dict[str, int],
+        *,
+        include_recovery: bool,
+    ) -> list[tuple[str, int]]:
+        if self.server_client is None:
+            return []
+        params: dict = {"skill_type": skill_type.value}
+        if include_recovery:
+            params["include_recovery"] = "true"
+        try:
+            routing = await asyncio.to_thread(
+                self.server_client.get,
+                "/v1/specialization/routing",
+                params=params,
+            )
+        except Exception as e:  # noqa: BLE001
+            bt.logging.debug(f"routing fetch failed for {skill_type.value}: {e}")
+            return []
+        payload = routing.get("miners", []) if isinstance(routing, dict) else []
+        out: list[tuple[str, int]] = []
+        for entry in payload:
+            hotkey = entry.get("hotkey", "")
+            uid = hotkey_to_uid.get(hotkey)
+            if uid is None:
+                continue
+            axon = self.metagraph.axons[uid]
+            if axon.ip == "0.0.0.0":
+                continue
+            out.append((hotkey, uid))
+        return out
+
+    async def _generalists_call(
+        self, hotkey_to_uid: dict[str, int]
+    ) -> list[tuple[str, int]]:
+        if self.server_client is None:
+            return []
+        try:
+            data = await asyncio.to_thread(
+                self.server_client.get, "/v1/specialization/generalists"
+            )
+        except Exception as e:  # noqa: BLE001
+            bt.logging.debug(f"generalists fetch failed: {e}")
+            return []
+        miners = data.get("miners", []) if isinstance(data, dict) else []
+        out: list[tuple[str, int]] = []
+        for entry in miners:
+            hotkey = entry.get("hotkey", "")
+            uid = hotkey_to_uid.get(hotkey)
+            if uid is None:
+                continue
+            axon = self.metagraph.axons[uid]
+            if axon.ip == "0.0.0.0":
+                continue
+            out.append((hotkey, uid))
+        return out
+
+    def _record_declared_for(
+        self,
+        skill_type: SkillType,
+        miners: list[tuple[str, int]],
+        *,
+        declared_all: bool = False,
+    ) -> None:
+        for hotkey, _ in miners:
+            current = self._declared_types_by_hotkey.setdefault(hotkey, set())
+            if declared_all:
+                current.update(st.value for st in SkillType)
+            else:
+                current.add(skill_type.value)
 
     @staticmethod
-    def _fallback_chain(skill_type: SkillType) -> list[SkillType]:
+    def _adjacent_types(skill_type: SkillType) -> list[SkillType]:
         adjacents: dict[SkillType, list[SkillType]] = {
             SkillType.AGENT_COMPOSITION: [SkillType.MCP_SERVER],
             SkillType.MCP_SERVER: [SkillType.EXECUTABLE_PYTHON],
@@ -327,7 +458,7 @@ class PhylaxValidator:
             SkillType.DECLARATIVE: [SkillType.RAG_KNOWLEDGE],
             SkillType.RAG_KNOWLEDGE: [],
         }
-        return [skill_type, *adjacents.get(skill_type, [])]
+        return adjacents.get(skill_type, [])
 
     def _bundle_from_prepared(self, task: RoundTask, prep) -> SkillBundle:
         metadata = task.metadata or {}
@@ -387,8 +518,8 @@ class PhylaxValidator:
                 t_min_s=t_min_s,
             ),
             inference_config=InferenceConfig(
-                proxy_url=task.metadata.get("inference_proxy_url"),
-                allowed_models=task.metadata.get("allowed_models", []),
+                proxy_url=task.metadata.get("inference_proxy_url") or self.INFERENCE_PROXY_URL,
+                allowed_models=task.metadata.get("allowed_models") or self.ALLOWED_MODELS,
                 allowed_uses=[
                     LLMAllowedUse.FINDING_ENRICHMENT,
                     LLMAllowedUse.MITRE_OWASP_MAPPING,

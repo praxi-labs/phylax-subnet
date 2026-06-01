@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import shutil
@@ -342,10 +341,8 @@ def _detect_cycle(graph: dict) -> list[str]:
 
 
 def _sha256_file(path: Path) -> str | None:
-    try:
-        return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
-    except FileNotFoundError:
-        return None
+    from phylax.harness.trace_normalisation import hash_jsonl_file
+    return hash_jsonl_file(path)
 
 
 def _jsonl_records(path: Path) -> list[dict]:

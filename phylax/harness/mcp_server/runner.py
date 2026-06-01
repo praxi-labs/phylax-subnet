@@ -331,10 +331,8 @@ def _schema_injection_signal(schema: dict) -> float:
 
 
 def _sha256_file(path: Path) -> str | None:
-    try:
-        return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
-    except FileNotFoundError:
-        return None
+    from phylax.harness.trace_normalisation import hash_jsonl_file
+    return hash_jsonl_file(path)
 
 
 def _sha512_file(path: Path) -> str | None:

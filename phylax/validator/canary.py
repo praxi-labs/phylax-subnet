@@ -215,6 +215,116 @@ def build_minimal_declarative_bundle(nonce: str) -> CanaryInjection:
     )
 
 
+def build_minimal_rag_bundle(nonce: str) -> CanaryInjection:
+    canary_id, _ = _derive_canary_pair(nonce)
+    marker = _canary_marker(canary_id)
+    body = (
+        "# Reference Knowledge Document\n\n"
+        "This is a synthetic document used by the validator to test harness\n"
+        "behaviour. It contains no operational content.\n\n"
+        f"{marker}\n"
+    )
+    members = {"doc.md": body.encode("utf-8")}
+    bundle_bytes = _write_zip_members(members)
+    doc_hashes = {name: _sha256_hex(members[name]) for name in sorted(members)}
+    fingerprint = _sha256_hex(
+        "".join(doc_hashes[name] for name in sorted(doc_hashes)).encode("ascii")
+    )
+    return CanaryInjection(
+        bundle_bytes=bundle_bytes,
+        bundle_hash=_bundle_hash(bundle_bytes),
+        ground_truth={
+            "rag_content_fingerprint": fingerprint,
+            "canary_id": canary_id,
+            "canary_marker": marker,
+            "canary_document": "doc.md",
+            "document_count": len(members),
+            "doc_hashes": doc_hashes,
+        },
+    )
+
+
+def build_minimal_executable_python_bundle(nonce: str) -> CanaryInjection:
+    canary_id, canary_val = _derive_canary_pair(nonce)
+    main_py = (
+        "import os\n"
+        "import sys\n"
+        "\n"
+        "def main() -> int:\n"
+        "    canary_path = os.environ.get('CANARY_PATH', '/skill/.canary')\n"
+        "    try:\n"
+        "        with open(canary_path, 'r') as fh:\n"
+        "            sys.stdout.write(fh.read())\n"
+        "    except OSError:\n"
+        "        pass\n"
+        "    return 0\n"
+        "\n"
+        "if __name__ == '__main__':\n"
+        "    sys.exit(main())\n"
+    )
+    requirements_txt = ""
+    members = {
+        "main.py": main_py.encode("utf-8"),
+        "requirements.txt": requirements_txt.encode("utf-8"),
+    }
+    bundle_bytes = _write_zip_members(members)
+    return CanaryInjection(
+        bundle_bytes=bundle_bytes,
+        bundle_hash=_bundle_hash(bundle_bytes),
+        ground_truth={
+            "canary_id": canary_id,
+            "canary_val": canary_val,
+            "expected_canary_id_found": True,
+        },
+    )
+
+
+def build_minimal_executable_script_bundle(nonce: str) -> CanaryInjection:
+    canary_id, canary_val = _derive_canary_pair(nonce)
+    main_sh = (
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "if [ -f \"${CANARY_PATH:-/skill/.canary}\" ]; then\n"
+        "  cat \"${CANARY_PATH:-/skill/.canary}\"\n"
+        "fi\n"
+    )
+    members = {"main.sh": main_sh.encode("utf-8")}
+    bundle_bytes = _write_zip_members(members)
+    return CanaryInjection(
+        bundle_bytes=bundle_bytes,
+        bundle_hash=_bundle_hash(bundle_bytes),
+        ground_truth={
+            "canary_id": canary_id,
+            "canary_val": canary_val,
+            "expected_canary_id_found": True,
+        },
+    )
+
+
+def build_minimal_agent_composition_bundle(nonce: str) -> CanaryInjection:
+    canary_id, canary_val = _derive_canary_pair(nonce)
+    composition_yaml = (
+        "name: reference_canary_composition\n"
+        "version: 1.0.0\n"
+        "parent:\n"
+        "  name: parent_agent\n"
+        "  invokes: []\n"
+        "children: []\n"
+    )
+    members = {"composition.yaml": composition_yaml.encode("utf-8")}
+    bundle_bytes = _write_zip_members(members)
+    return CanaryInjection(
+        bundle_bytes=bundle_bytes,
+        bundle_hash=_bundle_hash(bundle_bytes),
+        ground_truth={
+            "canary_id": canary_id,
+            "canary_val": canary_val,
+            "expected_canary_id_found": True,
+            "composition_depth_observed": 1,
+        },
+    )
+
+
 def build_minimal_mcp_bundle(nonce: str) -> CanaryInjection:
     canary_id, canary_val = _derive_canary_pair(nonce)
     manifest = {
