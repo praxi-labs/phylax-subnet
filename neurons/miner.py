@@ -759,10 +759,9 @@ class PhylaxMiner:
             archive = tmp / "bundle.bin"
             archive.write_bytes(bundle.bundle_bytes)
             if zipfile.is_zipfile(archive):
-                extract = tmp / "extracted"
+                extract = (tmp / "extracted").resolve()
                 extract.mkdir()
-                with zipfile.ZipFile(archive) as zf:
-                    zf.extractall(extract)
+                self._safe_extract_zip(archive, extract)
                 return extract
             single = tmp / "skill"
             single.mkdir()
@@ -771,6 +770,30 @@ class PhylaxMiner:
         if bundle.bundle_url:
             raise ValueError("bundle_url path not yet wired in reference miner")
         raise ValueError("no bundle payload supplied")
+
+    @staticmethod
+    def _safe_extract_zip(archive: Path, dest: Path) -> None:
+        max_total = 256 * 1024 * 1024
+        max_member = 64 * 1024 * 1024
+        dest_resolved = dest.resolve()
+        running_total = 0
+        with zipfile.ZipFile(archive) as zf:
+            for member in zf.infolist():
+                mode = (member.external_attr >> 16) & 0o170000
+                if mode == 0o120000:
+                    raise ValueError(f"symlink not allowed in bundle: {member.filename}")
+                if member.file_size > max_member:
+                    raise ValueError(
+                        f"member {member.filename} exceeds per-file size cap "
+                        f"({member.file_size} > {max_member})"
+                    )
+                running_total += member.file_size
+                if running_total > max_total:
+                    raise ValueError("archive exceeds total uncompressed size cap")
+                target = (dest_resolved / member.filename).resolve()
+                if dest_resolved != target and dest_resolved not in target.parents:
+                    raise ValueError(f"unsafe path in bundle archive: {member.filename}")
+            zf.extractall(dest_resolved)
 
 
 _SKILL_MD_NAMES = ("skill.md", "skill.markdown", "readme.md")
