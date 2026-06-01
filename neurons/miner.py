@@ -1,21 +1,51 @@
 import argparse
 import asyncio
+import datetime as dt
 import hashlib
 import os
+import tempfile
 import time
 import traceback
+import zipfile
+from pathlib import Path
 
 import bittensor as bt
 
 from phylax.attestation.signer import AttestationSigner
+from phylax.harness import (
+    AgentCompositionHarness,
+    DeclarativeHarness,
+    ExecutablePythonHarness,
+    ExecutableScriptHarness,
+    MCPServerHarness,
+    RAGKnowledgeHarness,
+)
 from phylax.pipeline.sandbox import SandboxDetonator
 from phylax.pipeline.sbom import SBOMAnalyzer
 from phylax.pipeline.static import StaticAnalyzer
 from phylax.policy.generator import PolicyGenerator
-from phylax.protocol import SSSA, PhylaxSynapse, SkillBundle
+from phylax.protocol import (
+    SSSA,
+    SSSAV04,
+    AttestationBlockV04,
+    CapabilitiesV04,
+    DependenciesV04,
+    EvidencePackV04,
+    PhylaxSynapse,
+    PhylaxSynapseV04,
+    RecommendedPolicyV04,
+    SkillBundle,
+    SkillIdentityV04,
+    SkillType,
+    TypeSpecificEvidence,
+    Verdict,
+    VerdictBlockV04,
+)
 from phylax.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+V04_SKILL_TYPES = {t.value for t in SkillType}
 
 
 class PhylaxMiner:
@@ -43,6 +73,7 @@ class PhylaxMiner:
         self.metagraph = self.subtensor.metagraph(netuid=config.netuid)
         self.axon = bt.Axon(wallet=self.wallet, config=config)
         self.axon.attach(forward_fn=self.forward)
+        self.axon.attach(forward_fn=self.forward_v04)
         self.should_exit = False
         self._build_internal_state()
 
@@ -62,6 +93,14 @@ class PhylaxMiner:
         )
         self.policy_generator = PolicyGenerator()
         self.signer           = AttestationSigner(wallet=self.wallet)
+
+        self.h_rag = RAGKnowledgeHarness()
+        self.h_declarative = DeclarativeHarness()
+        self.h_executable_python = ExecutablePythonHarness()
+        self.h_executable_script = ExecutableScriptHarness()
+        self.h_mcp_server = MCPServerHarness()
+        self.h_agent_composition = AgentCompositionHarness()
+        self.v04_supported_types: list[SkillType] = list(SkillType)
 
         bt.logging.info("Pipeline ready.")
 
@@ -524,6 +563,214 @@ class PhylaxMiner:
             except Exception as e:
                 bt.logging.error(f"Run loop error: {e}")
                 time.sleep(12)
+
+
+    async def forward_v04(self, synapse: PhylaxSynapseV04) -> PhylaxSynapseV04:
+        bundle = synapse.skill_bundle
+        skill_type = bundle.metadata.skill_type
+        bt.logging.info(
+            f"v0.4 scan: bundle={bundle.bundle_hash} type={skill_type.value} "
+            f"profile={bundle.metadata.profile.value} "
+            f"task={synapse.task_metadata.task_id}"
+        )
+        try:
+            bundle_dir = await asyncio.to_thread(self._materialise_v04_bundle, bundle)
+            sssa = await asyncio.to_thread(self._dispatch_v04, skill_type, bundle_dir, synapse)
+            sssa = self._sign_v04(sssa)
+            synapse.attestation = sssa.model_dump(mode="json")
+            bt.logging.success(
+                f"v0.4 scan complete: {bundle.bundle_hash} -> "
+                f"{sssa.verdict.decision.value} risk={sssa.verdict.risk_score}"
+            )
+        except Exception as exc:  # noqa: BLE001
+            bt.logging.error(f"v0.4 pipeline error for {bundle.bundle_hash}: {exc}")
+            bt.logging.debug(traceback.format_exc())
+            synapse.error = str(exc)
+        return synapse
+
+    def _dispatch_v04(self, skill_type, bundle_dir, synapse):
+        canary_id = synapse.task_metadata.task_id
+        canary_val = synapse.nonce
+        bundle = synapse.skill_bundle
+
+        type_specific = TypeSpecificEvidence()
+        findings: list = []
+        verdict_sources: list[str] = []
+        risk_score = 0
+        evidence_pack = EvidencePackV04()
+
+        if skill_type == SkillType.RAG_KNOWLEDGE:
+            result = self.h_rag.run(bundle_dir, canary_id=canary_id)
+            type_specific.rag_knowledge = result.evidence
+            findings = result.findings
+            risk_score = min(100, int(result.evidence.hidden_instruction_score * 100))
+            verdict_sources = ["L0_content"]
+            evidence_pack = EvidencePackV04(type_specific=type_specific)
+        elif skill_type == SkillType.DECLARATIVE:
+            result = self.h_declarative.run(bundle_dir, canary_id=canary_id)
+            type_specific.declarative = result.evidence
+            findings = result.findings
+            risk_score = min(100, int(result.evidence.prompt_injection_ml_score * 100))
+            verdict_sources = ["L0_declarative"]
+            evidence_pack = EvidencePackV04(type_specific=type_specific)
+        elif skill_type == SkillType.EXECUTABLE_PYTHON:
+            result = self.h_executable_python.run(
+                bundle_dir, nonce=synapse.nonce, canary_id=canary_id, canary_val=canary_val,
+            )
+            type_specific.executable_python = result.evidence
+            findings = result.findings
+            risk_score = self._risk_from_v04_findings(findings)
+            verdict_sources = ["L1_taint", "L2_sbom", "L3_runtime"]
+            evidence_pack = EvidencePackV04(base=result.base_evidence, type_specific=type_specific)
+        elif skill_type == SkillType.EXECUTABLE_SCRIPT:
+            result = self.h_executable_script.run(
+                bundle_dir, nonce=synapse.nonce, canary_id=canary_id, canary_val=canary_val,
+            )
+            type_specific.executable_script = result.evidence
+            findings = result.findings
+            risk_score = self._risk_from_v04_findings(findings)
+            verdict_sources = ["L1_shell_taint", "L3_runtime"]
+            evidence_pack = EvidencePackV04(base=result.base_evidence, type_specific=type_specific)
+        elif skill_type == SkillType.MCP_SERVER:
+            result = self.h_mcp_server.run(
+                bundle_dir, nonce=synapse.nonce, canary_id=canary_id, canary_val=canary_val,
+            )
+            type_specific.mcp_server = result.evidence
+            findings = result.findings
+            risk_score = max(
+                self._risk_from_v04_findings(findings),
+                int(result.evidence.tool_poisoning_score * 100),
+            )
+            verdict_sources = ["L3_mcp_manifest", "L3_tool_calls"]
+            evidence_pack = EvidencePackV04(base=result.base_evidence, type_specific=type_specific)
+        elif skill_type == SkillType.AGENT_COMPOSITION:
+            depth = bundle.metadata.composition_depth or 5
+            result = self.h_agent_composition.run(
+                bundle_dir,
+                nonce=synapse.nonce,
+                canary_id=canary_id,
+                canary_val=canary_val,
+                composition_depth=depth,
+            )
+            type_specific.agent_composition = result.evidence
+            findings = result.findings
+            risk_score = max(
+                self._risk_from_v04_findings(findings),
+                int(result.evidence.transitive_risk_score * 100),
+            )
+            verdict_sources = ["L3_composition", "L3_transitive_risk"]
+            evidence_pack = EvidencePackV04(base=result.base_evidence, type_specific=type_specific)
+        else:
+            raise ValueError(f"unsupported skill_type: {skill_type}")
+
+        decision = self._verdict_from_risk(risk_score)
+        confidence = 0.6 if findings else 0.85
+        capabilities = self._capabilities_from_v04_findings(findings)
+        recommended_policy = self._policy_from_v04(findings, decision)
+
+        return SSSAV04(
+            skill=SkillIdentityV04(
+                name=bundle.metadata.skill_name,
+                bundle_hash=bundle.bundle_hash,
+                skill_type=skill_type,
+                profile=bundle.metadata.profile,
+            ),
+            verdict=VerdictBlockV04(
+                decision=decision,
+                risk_score=risk_score,
+                confidence=confidence,
+                verdict_sources=verdict_sources,
+            ),
+            capabilities=capabilities,
+            findings=findings,
+            dependencies=DependenciesV04(),
+            recommended_policy=recommended_policy,
+            evidence=evidence_pack,
+        )
+
+    @staticmethod
+    def _risk_from_v04_findings(findings: list) -> int:
+        weights = {"CRITICAL": 35, "HIGH": 20, "MEDIUM": 10, "LOW": 4, "INFO": 0}
+        score = 0
+        for f in findings:
+            sev = getattr(f.severity, "value", str(f.severity))
+            score += weights.get(sev, 0)
+        return min(100, score)
+
+    @staticmethod
+    def _verdict_from_risk(risk: int) -> Verdict:
+        if risk >= 60:
+            return Verdict.BLOCK
+        if risk >= 25:
+            return Verdict.WARN
+        return Verdict.ALLOW
+
+    @staticmethod
+    def _capabilities_from_v04_findings(findings: list) -> CapabilitiesV04:
+        caps = CapabilitiesV04()
+        for f in findings:
+            title = getattr(f, "title", "")
+            if title.startswith("network_egress"):
+                snippet = getattr(f, "evidence_snippet", "")
+                host = snippet.partition(":")[0]
+                if host:
+                    caps.network.ips.append(host)
+            if title.startswith("process_spawn") or title.startswith("shell_command"):
+                snippet = getattr(f, "evidence_snippet", "")
+                first = snippet.split()
+                if first:
+                    caps.process_spawns.append(first[0])
+                    caps.shell_commands.append(snippet)
+            if title.startswith("secrets_leak"):
+                caps.secrets_access.append(title.partition(":")[2] or "unknown")
+        return caps
+
+    @staticmethod
+    def _policy_from_v04(findings: list, decision: Verdict) -> RecommendedPolicyV04:
+        if decision == Verdict.BLOCK:
+            return RecommendedPolicyV04(shell_access=False, max_memory_mb=256, timeout_s=15)
+        denies: list[str] = []
+        for f in findings:
+            if getattr(f, "title", "").startswith("network_egress"):
+                host = getattr(f, "evidence_snippet", "").partition(":")[0]
+                if host:
+                    denies.append(host)
+        return RecommendedPolicyV04(
+            egress_deny=denies,
+            shell_access=False,
+            max_memory_mb=512,
+            timeout_s=30,
+        )
+
+    def _sign_v04(self, sssa: SSSAV04) -> SSSAV04:
+        canon = sssa.canonical_json().encode("utf-8")
+        signature = self.wallet.hotkey.sign(canon).hex()
+        sssa.attestation = AttestationBlockV04(
+            miner_hotkey=self.wallet.hotkey.ss58_address,
+            supported_types_declared=self.v04_supported_types,
+            ed25519_signature=signature,
+            timestamp=dt.datetime.now(dt.timezone.utc).isoformat(),
+        )
+        return sssa
+
+    def _materialise_v04_bundle(self, bundle) -> Path:
+        if bundle.bundle_bytes:
+            tmp = Path(tempfile.mkdtemp(prefix="phylax-v04-bundle-"))
+            archive = tmp / "bundle.bin"
+            archive.write_bytes(bundle.bundle_bytes)
+            if zipfile.is_zipfile(archive):
+                extract = tmp / "extracted"
+                extract.mkdir()
+                with zipfile.ZipFile(archive) as zf:
+                    zf.extractall(extract)
+                return extract
+            single = tmp / "skill"
+            single.mkdir()
+            (single / "skill.bin").write_bytes(bundle.bundle_bytes)
+            return single
+        if bundle.bundle_url:
+            raise ValueError("bundle_url path not yet wired in reference miner")
+        raise ValueError("no bundle payload supplied")
 
 
 _SKILL_MD_NAMES = ("skill.md", "skill.markdown", "readme.md")
