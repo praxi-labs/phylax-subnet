@@ -1,5 +1,7 @@
 from phylax.scoring.metrics import (
     BASE_WEIGHTS,
+    BOOTSTRAP_BONUS,
+    BOOTSTRAP_EPOCHS,
     EVIDENCE_GATE,
     REFERENCE_BASELINES,
     TIER_MULTIPLIERS,
@@ -8,13 +10,17 @@ from phylax.scoring.metrics import (
     Tier,
     classify_tier,
     compute_Q,
+    compute_round_score,
     compute_task_emissions_score,
+    effective_base_weight,
     recalibrate_novel_threshold,
     score_all_axes,
 )
 
 __all__ = [
     "BASE_WEIGHTS",
+    "BOOTSTRAP_BONUS",
+    "BOOTSTRAP_EPOCHS",
     "EVIDENCE_GATE",
     "REFERENCE_BASELINES",
     "TIER_MULTIPLIERS",
@@ -23,7 +29,9 @@ __all__ = [
     "Tier",
     "classify_tier",
     "compute_Q",
+    "compute_round_score",
     "compute_task_emissions_score",
+    "effective_base_weight",
     "recalibrate_novel_threshold",
     "score_all_axes",
 ]

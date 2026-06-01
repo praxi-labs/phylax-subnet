@@ -458,12 +458,52 @@ def classify_tier(
     return Tier.TIER_3_NOVEL
 
 
+BOOTSTRAP_EPOCHS = 30
+BOOTSTRAP_BONUS: dict[SkillType, float] = {
+    SkillType.MCP_SERVER: 0.5,
+    SkillType.AGENT_COMPOSITION: 0.5,
+}
+
+
+def effective_base_weight(skill_type: SkillType, current_epoch: int) -> float:
+    weight = BASE_WEIGHTS[skill_type]
+    if current_epoch <= BOOTSTRAP_EPOCHS:
+        weight += BOOTSTRAP_BONUS.get(skill_type, 0.0)
+    return weight
+
+
 def compute_task_emissions_score(
     composite_q: float,
     skill_type: SkillType,
     tier: Tier,
+    current_epoch: int = 0,
 ) -> float:
-    return composite_q * BASE_WEIGHTS[skill_type] * TIER_MULTIPLIERS[tier]
+    return composite_q * effective_base_weight(skill_type, current_epoch) * TIER_MULTIPLIERS[tier]
+
+
+def compute_round_score(
+    task_results: list[dict],
+    per_type_reputation: dict[str, float],
+    current_epoch: int = 0,
+) -> float:
+    if not task_results:
+        return 0.0
+    weighted_sum = 0.0
+    total_weight = 0.0
+    for r in task_results:
+        skill_type = r["skill_type"]
+        st = skill_type if isinstance(skill_type, SkillType) else SkillType(skill_type)
+        tier_val = r["tier"]
+        tier = tier_val if isinstance(tier_val, Tier) else Tier(tier_val)
+        emission = compute_task_emissions_score(r["composite_q"], st, tier, current_epoch)
+        type_rep = float(per_type_reputation.get(st.value, 0.5))
+        adjusted = emission * type_rep
+        base_w = effective_base_weight(st, current_epoch)
+        weighted_sum += adjusted
+        total_weight += base_w
+    if total_weight <= 0:
+        return 0.0
+    return weighted_sum / total_weight
 
 
 def recalibrate_novel_threshold(
