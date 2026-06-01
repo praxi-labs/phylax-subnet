@@ -24,7 +24,7 @@ from phylax.scoring import (
     round_median_latency,
     score_all_axes,
 )
-from phylax.scoring.metrics import canary_outcome, task_skill_type
+from phylax.scoring.legacy_metrics import canary_outcome, task_skill_type
 from phylax.server_client import (
     PhylaxServerClient,
     ServerIdentityMismatch,
