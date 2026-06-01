@@ -6,11 +6,13 @@ import os
 import time
 import traceback
 import uuid
+from pathlib import Path
 
 import bittensor as bt
 import torch
 
 from phylax.protocol import (
+    REQUIRED_TRACE_FILES,
     SSSA,
     BundleMetadata,
     InferenceConfig,
@@ -41,10 +43,14 @@ from phylax.server_client import (
 from phylax.utils.logging import get_logger
 from phylax.validator import (
     ROUND_COMPOSITION,
+    RerunJob,
+    RerunQueue,
+    RerunWorker,
     RoundTask,
     compose_round,
     prepare_bundle,
     resolve_timing,
+    verify_trace_bundle,
 )
 
 logger = get_logger(__name__)
@@ -116,6 +122,14 @@ class PhylaxValidator:
         self._per_type_rep_cached_at: float = 0.0
         self._recent_bundle_hashes: list[str] = []
         self._declared_types_by_hotkey: dict[str, set[str]] = {}
+        self._sandbox_images_by_hotkey: dict[str, dict[str, dict[str, str]]] = {}
+
+        rerun_db = os.getenv(
+            "PHYLAX_RERUN_QUEUE_PATH",
+            str(Path(os.path.expanduser("~/.phylax/rerun_queue.sqlite3"))),
+        )
+        self.rerun_queue = RerunQueue(rerun_db)
+        self.rerun_worker = RerunWorker(self.rerun_queue, self._submit_rerun_outcomes)
 
         server_url = os.getenv("PHYLAX_SERVER_URL", "")
         expected_server_hotkey = os.getenv("PHYLAX_SERVER_HOTKEY", "").strip() or None
@@ -212,6 +226,23 @@ class PhylaxValidator:
                 if not self._validate_sssa(sssa, task, hotkey):
                     round_results.append(self._failure_record(hotkey, task))
                     continue
+                submitted_hashes = self._extract_submitted_hashes(sssa)
+                verification = verify_trace_bundle(
+                    task.skill_type,
+                    resp.trace_bundle,
+                    resp.sandbox_manifest,
+                    submitted_hashes,
+                    prep.reference_records,
+                )
+                if not verification.passed:
+                    bt.logging.warning(
+                        f"trace verification failed for {hotkey[:10]} "
+                        f"{task.skill_type.value}: {verification.reason}"
+                    )
+                    round_results.append(self._failure_record(hotkey, task))
+                    continue
+                ctx.trace_semantic_subset = verification.semantic_subset
+                ctx.trace_depth_ratio = verification.depth_ratio
                 ctx.submission_latency_ms = getattr(resp, "latency_ms", 0)
                 axes = score_all_axes(sssa, ctx)
                 q = compute_Q(axes, task.skill_type)
@@ -258,6 +289,9 @@ class PhylaxValidator:
                 bt.logging.info(
                     f"{task.skill_type.value} hk={hotkey[:10]} Q={q:.3f} "
                     f"tier={tier.value} ε={axes.epsilon:.2f}"
+                )
+                self._enqueue_rerun(
+                    hotkey, task, prep, resp, submitted_hashes, verification.decoded_records,
                 )
 
         if not per_uid_results:
@@ -406,6 +440,9 @@ class PhylaxValidator:
             axon = self.metagraph.axons[uid]
             if axon.ip == "0.0.0.0":
                 continue
+            sandbox_image = entry.get("sandbox_image")
+            if isinstance(sandbox_image, dict):
+                self._sandbox_images_by_hotkey.setdefault(hotkey, {})[skill_type.value] = sandbox_image
             out.append((hotkey, uid))
         return out
 
@@ -573,6 +610,89 @@ class PhylaxValidator:
             "tier": Tier.BELOW_REFERENCE.value,
             "violation": True,
         }
+
+    @staticmethod
+    def _extract_submitted_hashes(sssa: SSSA) -> dict[str, str | None]:
+        ts = sssa.evidence.type_specific
+        return {
+            "network_trace_hash": sssa.evidence.base.network_trace_hash,
+            "fs_trace_hash": sssa.evidence.base.fs_trace_hash,
+            "process_trace_hash": sssa.evidence.base.process_trace_hash,
+            "secrets_trace_hash": sssa.evidence.base.secrets_trace_hash,
+            "imports_trace_hash": getattr(ts.executable_python, "imports_trace_hash", None) if ts.executable_python else None,
+            "shell_commands_hash": getattr(ts.executable_script, "shell_commands_hash", None) if ts.executable_script else None,
+            "tool_calls_hash": getattr(ts.mcp_server, "tool_calls_hash", None) if ts.mcp_server else None,
+            "mcp_manifest_hash": getattr(ts.mcp_server, "mcp_manifest_hash", None) if ts.mcp_server else None,
+            "agent_calls_hash": getattr(ts.agent_composition, "agent_calls_hash", None) if ts.agent_composition else None,
+        }
+
+    def _enqueue_rerun(
+        self,
+        hotkey: str,
+        task: RoundTask,
+        prep,
+        resp: PhylaxSynapse,
+        submitted_hashes: dict[str, str | None],
+        decoded_records: dict[str, list[dict]],
+    ) -> None:
+        if not REQUIRED_TRACE_FILES.get(task.skill_type):
+            return
+        manifest = resp.sandbox_manifest or {}
+        registered_image = self._lookup_registered_sandbox_image(hotkey, task.skill_type)
+        image_uri = (registered_image or {}).get("image_uri") or manifest.get("image", "")
+        image_hash = (registered_image or {}).get("image_hash") or manifest.get("digest", "")
+        if not image_uri or not image_hash:
+            return
+        _, deadline_s = resolve_timing(task.skill_type, task.profile)
+        job = RerunJob(
+            hotkey=hotkey,
+            skill_type=task.skill_type.value,
+            task_id=task.task_id,
+            bundle_bytes=prep.bundle_bytes,
+            nonce=prep.nonce,
+            canary_id=prep.canary_id,
+            canary_val=prep.canary_val,
+            submitted_hashes={k: v for k, v in submitted_hashes.items() if v is not None},
+            miner_submitted_records=decoded_records,
+            sandbox_image_uri=image_uri,
+            sandbox_image_hash=image_hash,
+            timeout_s=deadline_s,
+        )
+        try:
+            self.rerun_queue.enqueue(job)
+        except Exception as e:  # noqa: BLE001
+            bt.logging.debug(f"rerun enqueue failed: {e}")
+
+    def _lookup_registered_sandbox_image(
+        self, hotkey: str, skill_type: SkillType,
+    ) -> dict[str, str] | None:
+        cached = self._sandbox_images_by_hotkey.get(hotkey, {}).get(skill_type.value)
+        if cached:
+            return cached
+        return None
+
+    def _submit_rerun_outcomes(self, outcomes: list) -> None:
+        if self.server_client is None or not outcomes:
+            return
+        payload = {
+            "verifications": [
+                {
+                    "hotkey": o.hotkey,
+                    "skill_type": o.skill_type,
+                    "task_id": o.task_id,
+                    "passed": bool(o.passed),
+                    "fs_trace_hash_matched": bool(o.fs_trace_hash_matched),
+                    "semantic_agreement": float(o.semantic_agreement),
+                    "image_hash": o.image_hash,
+                    "notes": str(o.notes)[:256],
+                }
+                for o in outcomes
+            ]
+        }
+        try:
+            self.server_client.post("/v1/reputation/rerun-verification", payload)
+        except Exception as e:  # noqa: BLE001
+            bt.logging.debug(f"rerun-verification post failed: {e}")
 
     def _novel_thresholds(self) -> dict[str, float]:
         if self.server_client is None:
@@ -783,6 +903,7 @@ class PhylaxValidator:
             f"starting Phylax validator on netuid={self.config.netuid} "
             f"hotkey={self.wallet.hotkey.ss58_address}"
         )
+        self.rerun_worker.start()
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         last_weight_block = 0
@@ -815,6 +936,7 @@ class PhylaxValidator:
                     bt.logging.debug(traceback.format_exc())
                     time.sleep(12)
         finally:
+            self.rerun_worker.stop()
             loop.close()
 
 

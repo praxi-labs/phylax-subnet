@@ -71,7 +71,7 @@ Constraints when you register:
 
 ## 5. Register your specialization
 
-phylax-server only routes tasks to miners who have a current specialization on file.
+phylax-server only routes tasks to miners who have a current specialization on file. **You must also register the sandbox image you will run for each runtime skill type** — validators will pull and re-execute that exact image to verify your traces are honest.
 
 ```bash
 curl -X POST "$PHYLAX_SERVER_URL/v1/specialization/register" \
@@ -80,16 +80,32 @@ curl -X POST "$PHYLAX_SERVER_URL/v1/specialization/register" \
   -H "X-Phylax-Timestamp: $(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
   -H "X-Phylax-Signature: ed25519:<hex-sig-of-canonical-body>" \
   -d '{
-    "supported_types": ["executable_python", "declarative"],
-    "min_profile": "standard",
-    "max_concurrent_tasks": 2,
-    "implementation_tier_claim": "reference"
+    "hotkey": "<your-ss58-address>",
+    "registration_version": "2.0",
+    "specialization": {
+      "supported_types": ["executable_python", "declarative"],
+      "sandbox_images": {
+        "executable_python": {
+          "image_uri":  "ghcr.io/<you>/phylax-sandbox-python:v1",
+          "image_hash": "sha256:abc123..."
+        }
+      },
+      "min_profile": "standard",
+      "max_concurrent_tasks": 2,
+      "implementation_tier_claim": "reference"
+    }
   }'
 ```
 
-You can re-register at any time to change `supported_types`. Delete with `DELETE /v1/specialization/register/<hotkey>`.
+**Sandbox image rules** (server-enforced):
 
-`implementation_tier_claim` is informational only — it has no effect on routing or earnings. Your actual standing is derived from what your SSSAs look like in practice.
+- For every runtime skill type you declare (`executable_python`, `executable_script`, `mcp_server`, `agent_composition`), you must provide a `sandbox_images[<type>] = {image_uri, image_hash}` entry. Missing entries → registration rejected.
+- `image_hash` must start with `sha256:` and be the **content-addressable digest** of the image (`docker images --digests` or `docker inspect --format='{{index .RepoDigests 0}}' <image>`).
+- The image must be publicly pullable from `image_uri`, or pre-authorised on validator hosts.
+- Re-register any time to publish a new image. Validators pick up the new image on the next routing query.
+- `rag_knowledge` and `declarative` don't need sandbox images (no container).
+
+`implementation_tier_claim` is informational only — your actual standing is derived from your SSSAs and the validator's rerun verification.
 
 ## 6. Run
 
@@ -198,6 +214,45 @@ docker compose up -d --force-recreate
 
 The miner runs the container; the container does the analysis. Add audit hooks, kernel-level tracing, your own classifier, proprietary CVE feeds, etc., inside the container. As long as it emits the required JSONL schemas, validators will accept the resulting SSSA.
 
+### What you must submit per task
+
+For every task the validator sends, your axon must return the synapse with three pieces populated together:
+
+1. **`attestation`** — the signed SSSA (canonical JSON, ed25519 signature with your hotkey).
+2. **`trace_bundle`** — a `dict[str, str]` of `{filename: base64(gzip(jsonl_bytes))}` for runtime skill types. Required filenames per type:
+   - `executable_python`: `network.jsonl.gz`, `fs.jsonl.gz`, `process.jsonl.gz`, `secrets.jsonl.gz`, `imports.jsonl.gz`
+   - `executable_script`: same four base + `shell_commands.jsonl.gz`
+   - `mcp_server`: same four base + `tool_calls.jsonl.gz`
+   - `agent_composition`: same four base + `agent_calls.jsonl.gz`
+   - `rag_knowledge` and `declarative`: omit `trace_bundle` entirely (no sandbox).
+3. **`sandbox_manifest`** — a `dict` for runtime types declaring what you ran:
+   ```json
+   {
+     "image": "ghcr.io/<you>/phylax-sandbox-python:v1",
+     "digest": "sha256:abc123...",
+     "tracer_version": "1.0.0",
+     "tracer_hash": "sha256:def456...",
+     "kernel": "",
+     "cpu_arch": ""
+   }
+   ```
+   The `image` + `digest` here **must match what you registered** at `/v1/specialization/register`. Validators will pull and rerun this exact image to verify your traces.
+
+Trace bundle size limits (compressed, per file): `network` 5MB, `fs` 10MB, `process` 5MB, `secrets` 1MB, `imports` 2MB, `shell_commands` 5MB, `tool_calls` 5MB, `agent_calls` 10MB. Total bundle ≤ 30MB. Exceeding any → response treated as missing.
+
+### How the validator verifies your submission
+
+In the same round (immediate scoring):
+- **Hash consistency**: validator decompresses each trace file, normalises (sort by `ts`, sorted keys, no whitespace), sha256-hashes it. Computed hash must equal the hash you declared in the SSSA. Mismatch → ε = 0.
+- **Canary presence**: validator scans your decompressed `fs.jsonl` for a write to `/skill/.canary`. Your tracer must observe and record that filesystem op. Missing → ε = 0.
+- **Semantic subset**: every event (network tuple, fs op+path, process cmd, secret pattern) the validator's own reference run observed must appear in your traces. Missing events lower ε, extras raise the depth bonus.
+
+Asynchronously (next round's reputation):
+- Validator pulls your registered sandbox image, verifies its content-addressable digest matches what you declared at registration, then **reruns it on the same bundle with the same nonce**.
+- Validator checks the rerun's `fs_trace_hash` against the hash you submitted. The canary write is deterministic, so an honest sandbox run produces a matching hash.
+- Validator checks semantic agreement (≥ 0.7) between rerun events and your submitted events on the four base traces.
+- Outcome → `/v1/reputation/rerun-verification` → pass adds +0.02 to your per-type reputation, fail multiplies by ×0.7. Reputation directly affects routing and emission weighting.
+
 ### Hard rules — break any of these and the SSSA scores zero
 
 - **No LLM for reasoning.** Using a live LLM to decide the verdict, score prompt injection, classify tool poisoning, detect behaviour mismatches, or do any form of skill content analysis is forbidden and produces a zero score for the task. Reputation for the skill type decays accordingly. The only permitted LLM uses are post-hoc finding enrichment, MITRE/OWASP labelling, and CVE explanation — and only if the deterministic analysis is already complete. Your SSSA's `llm_evidence.allowed_use` (when present) must be one of `finding_enrichment`, `mitre_owasp_mapping`, or `cve_explanation`. Anything else gets flagged. The detection, the verdict, and every score in your SSSA must come from deterministic analysis your harness performs itself.
@@ -229,7 +284,11 @@ docker compose pull && docker compose up -d
 | `PHYLAX_LOG_LEVEL` | `INFO` | Stdlib logger level. |
 | `PHYLAX_EVIDENCE_DIR` | `/opt/phylax/evidence` | In-container evidence path (do not change). |
 | `PHYLAX_EVIDENCE_HOST_DIR` | set by `install.sh` | Host-side absolute path of the bind mount. Required for docker-in-docker. |
-| `PHYLAX_SANDBOX_IMAGE` | `ghcr.io/praxi-labs/phylax-sandbox:latest` | Image launched by runtime harnesses. Point this at your fork to ship your sandbox. |
+| `PHYLAX_SANDBOX_IMAGE` | `ghcr.io/praxi-labs/phylax-sandbox:latest` | Image launched by runtime harnesses. **Must equal the `image_uri` you registered at `/v1/specialization/register`.** |
+| `PHYLAX_SANDBOX_DIGEST` | _empty_ | The `sha256:...` digest of `PHYLAX_SANDBOX_IMAGE`. **Must equal the `image_hash` you registered.** Used in the `sandbox_manifest` sent on each response. |
+| `PHYLAX_TRACER_VERSION` | `1.0.0` | Version string of your tracer (informational). |
+| `PHYLAX_KERNEL` | _empty_ | Optional kernel identifier for the `sandbox_manifest`. |
+| `PHYLAX_CPU_ARCH` | _empty_ | Optional CPU arch (e.g. `x86_64`) for the `sandbox_manifest`. |
 | `DOCKER_GID` | set by `install.sh` | Host docker group GID. |
 | `HOST_UID` / `HOST_GID` | set by `install.sh` | Your shell user's UID/GID. |
 | `AXON_PORT` | `8091` | Host port mapped to the miner axon. |

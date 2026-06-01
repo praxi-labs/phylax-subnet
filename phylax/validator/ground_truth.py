@@ -31,6 +31,8 @@ class BundlePreparation:
     canary_id: str
     canary_val: str
     ground_truth: dict[str, Any] = field(default_factory=dict)
+    reference_records: dict[str, list[dict]] = field(default_factory=dict)
+    reference_event_count: int = 0
 
 
 def _new_nonce() -> str:
@@ -53,6 +55,52 @@ def _hash_or_none(value: Any) -> str | None:
     if value is None:
         return None
     return str(value)
+
+
+def _read_records(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    import json as _json
+    out: list[dict] = []
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return []
+    for line in raw.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        try:
+            obj = _json.loads(s)
+            if isinstance(obj, dict):
+                out.append(obj)
+        except (ValueError, TypeError):
+            continue
+    return out
+
+
+_RUNTIME_FILES = (
+    "network.jsonl",
+    "fs.jsonl",
+    "process.jsonl",
+    "secrets.jsonl",
+)
+
+
+def _collect_reference_records(evidence_dir: Path | None, type_specific_file: str | None) -> tuple[dict[str, list[dict]], int]:
+    if evidence_dir is None or not evidence_dir.exists():
+        return {}, 0
+    records: dict[str, list[dict]] = {}
+    total = 0
+    for fname in _RUNTIME_FILES:
+        recs = _read_records(evidence_dir / fname)
+        records[fname + ".gz"] = recs
+        total += len(recs)
+    if type_specific_file:
+        recs = _read_records(evidence_dir / type_specific_file)
+        records[type_specific_file + ".gz"] = recs
+        total += len(recs)
+    return records, total
 
 
 def prepare_rag(bundle_bytes: bytes, nonce: str | None = None) -> BundlePreparation:
@@ -91,6 +139,7 @@ def prepare_executable_python(bundle_bytes: bytes, nonce: str | None = None) -> 
     result = harness.run(bundle_dir, nonce=nonce, canary_id=cid, canary_val=cval)
     base = result.base_evidence
     type_ev = result.evidence
+    records, total = _collect_reference_records(result.evidence_dir, "imports.jsonl")
     return BundlePreparation(
         bundle_bytes=bundle_bytes,
         bundle_hash="sha256:" + hashlib.sha256(bundle_bytes or b"").hexdigest(),
@@ -106,6 +155,8 @@ def prepare_executable_python(bundle_bytes: bytes, nonce: str | None = None) -> 
             "secrets_trace_hash": base.secrets_trace_hash,
             "imports_trace_hash": getattr(type_ev, "imports_trace_hash", None),
         },
+        reference_records=records,
+        reference_event_count=total,
     )
 
 
@@ -117,6 +168,7 @@ def prepare_executable_script(bundle_bytes: bytes, nonce: str | None = None) -> 
     result = harness.run(bundle_dir, nonce=nonce, canary_id=cid, canary_val=cval)
     base = result.base_evidence
     type_ev = result.evidence
+    records, total = _collect_reference_records(result.evidence_dir, "shell_commands.jsonl")
     return BundlePreparation(
         bundle_bytes=bundle_bytes,
         bundle_hash="sha256:" + hashlib.sha256(bundle_bytes or b"").hexdigest(),
@@ -132,6 +184,8 @@ def prepare_executable_script(bundle_bytes: bytes, nonce: str | None = None) -> 
             "secrets_trace_hash": base.secrets_trace_hash,
             "shell_commands_hash": getattr(type_ev, "shell_commands_hash", None),
         },
+        reference_records=records,
+        reference_event_count=total,
     )
 
 
@@ -143,6 +197,7 @@ def prepare_mcp_server(bundle_bytes: bytes, nonce: str | None = None) -> BundleP
     result = harness.run(bundle_dir, nonce=nonce, canary_id=cid, canary_val=cval)
     base = result.base_evidence
     type_ev = result.evidence
+    records, total = _collect_reference_records(result.evidence_dir, "tool_calls.jsonl")
     return BundlePreparation(
         bundle_bytes=bundle_bytes,
         bundle_hash="sha256:" + hashlib.sha256(bundle_bytes or b"").hexdigest(),
@@ -159,6 +214,8 @@ def prepare_mcp_server(bundle_bytes: bytes, nonce: str | None = None) -> BundleP
             "tool_calls_hash": getattr(type_ev, "tool_calls_hash", None),
             "mcp_manifest_hash": getattr(type_ev, "mcp_manifest_hash", None),
         },
+        reference_records=records,
+        reference_event_count=total,
     )
 
 
@@ -175,6 +232,7 @@ def prepare_agent_composition(
     )
     base = result.base_evidence
     type_ev = result.evidence
+    records, total = _collect_reference_records(result.evidence_dir, "agent_calls.jsonl")
     return BundlePreparation(
         bundle_bytes=bundle_bytes,
         bundle_hash="sha256:" + hashlib.sha256(bundle_bytes or b"").hexdigest(),
@@ -192,6 +250,8 @@ def prepare_agent_composition(
             "dependency_graph_hash": getattr(type_ev, "dependency_graph_hash", None),
             "transitive_risk_score": getattr(type_ev, "transitive_risk_score", None),
         },
+        reference_records=records,
+        reference_event_count=total,
     )
 
 

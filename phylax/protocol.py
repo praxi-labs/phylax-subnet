@@ -323,6 +323,38 @@ class InferenceConfig(BaseModel):
     )
 
 
+class SandboxManifest(BaseModel):
+    image: str
+    digest: str
+    tracer_version: str
+    tracer_hash: str | None = None
+    kernel: str | None = None
+    cpu_arch: str | None = None
+    extras: dict[str, str] = Field(default_factory=dict)
+
+
+REQUIRED_TRACE_FILES: dict[SkillType, tuple[str, ...]] = {
+    SkillType.RAG_KNOWLEDGE: (),
+    SkillType.DECLARATIVE: (),
+    SkillType.EXECUTABLE_PYTHON: (
+        "network.jsonl.gz", "fs.jsonl.gz", "process.jsonl.gz",
+        "secrets.jsonl.gz", "imports.jsonl.gz",
+    ),
+    SkillType.EXECUTABLE_SCRIPT: (
+        "network.jsonl.gz", "fs.jsonl.gz", "process.jsonl.gz",
+        "secrets.jsonl.gz", "shell_commands.jsonl.gz",
+    ),
+    SkillType.MCP_SERVER: (
+        "network.jsonl.gz", "fs.jsonl.gz", "process.jsonl.gz",
+        "secrets.jsonl.gz", "tool_calls.jsonl.gz",
+    ),
+    SkillType.AGENT_COMPOSITION: (
+        "network.jsonl.gz", "fs.jsonl.gz", "process.jsonl.gz",
+        "secrets.jsonl.gz", "agent_calls.jsonl.gz",
+    ),
+}
+
+
 class PhylaxSynapse(bt.Synapse):
     skill_bundle: SkillBundle
     nonce: str = ""
@@ -330,6 +362,8 @@ class PhylaxSynapse(bt.Synapse):
     inference_config: InferenceConfig | None = None
 
     attestation: dict | None = None
+    trace_bundle: dict[str, str] | None = None
+    sandbox_manifest: dict | None = None
     error: str | None = None
 
     def get_sssa(self) -> SSSA | None:
@@ -342,6 +376,14 @@ class PhylaxSynapse(bt.Synapse):
             return False
         try:
             sssa = self.get_sssa()
-            return sssa is not None and sssa.attestation is not None
+            if sssa is None or sssa.attestation is None:
+                return False
+            skill_type = sssa.skill.skill_type
+            if REQUIRED_TRACE_FILES.get(skill_type):
+                if not self.trace_bundle or not isinstance(self.trace_bundle, dict):
+                    return False
+                if not self.sandbox_manifest or not isinstance(self.sandbox_manifest, dict):
+                    return False
+            return True
         except Exception:  # noqa: BLE001
             return False

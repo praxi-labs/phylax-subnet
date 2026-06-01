@@ -1,6 +1,10 @@
 import argparse
 import asyncio
+import base64
 import datetime as dt
+import gzip
+import hashlib
+import os
 import tempfile
 import time
 import traceback
@@ -18,6 +22,7 @@ from phylax.harness import (
     RAGKnowledgeHarness,
 )
 from phylax.protocol import (
+    REQUIRED_TRACE_FILES,
     SSSA,
     AttestationBlock,
     Capabilities,
@@ -36,6 +41,62 @@ from phylax.utils.logging import get_logger
 logger = get_logger(__name__)
 
 SKILL_TYPES = {t.value for t in SkillType}
+
+TRACER_VERSION = "1.0.0"
+DEFAULT_SANDBOX_IMAGE = "ghcr.io/praxi-labs/phylax-sandbox:latest"
+
+
+def _sandbox_manifest() -> dict[str, str]:
+    image = os.getenv("PHYLAX_SANDBOX_IMAGE", DEFAULT_SANDBOX_IMAGE)
+    digest = os.getenv("PHYLAX_SANDBOX_DIGEST", "")
+    return {
+        "image": image,
+        "digest": digest,
+        "tracer_version": os.getenv("PHYLAX_TRACER_VERSION", TRACER_VERSION),
+        "tracer_hash": _compute_tracer_hash(),
+        "kernel": os.getenv("PHYLAX_KERNEL", ""),
+        "cpu_arch": os.getenv("PHYLAX_CPU_ARCH", ""),
+    }
+
+
+_TRACER_FILES = (
+    "phylax/harness/executable_python/container/tracer.py",
+    "phylax/harness/executable_script/container/shell_tracer.py",
+    "phylax/harness/mcp_server/container/mcp_client.py",
+    "phylax/harness/agent_composition/container/orchestrator.py",
+    "phylax/harness/trace_normalisation.py",
+)
+
+
+def _compute_tracer_hash() -> str:
+    h = hashlib.sha256()
+    repo_root = Path(__file__).resolve().parent.parent
+    for rel in _TRACER_FILES:
+        path = repo_root / rel
+        try:
+            data = path.read_bytes()
+        except OSError:
+            continue
+        h.update(rel.encode("utf-8"))
+        h.update(b"\x00")
+        h.update(hashlib.sha256(data).digest())
+    return "sha256:" + h.hexdigest()
+
+
+def _pack_trace_bundle(evidence_dir: Path | None, skill_type: SkillType) -> dict[str, str] | None:
+    required = REQUIRED_TRACE_FILES.get(skill_type, ())
+    if not required or evidence_dir is None:
+        return None
+    out: dict[str, str] = {}
+    for gz_name in required:
+        source = evidence_dir / gz_name.removesuffix(".gz")
+        try:
+            raw = source.read_bytes() if source.exists() else b""
+        except OSError:
+            raw = b""
+        compressed = gzip.compress(raw)
+        out[gz_name] = base64.b64encode(compressed).decode("ascii")
+    return out
 
 
 class PhylaxMiner:
@@ -76,9 +137,12 @@ class PhylaxMiner:
         )
         try:
             bundle_dir = await asyncio.to_thread(self._materialise_bundle, bundle)
-            sssa = await asyncio.to_thread(self._dispatch, skill_type, bundle_dir, synapse)
+            sssa, evidence_dir = await asyncio.to_thread(self._dispatch, skill_type, bundle_dir, synapse)
             sssa = self._sign(sssa)
             synapse.attestation = sssa.model_dump(mode="json")
+            synapse.trace_bundle = _pack_trace_bundle(evidence_dir, skill_type)
+            if REQUIRED_TRACE_FILES.get(skill_type):
+                synapse.sandbox_manifest = _sandbox_manifest()
             bt.logging.success(
                 f"scan done: {bundle.bundle_hash} -> "
                 f"{sssa.verdict.decision.value} risk={sssa.verdict.risk_score}"
@@ -103,7 +167,9 @@ class PhylaxMiner:
         uid = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
         return float(self.metagraph.S[uid])
 
-    def _dispatch(self, skill_type: SkillType, bundle_dir: Path, synapse: PhylaxSynapse) -> SSSA:
+    def _dispatch(
+        self, skill_type: SkillType, bundle_dir: Path, synapse: PhylaxSynapse,
+    ) -> tuple[SSSA, Path | None]:
         canary_id = synapse.task_metadata.task_id
         canary_val = synapse.nonce
         bundle = synapse.skill_bundle
@@ -113,6 +179,7 @@ class PhylaxMiner:
         verdict_sources: list[str] = []
         risk_score = 0
         evidence_pack = EvidencePack()
+        evidence_dir: Path | None = None
 
         if skill_type == SkillType.RAG_KNOWLEDGE:
             result = self.h_rag.run(bundle_dir, canary_id=canary_id)
@@ -137,6 +204,7 @@ class PhylaxMiner:
             risk_score = self._risk_from_findings(findings)
             verdict_sources = ["L1_taint", "L2_sbom", "L3_runtime"]
             evidence_pack = EvidencePack(base=result.base_evidence, type_specific=type_specific)
+            evidence_dir = result.evidence_dir
         elif skill_type == SkillType.EXECUTABLE_SCRIPT:
             result = self.h_executable_script.run(
                 bundle_dir, nonce=synapse.nonce, canary_id=canary_id, canary_val=canary_val,
@@ -146,6 +214,7 @@ class PhylaxMiner:
             risk_score = self._risk_from_findings(findings)
             verdict_sources = ["L1_shell_taint", "L3_runtime"]
             evidence_pack = EvidencePack(base=result.base_evidence, type_specific=type_specific)
+            evidence_dir = result.evidence_dir
         elif skill_type == SkillType.MCP_SERVER:
             result = self.h_mcp_server.run(
                 bundle_dir, nonce=synapse.nonce, canary_id=canary_id, canary_val=canary_val,
@@ -158,6 +227,7 @@ class PhylaxMiner:
             )
             verdict_sources = ["L3_mcp_manifest", "L3_tool_calls"]
             evidence_pack = EvidencePack(base=result.base_evidence, type_specific=type_specific)
+            evidence_dir = result.evidence_dir
         elif skill_type == SkillType.AGENT_COMPOSITION:
             depth = bundle.metadata.composition_depth or 5
             result = self.h_agent_composition.run(
@@ -175,6 +245,7 @@ class PhylaxMiner:
             )
             verdict_sources = ["L3_composition", "L3_transitive_risk"]
             evidence_pack = EvidencePack(base=result.base_evidence, type_specific=type_specific)
+            evidence_dir = result.evidence_dir
         else:
             raise ValueError(f"unsupported skill_type: {skill_type}")
 
@@ -183,7 +254,7 @@ class PhylaxMiner:
         capabilities = self._capabilities_from_findings(findings)
         recommended_policy = self._policy_from_findings(findings, decision)
 
-        return SSSA(
+        sssa = SSSA(
             skill=SkillIdentity(
                 name=bundle.metadata.skill_name,
                 bundle_hash=bundle.bundle_hash,
@@ -202,6 +273,7 @@ class PhylaxMiner:
             recommended_policy=recommended_policy,
             evidence=evidence_pack,
         )
+        return sssa, evidence_dir
 
     @staticmethod
     def _risk_from_findings(findings: list) -> int:

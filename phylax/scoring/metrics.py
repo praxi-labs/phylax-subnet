@@ -84,6 +84,8 @@ class TaskContext:
     deadline_s: int = 150
     t_min_s: int = 15
     median_latency_ms: int | None = None
+    trace_semantic_subset: float = 1.0
+    trace_depth_ratio: float = 1.0
 
 
 def _clip01(x: float) -> float:
@@ -153,17 +155,23 @@ def _base_trace_matches(sssa: SSSA, ctx: TaskContext) -> float:
     return matches / 4.0
 
 
+def _depth_bonus(ctx: TaskContext) -> float:
+    return max(0.0, min(0.1, (ctx.trace_depth_ratio - 1.0) * 0.1))
+
+
 def _executable_python_evidence_score(sssa: SSSA, ctx: TaskContext) -> float:
     truth = ctx.expected_evidence
     miner = sssa.evidence
     if truth.get("fs_trace_hash") and miner.base.fs_trace_hash != truth["fs_trace_hash"]:
         return 0.0
-    base = _base_trace_matches(sssa, ctx)
+    base = 0.5 * _base_trace_matches(sssa, ctx)
     block = miner.type_specific.executable_python
     truth_imports = truth.get("imports_trace_hash")
     if block and truth_imports and block.imports_trace_hash == truth_imports:
-        base = min(1.0, base + 0.2)
-    return base
+        base += 0.2
+    base += 0.2 * ctx.trace_semantic_subset
+    base += _depth_bonus(ctx)
+    return _clip01(base)
 
 
 def _executable_script_evidence_score(sssa: SSSA, ctx: TaskContext) -> float:
@@ -171,12 +179,14 @@ def _executable_script_evidence_score(sssa: SSSA, ctx: TaskContext) -> float:
     miner = sssa.evidence
     if truth.get("fs_trace_hash") and miner.base.fs_trace_hash != truth["fs_trace_hash"]:
         return 0.0
-    base = _base_trace_matches(sssa, ctx)
+    base = 0.5 * _base_trace_matches(sssa, ctx)
     block = miner.type_specific.executable_script
     truth_shell = truth.get("shell_commands_hash")
     if block and truth_shell and block.shell_commands_hash == truth_shell:
-        base = min(1.0, base + 0.2)
-    return base
+        base += 0.2
+    base += 0.2 * ctx.trace_semantic_subset
+    base += _depth_bonus(ctx)
+    return _clip01(base)
 
 
 def _mcp_server_evidence_score(sssa: SSSA, ctx: TaskContext) -> float:
@@ -188,10 +198,12 @@ def _mcp_server_evidence_score(sssa: SSSA, ctx: TaskContext) -> float:
         return 0.0
     if truth.get("mcp_manifest_hash") and block.mcp_manifest_hash != truth["mcp_manifest_hash"]:
         return 0.0
-    base = _base_trace_matches(sssa, ctx)
+    base = 0.5 * _base_trace_matches(sssa, ctx)
     if block.tool_calls_hash and block.mcp_manifest_hash:
-        base = min(1.0, base + 0.2)
-    return base
+        base += 0.2
+    base += 0.2 * ctx.trace_semantic_subset
+    base += _depth_bonus(ctx)
+    return _clip01(base)
 
 
 def _agent_composition_evidence_score(sssa: SSSA, ctx: TaskContext) -> float:
@@ -201,13 +213,15 @@ def _agent_composition_evidence_score(sssa: SSSA, ctx: TaskContext) -> float:
         return 0.0
     if truth.get("agent_calls_hash") and block.agent_calls_hash != truth["agent_calls_hash"]:
         return 0.0
-    base = _base_trace_matches(sssa, ctx)
+    base = 0.5 * _base_trace_matches(sssa, ctx)
     if (
         truth.get("dependency_graph_hash")
         and block.dependency_graph_hash == truth["dependency_graph_hash"]
     ):
-        base = min(1.0, base + 0.2)
-    return base
+        base += 0.2
+    base += 0.2 * ctx.trace_semantic_subset
+    base += _depth_bonus(ctx)
+    return _clip01(base)
 
 
 _EVIDENCE_FNS = {
