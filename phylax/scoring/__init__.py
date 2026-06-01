@@ -1,4 +1,4 @@
-from phylax.scoring.metrics import (
+from phylax.scoring.legacy_metrics import (
     AxisScores,
     round_median_latency,
     score_all_axes,
