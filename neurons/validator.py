@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import random as _random
 import time
 import traceback
 import uuid
@@ -18,6 +19,7 @@ from phylax.protocol import (
     BundleMetadata,
     InferenceConfig,
     LLMAllowedUse,
+    MinerRole,
     PhylaxSynapse,
     SkillBundle,
     SkillType,
@@ -44,13 +46,18 @@ from phylax.server_client import (
 from phylax.utils.logging import get_logger
 from phylax.validator import (
     ROUND_COMPOSITION,
+    AuditorRotationTracker,
+    CollusionTracker,
+    GroupMember,
     RerunJob,
     RerunQueue,
     RerunWorker,
     RoundTask,
     compose_round,
+    compute_consensus,
     prepare_bundle,
     resolve_timing,
+    select_verification_group,
     verify_trace_bundle,
 )
 from phylax.validator.trace_verification import verify_probe
@@ -135,6 +142,13 @@ class PhylaxValidator:
         self.rerun_queue = RerunQueue(rerun_db)
         self.rerun_worker = RerunWorker(self.rerun_queue, self._submit_rerun_outcomes)
 
+        collusion_db = os.getenv(
+            "PHYLAX_COLLUSION_DB_PATH",
+            str(Path(os.path.expanduser("~/.phylax/collusion.sqlite3"))),
+        )
+        self.collusion_tracker = CollusionTracker(collusion_db)
+        self.rotation_tracker = AuditorRotationTracker()
+
         server_url = os.getenv("PHYLAX_SERVER_URL", "")
         expected_server_hotkey = os.getenv("PHYLAX_SERVER_HOTKEY", "").strip() or None
         self.server_client: PhylaxServerClient | None = None
@@ -210,36 +224,58 @@ class PhylaxValidator:
             if len(self._recent_bundle_hashes) > 256:
                 self._recent_bundle_hashes = self._recent_bundle_hashes[-256:]
             candidate_miners = await self._route_miners_for_skill_type(task.skill_type, task.task_type)
-            miners = self._filter_dispatchable_miners(
+            filtered = self._filter_dispatchable_miners(
                 candidate_miners, task, prep, per_type_rep,
             )
-            if not miners:
+            if not filtered:
                 bt.logging.info(
                     f"round {round_id[:8]} {task.skill_type.value}: no dispatchable miners "
                     f"({len(candidate_miners)} routed, filtered to 0)"
                 )
                 continue
+            group = select_verification_group(
+                filtered,
+                skill_type=task.skill_type,
+                per_type_reputation=per_type_rep,
+                rotation=self.rotation_tracker,
+            )
+            if not group.primaries:
+                bt.logging.info(
+                    f"round {round_id[:8]} {task.skill_type.value}: group selection produced no primaries"
+                )
+                continue
             bundle = self._bundle_from_prepared(task, prep)
-            ctx = self._task_context(task, prep)
-            t_min_s, deadline_s = resolve_timing(task.skill_type, task.profile)
+            primary_t_min, primary_deadline = resolve_timing(task.skill_type, task.profile, MinerRole.PRIMARY)
+            auditor_t_min, auditor_deadline = resolve_timing(task.skill_type, task.profile, MinerRole.AUDITOR)
 
-            for hotkey, _ in miners:
-                self._mark_task_active(hotkey, task.skill_type, task.task_id, deadline_s)
+            members = group.all_members()
+            for hotkey, _uid, role in members:
+                deadline = primary_deadline if role == MinerRole.PRIMARY else auditor_deadline
+                self._mark_task_active(hotkey, task.skill_type, task.task_id, deadline)
                 self._record_dispatch_history(hotkey, prep.bundle_hash)
+                self.rotation_tracker.record(hotkey, task.skill_type, role)
 
-            dial_tasks = [
-                self._dial_miner(uid, bundle, task, prep, t_min_s, deadline_s)
-                for _hotkey, uid in miners
-            ]
-            responses = await asyncio.gather(*dial_tasks, return_exceptions=True)
+            dial_coros = []
+            for _hotkey, uid, role in members:
+                t_min = primary_t_min if role == MinerRole.PRIMARY else auditor_t_min
+                deadline = primary_deadline if role == MinerRole.PRIMARY else auditor_deadline
+                dial_coros.append(
+                    self._dial_miner_with_role(uid, bundle, task, prep, role, t_min, deadline),
+                )
+            responses = await asyncio.gather(*dial_coros, return_exceptions=True)
+            miners = [(hotkey, uid) for hotkey, uid, _role in members]
+            member_roles = [role for _, _, role in members]
 
-            for (hotkey, uid), resp in zip(miners, responses, strict=True):
+            scored_members: list[dict] = []
+            for (hotkey, uid), resp, role in zip(miners, responses, member_roles, strict=True):
+                deadline_s = primary_deadline if role == MinerRole.PRIMARY else auditor_deadline
+                t_min_s = primary_t_min if role == MinerRole.PRIMARY else auditor_t_min
                 if isinstance(resp, BaseException) or resp is None:
                     continue
                 latency_ms = int(getattr(resp, "latency_ms", 0) or 0)
                 if latency_ms > deadline_s * 1000:
                     bt.logging.debug(
-                        f"discard late response from {hotkey[:10]}: "
+                        f"discard late response from {hotkey[:10]} ({role.value}): "
                         f"{latency_ms}ms > {deadline_s}s"
                     )
                     continue
@@ -255,57 +291,109 @@ class PhylaxValidator:
                     round_results.append(self._failure_record(hotkey, task))
                     continue
                 submitted_hashes = self._extract_submitted_hashes(sssa)
-                verification = verify_trace_bundle(
-                    task.skill_type,
-                    resp.trace_bundle,
-                    resp.sandbox_manifest,
-                    submitted_hashes,
-                    prep.reference_records,
-                )
-                if not verification.passed:
-                    bt.logging.warning(
-                        f"trace verification failed for {hotkey[:10]} "
-                        f"{task.skill_type.value}: {verification.reason}"
+                fs_records: list[dict] = []
+                network_records: list[dict] = []
+                process_records: list[dict] = []
+                semantic_subset = 1.0
+                depth_ratio = 1.0
+                if role == MinerRole.PRIMARY and REQUIRED_TRACE_FILES.get(task.skill_type):
+                    verification = verify_trace_bundle(
+                        task.skill_type,
+                        resp.trace_bundle,
+                        resp.sandbox_manifest,
+                        submitted_hashes,
+                        prep.reference_records,
                     )
-                    round_results.append(self._failure_record(hotkey, task))
-                    continue
-                fs_records = verification.decoded_records.get("fs.jsonl.gz", [])
-                network_records = verification.decoded_records.get("network.jsonl.gz", [])
-                process_records = verification.decoded_records.get("process.jsonl.gz", [])
-                runtime_type = bool(verification.decoded_records)
+                    if not verification.passed:
+                        bt.logging.warning(
+                            f"trace verification failed for {hotkey[:10]} "
+                            f"({role.value}) {task.skill_type.value}: {verification.reason}"
+                        )
+                        round_results.append(self._failure_record(hotkey, task))
+                        continue
+                    fs_records = verification.decoded_records.get("fs.jsonl.gz", [])
+                    network_records = verification.decoded_records.get("network.jsonl.gz", [])
+                    process_records = verification.decoded_records.get("process.jsonl.gz", [])
+                    semantic_subset = verification.semantic_subset
+                    depth_ratio = verification.depth_ratio
+                runtime_check = role == MinerRole.PRIMARY and bool(REQUIRED_TRACE_FILES.get(task.skill_type))
                 probe_ok, probe_reason, _ = verify_probe(
                     prep.nonce,
                     resp.probe_evidence,
                     fs_records=fs_records,
                     network_records=network_records,
                     process_records=process_records,
-                    runtime_type=runtime_type,
+                    runtime_type=runtime_check,
                 )
                 if not probe_ok:
                     bt.logging.warning(
                         f"probe verification failed for {hotkey[:10]} "
-                        f"{task.skill_type.value}: {probe_reason}"
+                        f"({role.value}) {task.skill_type.value}: {probe_reason}"
                     )
                     round_results.append(self._failure_record(hotkey, task))
                     continue
-                ctx.trace_semantic_subset = verification.semantic_subset
-                ctx.trace_depth_ratio = verification.depth_ratio
-                ctx.submission_latency_ms = getattr(resp, "latency_ms", 0)
+                ctx = self._task_context(task, prep)
+                ctx.trace_semantic_subset = semantic_subset
+                ctx.trace_depth_ratio = depth_ratio
+                ctx.submission_latency_ms = latency_ms
                 axes = score_all_axes(sssa, ctx)
                 q = compute_Q(axes, task.skill_type)
                 threshold = self._novel_thresholds().get(task.skill_type.value, 0.6)
                 tier = classify_tier(q, task.skill_type, threshold)
-                self._epoch_q_scores.setdefault(task.skill_type.value, []).append(float(q))
+                if role == MinerRole.PRIMARY:
+                    self._epoch_q_scores.setdefault(task.skill_type.value, []).append(float(q))
                 miner_types_responded.setdefault(hotkey, set()).add(task.skill_type.value)
-                per_uid_results.setdefault(uid, []).append(
-                    {
-                        "composite_q": float(q),
-                        "skill_type": task.skill_type,
-                        "tier": tier,
-                        "task_type": task.task_type,
-                        "epsilon": float(axes.epsilon),
-                    }
-                )
+                scored_members.append({
+                    "hotkey": hotkey,
+                    "uid": uid,
+                    "role": role,
+                    "sssa": sssa,
+                    "submitted_hashes": submitted_hashes,
+                    "decoded_records": {
+                        "fs.jsonl.gz": fs_records,
+                        "network.jsonl.gz": network_records,
+                        "process.jsonl.gz": process_records,
+                    },
+                    "resp": resp,
+                    "axes": axes,
+                    "q": float(q),
+                    "tier": tier,
+                    "latency_ms": latency_ms,
+                    "t_min_s": t_min_s,
+                    "deadline_s": deadline_s,
+                })
+
+            consensus_report = None
+            if group.consensus_enabled and len(scored_members) >= 2:
+                consensus_report = compute_consensus([
+                    GroupMember(hotkey=m["hotkey"], role=m["role"], sssa=m["sssa"])
+                    for m in scored_members
+                ])
+            consensus_by_hotkey = {
+                pmc.hotkey: pmc for pmc in (consensus_report.per_miner if consensus_report else [])
+            }
+
+            for m in scored_members:
+                hotkey = m["hotkey"]
+                uid = m["uid"]
+                role = m["role"]
+                axes = m["axes"]
+                q = m["q"]
+                tier = m["tier"]
+                latency_ms = m["latency_ms"]
+                t_min_s = m["t_min_s"]
+                deadline_s = m["deadline_s"]
+                sssa = m["sssa"]
+                pmc = consensus_by_hotkey.get(hotkey)
+                consensus_mult = float(pmc.consensus_score) if pmc else 1.0
+                if pmc is not None:
+                    self.collusion_tracker.record(
+                        hotkey=hotkey,
+                        skill_type=task.skill_type.value,
+                        round_id=round_id,
+                        aligned_with_primaries=pmc.aligned_with_primaries,
+                        aligned_with_auditors=pmc.aligned_with_auditors,
+                    )
                 round_results.append(
                     {
                         "hotkey": hotkey,
@@ -315,12 +403,17 @@ class PhylaxValidator:
                         "composite_q": float(q),
                         "tier": tier.value,
                         "is_bounty": bool(getattr(task, "is_bounty", False)),
+                        "consensus_score": consensus_mult,
+                        "role": role.value,
                     }
                 )
                 emission = compute_task_emissions_score(
                     float(q), task.skill_type, tier, self.current_epoch,
                 )
                 emission *= self._early_submission_multiplier(latency_ms, t_min_s, deadline_s)
+                if role == MinerRole.AUDITOR:
+                    emission *= 0.6
+                emission *= consensus_mult
                 per_miner_payload.append(
                     {
                         "miner_uid": int(uid),
@@ -330,18 +423,19 @@ class PhylaxValidator:
                         "composite_q": float(q),
                         "tier": tier.value,
                         "emission_score": float(emission),
+                        "consensus_score": float(consensus_mult),
+                        "role": role.value,
                         "verdict": sssa.verdict.decision.value,
                         "risk_score": int(sssa.verdict.risk_score),
-                        "submission_latency_ms": int(getattr(resp, "latency_ms", 0)),
+                        "submission_latency_ms": int(latency_ms),
                     }
                 )
                 bt.logging.info(
-                    f"{task.skill_type.value} hk={hotkey[:10]} Q={q:.3f} "
-                    f"tier={tier.value} ε={axes.epsilon:.2f}"
+                    f"{task.skill_type.value} hk={hotkey[:10]} role={role.value} "
+                    f"Q={q:.3f} cs={consensus_mult:.2f} tier={tier.value} ε={axes.epsilon:.2f}"
                 )
-                self._enqueue_rerun(
-                    hotkey, task, prep, resp, submitted_hashes, verification.decoded_records,
-                )
+
+            self._maybe_enqueue_reruns(task, prep, scored_members, consensus_report)
 
         if not per_uid_results:
             bt.logging.info(f"round {round_id[:8]} produced no scores; not publishing")
@@ -593,6 +687,20 @@ class PhylaxValidator:
         t_min_s: int,
         deadline_s: int,
     ) -> PhylaxSynapse | None:
+        return await self._dial_miner_with_role(
+            uid, bundle, task, prep, MinerRole.PRIMARY, t_min_s, deadline_s,
+        )
+
+    async def _dial_miner_with_role(
+        self,
+        uid: int,
+        bundle: SkillBundle,
+        task: RoundTask,
+        prep,
+        role: MinerRole,
+        t_min_s: int,
+        deadline_s: int,
+    ) -> PhylaxSynapse | None:
         axon = self.metagraph.axons[uid]
         synapse = PhylaxSynapse(
             skill_bundle=bundle,
@@ -602,6 +710,7 @@ class PhylaxValidator:
                 task_type=task.task_type,
                 deadline_s=deadline_s,
                 t_min_s=t_min_s,
+                role=role.value,
             ),
             inference_config=InferenceConfig(
                 proxy_url=task.metadata.get("inference_proxy_url") or self.INFERENCE_PROXY_URL,
@@ -629,6 +738,36 @@ class PhylaxValidator:
             return None
         returned.latency_ms = int((time.time() - sent_at) * 1000)
         return returned
+
+    def _maybe_enqueue_reruns(
+        self,
+        task: RoundTask,
+        prep,
+        scored_members: list[dict],
+        consensus_report,
+    ) -> None:
+        if not scored_members:
+            return
+        primaries = [m for m in scored_members if m["role"] == MinerRole.PRIMARY]
+        if not primaries:
+            return
+        diverging_set = set(consensus_report.diverging_hotkeys) if consensus_report else set()
+
+        targets: list[dict] = []
+        if consensus_report and consensus_report.breakdown_flag:
+            targets = [m for m in primaries if m["hotkey"] in diverging_set]
+            if not targets:
+                targets = primaries
+        elif diverging_set:
+            targets = [m for m in primaries if m["hotkey"] in diverging_set]
+        else:
+            targets = [_random.choice(primaries)]
+
+        for m in targets:
+            self._enqueue_rerun(
+                m["hotkey"], task, prep, m["resp"],
+                m["submitted_hashes"], m["decoded_records"],
+            )
 
     def _validate_sssa(self, sssa: SSSA, task: RoundTask, hotkey: str) -> bool:
         if sssa.skill.skill_type != task.skill_type:

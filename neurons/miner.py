@@ -29,6 +29,7 @@ from phylax.protocol import (
     Capabilities,
     Dependencies,
     EvidencePack,
+    MinerRole,
     PhylaxSynapse,
     RecommendedPolicy,
     SkillIdentity,
@@ -167,23 +168,32 @@ class PhylaxMiner:
     async def forward(self, synapse: PhylaxSynapse) -> PhylaxSynapse:
         bundle = synapse.skill_bundle
         skill_type = bundle.metadata.skill_type
+        role_str = (synapse.task_metadata.role or "primary").lower()
+        is_auditor = role_str == MinerRole.AUDITOR.value
         bt.logging.info(
             f"scan: bundle={bundle.bundle_hash} type={skill_type.value} "
             f"profile={bundle.metadata.profile.value} "
-            f"task={synapse.task_metadata.task_id}"
+            f"role={role_str} task={synapse.task_metadata.task_id}"
         )
         try:
             bundle_dir = await asyncio.to_thread(self._materialise_bundle, bundle)
-            sssa, evidence_dir = await asyncio.to_thread(self._dispatch, skill_type, bundle_dir, synapse)
+            if is_auditor:
+                sssa = await asyncio.to_thread(self._audit_dispatch, skill_type, bundle_dir, synapse)
+                evidence_dir = None
+            else:
+                sssa, evidence_dir = await asyncio.to_thread(
+                    self._dispatch, skill_type, bundle_dir, synapse,
+                )
             sssa = self._sign(sssa)
             synapse.attestation = sssa.model_dump(mode="json")
-            _emit_probe_into_evidence(evidence_dir, skill_type, synapse.nonce)
-            synapse.trace_bundle = _pack_trace_bundle(evidence_dir, skill_type)
             synapse.probe_evidence = derive_probe(synapse.nonce).as_evidence()
-            if REQUIRED_TRACE_FILES.get(skill_type):
-                synapse.sandbox_manifest = _sandbox_manifest()
+            if not is_auditor:
+                _emit_probe_into_evidence(evidence_dir, skill_type, synapse.nonce)
+                synapse.trace_bundle = _pack_trace_bundle(evidence_dir, skill_type)
+                if REQUIRED_TRACE_FILES.get(skill_type):
+                    synapse.sandbox_manifest = _sandbox_manifest()
             bt.logging.success(
-                f"scan done: {bundle.bundle_hash} -> "
+                f"scan done ({role_str}): {bundle.bundle_hash} -> "
                 f"{sssa.verdict.decision.value} risk={sssa.verdict.risk_score}"
             )
         except Exception as exc:  # noqa: BLE001
@@ -191,6 +201,52 @@ class PhylaxMiner:
             bt.logging.debug(traceback.format_exc())
             synapse.error = str(exc)
         return synapse
+
+    def _audit_dispatch(self, skill_type: SkillType, bundle_dir: Path, synapse: PhylaxSynapse) -> SSSA:
+        bundle = synapse.skill_bundle
+        canary_id = synapse.task_metadata.task_id
+        if skill_type == SkillType.RAG_KNOWLEDGE:
+            result = self.h_rag.run(bundle_dir, canary_id=canary_id)
+            type_specific = TypeSpecificEvidence(rag_knowledge=result.evidence)
+            findings = result.findings
+            risk_score = min(100, int(result.evidence.hidden_instruction_score * 100))
+            verdict_sources = ["L0_content"]
+            evidence_pack = EvidencePack(type_specific=type_specific)
+        elif skill_type == SkillType.DECLARATIVE:
+            result = self.h_declarative.run(bundle_dir, canary_id=canary_id)
+            type_specific = TypeSpecificEvidence(declarative=result.evidence)
+            findings = result.findings
+            risk_score = min(100, int(result.evidence.prompt_injection_ml_score * 100))
+            verdict_sources = ["L0_declarative"]
+            evidence_pack = EvidencePack(type_specific=type_specific)
+        else:
+            findings = []
+            risk_score = 20
+            verdict_sources = ["audit_static"]
+            evidence_pack = EvidencePack()
+        decision = self._verdict_from_risk(risk_score)
+        confidence = 0.5
+        capabilities = self._capabilities_from_findings(findings)
+        recommended_policy = self._policy_from_findings(findings, decision)
+        return SSSA(
+            skill=SkillIdentity(
+                name=bundle.metadata.skill_name,
+                bundle_hash=bundle.bundle_hash,
+                skill_type=skill_type,
+                profile=bundle.metadata.profile,
+            ),
+            verdict=VerdictBlock(
+                decision=decision,
+                risk_score=risk_score,
+                confidence=confidence,
+                verdict_sources=verdict_sources,
+            ),
+            capabilities=capabilities,
+            findings=findings,
+            dependencies=Dependencies(),
+            recommended_policy=recommended_policy,
+            evidence=evidence_pack,
+        )
 
     async def blacklist(self, synapse: PhylaxSynapse) -> tuple[bool, str]:
         if synapse.dendrite.hotkey not in self.metagraph.hotkeys:

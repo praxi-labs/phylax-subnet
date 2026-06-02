@@ -5,6 +5,13 @@ from phylax.validator.canary import (
     inject_declarative_canary,
     inject_rag_canary,
 )
+from phylax.validator.collusion import CollusionTracker, CollusionVerdict
+from phylax.validator.consensus import (
+    ConsensusReport,
+    GroupMember,
+    PerMinerConsensus,
+    compute_consensus,
+)
 from phylax.validator.corpus import CorpusLoader, CorpusTask
 from phylax.validator.ground_truth import BundlePreparation, prepare_bundle
 from phylax.validator.profile_timing import AUDITOR_TIMING, PROFILE_TIMING, resolve_timing
@@ -34,8 +41,13 @@ __all__ = [
     "AuditorRotationTracker",
     "BundlePreparation",
     "CanaryInjection",
+    "CollusionTracker",
+    "CollusionVerdict",
+    "ConsensusReport",
     "CorpusLoader",
     "CorpusTask",
+    "GroupMember",
+    "PerMinerConsensus",
     "RerunJob",
     "RerunOutcome",
     "RerunQueue",
@@ -46,6 +58,7 @@ __all__ = [
     "build_minimal_declarative_bundle",
     "build_minimal_mcp_bundle",
     "compose_round",
+    "compute_consensus",
     "generate_canary_task",
     "generate_local_synth_task",
     "inject_declarative_canary",

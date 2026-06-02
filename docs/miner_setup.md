@@ -214,12 +214,22 @@ docker compose up -d --force-recreate
 
 The miner runs the container; the container does the analysis. Add audit hooks, kernel-level tracing, your own classifier, proprietary CVE feeds, etc., inside the container. As long as it emits the required JSONL schemas, validators will accept the resulting SSSA.
 
+### Primary vs auditor role
+
+Every task carries a `task_metadata.role` field which is either `"primary"` or `"auditor"`. The validator chooses your role per task per round — you don't know in advance.
+
+- **Primary** (3 per task, picked from highest reputation for that skill type): full pipeline. Sandbox detonation, full SSSA, trace_bundle, sandbox_manifest, probe_evidence. Longer deadline (the matrix in §4). Full emission.
+- **Auditor** (2 per task, picked randomly from remaining declared miners): full SSSA (verdict, findings, capabilities, dependencies, policy) but no trace_bundle and no sandbox_manifest required. Tighter deadline (rag 2/15, decl 3/30, exec 10/90, mcp 20/150, comp 30/240 seconds). Earns `0.6 × primary_emission × consensus_score`.
+
+Auditors are rotated: if you've been an auditor 3 rounds in a row for a skill type, you're promoted into the primary slot regardless of reputation rank.
+
 ### What you must submit per task
 
-For every task the validator sends, your axon must return the synapse with three pieces populated together:
+For every task the validator sends, your axon must return the synapse with these pieces populated:
 
-1. **`attestation`** — the signed SSSA (canonical JSON, ed25519 signature with your hotkey).
-2. **`trace_bundle`** — a `dict[str, str]` of `{filename: base64(gzip(jsonl_bytes))}` for runtime skill types. Required filenames per type:
+1. **`attestation`** — the signed SSSA (canonical JSON, ed25519 signature with your hotkey). Always required.
+2. **`probe_evidence`** — a dict `{file_path, file_content, dns_host, process_echo}` derived from the nonce. Always required (primary and auditor). For runtime skill types, your harness must **also** perform those three events inside the sandbox so they appear in fs.jsonl, network.jsonl, and process.jsonl respectively.
+3. **`trace_bundle`** — required for runtime primaries only. A `dict[str, str]` of `{filename: base64(gzip(jsonl_bytes))}`. Required filenames per type:
    - `executable_python`: `network.jsonl.gz`, `fs.jsonl.gz`, `process.jsonl.gz`, `secrets.jsonl.gz`, `imports.jsonl.gz`
    - `executable_script`: same four base + `shell_commands.jsonl.gz`
    - `mcp_server`: same four base + `tool_calls.jsonl.gz`
