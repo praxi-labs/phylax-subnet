@@ -6,6 +6,7 @@ import os
 import time
 import traceback
 import uuid
+from collections import deque
 from pathlib import Path
 
 import bittensor as bt
@@ -123,6 +124,8 @@ class PhylaxValidator:
         self._recent_bundle_hashes: list[str] = []
         self._declared_types_by_hotkey: dict[str, set[str]] = {}
         self._sandbox_images_by_hotkey: dict[str, dict[str, dict[str, str]]] = {}
+        self._active_tasks_by_hotkey: dict[str, dict[str, dict[str, float]]] = {}
+        self._per_miner_recent_bundles: dict[str, deque[str]] = {}
 
         rerun_db = os.getenv(
             "PHYLAX_RERUN_QUEUE_PATH",
@@ -200,24 +203,48 @@ class PhylaxValidator:
         per_miner_payload: list[dict] = []
 
         miner_types_responded: dict[str, set[str]] = {}
+        per_type_rep = self._fetch_per_type_reputation()
         for task, prep in prepared:
             self._recent_bundle_hashes.append(prep.bundle_hash)
             if len(self._recent_bundle_hashes) > 256:
                 self._recent_bundle_hashes = self._recent_bundle_hashes[-256:]
-            miners = await self._route_miners_for_skill_type(task.skill_type, task.task_type)
+            candidate_miners = await self._route_miners_for_skill_type(task.skill_type, task.task_type)
+            miners = self._filter_dispatchable_miners(
+                candidate_miners, task, prep, per_type_rep,
+            )
             if not miners:
                 bt.logging.info(
-                    f"round {round_id[:8]} {task.skill_type.value}: no routed miners"
+                    f"round {round_id[:8]} {task.skill_type.value}: no dispatchable miners "
+                    f"({len(candidate_miners)} routed, filtered to 0)"
                 )
                 continue
             bundle = self._bundle_from_prepared(task, prep)
             ctx = self._task_context(task, prep)
             t_min_s, deadline_s = resolve_timing(task.skill_type, task.profile)
 
-            for hotkey, uid in miners:
-                resp = await self._dial_miner(uid, bundle, task, prep, t_min_s, deadline_s)
-                if resp is None or resp.error or resp.attestation is None:
+            for hotkey, _ in miners:
+                self._mark_task_active(hotkey, task.skill_type, task.task_id, deadline_s)
+                self._record_dispatch_history(hotkey, prep.bundle_hash)
+
+            dial_tasks = [
+                self._dial_miner(uid, bundle, task, prep, t_min_s, deadline_s)
+                for _hotkey, uid in miners
+            ]
+            responses = await asyncio.gather(*dial_tasks, return_exceptions=True)
+
+            for (hotkey, uid), resp in zip(miners, responses, strict=True):
+                if isinstance(resp, BaseException) or resp is None:
                     continue
+                latency_ms = int(getattr(resp, "latency_ms", 0) or 0)
+                if latency_ms > deadline_s * 1000:
+                    bt.logging.debug(
+                        f"discard late response from {hotkey[:10]}: "
+                        f"{latency_ms}ms > {deadline_s}s"
+                    )
+                    continue
+                if resp.error or resp.attestation is None:
+                    continue
+                self._mark_task_complete(hotkey, task.skill_type, task.task_id)
                 try:
                     sssa = SSSA(**resp.attestation)
                 except Exception as e:  # noqa: BLE001
@@ -267,11 +294,13 @@ class PhylaxValidator:
                         "epsilon": float(axes.epsilon),
                         "composite_q": float(q),
                         "tier": tier.value,
+                        "is_bounty": bool(getattr(task, "is_bounty", False)),
                     }
                 )
                 emission = compute_task_emissions_score(
                     float(q), task.skill_type, tier, self.current_epoch,
                 )
+                emission *= self._early_submission_multiplier(latency_ms, t_min_s, deadline_s)
                 per_miner_payload.append(
                     {
                         "miner_uid": int(uid),
@@ -612,6 +641,78 @@ class PhylaxValidator:
         }
 
     @staticmethod
+    def _early_submission_multiplier(latency_ms: int, t_min_s: int, deadline_s: int) -> float:
+        window_ms = max(1, (deadline_s - t_min_s) * 1000)
+        position = (latency_ms - t_min_s * 1000) / window_ms
+        if position < 0.0:
+            return 1.0
+        if position <= 0.25:
+            return 1.15
+        if position <= 0.50:
+            return 1.08
+        return 1.0
+
+    def _mark_task_active(self, hotkey: str, skill_type: SkillType, task_id: str, deadline_s: int) -> None:
+        now = time.time()
+        bucket = self._active_tasks_by_hotkey.setdefault(hotkey, {}).setdefault(skill_type.value, {})
+        bucket[task_id] = now + deadline_s
+        for tid, expiry in list(bucket.items()):
+            if expiry <= now:
+                bucket.pop(tid, None)
+
+    def _mark_task_complete(self, hotkey: str, skill_type: SkillType, task_id: str) -> None:
+        bucket = self._active_tasks_by_hotkey.get(hotkey, {}).get(skill_type.value)
+        if bucket:
+            bucket.pop(task_id, None)
+
+    def _miner_has_open_task(self, hotkey: str, skill_type: SkillType) -> bool:
+        now = time.time()
+        bucket = self._active_tasks_by_hotkey.get(hotkey, {}).get(skill_type.value)
+        if not bucket:
+            return False
+        for tid, expiry in list(bucket.items()):
+            if expiry <= now:
+                bucket.pop(tid, None)
+        return bool(bucket)
+
+    def _miner_saw_bundle_recently(self, hotkey: str, bundle_hash: str) -> bool:
+        history = self._per_miner_recent_bundles.get(hotkey)
+        if not history:
+            return False
+        return bundle_hash in history
+
+    def _record_dispatch_history(self, hotkey: str, bundle_hash: str) -> None:
+        history = self._per_miner_recent_bundles.setdefault(hotkey, deque(maxlen=60))
+        history.append(bundle_hash)
+
+    def _is_bounty_eligible(self, hotkey: str, skill_type: SkillType, per_type_rep: dict[str, dict[str, float]]) -> bool:
+        rep = per_type_rep.get(hotkey, {}).get(skill_type.value, 0.0)
+        if rep < 0.85:
+            return False
+        return True
+
+    def _filter_dispatchable_miners(
+        self,
+        candidates: list[tuple[str, int]],
+        task: RoundTask,
+        prep,
+        per_type_rep: dict[str, dict[str, float]],
+    ) -> list[tuple[str, int]]:
+        out: list[tuple[str, int]] = []
+        is_bounty = bool(getattr(task, "is_bounty", False))
+        for hotkey, uid in candidates:
+            if self._miner_saw_bundle_recently(hotkey, prep.bundle_hash):
+                continue
+            if is_bounty:
+                if not self._is_bounty_eligible(hotkey, task.skill_type, per_type_rep):
+                    continue
+            else:
+                if self._miner_has_open_task(hotkey, task.skill_type):
+                    continue
+            out.append((hotkey, uid))
+        return out
+
+    @staticmethod
     def _extract_submitted_hashes(sssa: SSSA) -> dict[str, str | None]:
         ts = sssa.evidence.type_specific
         return {
@@ -771,6 +872,16 @@ class PhylaxValidator:
                         "skill_type": r["skill_type"],
                         "update_type": "canary",
                         "canary_passed": r["epsilon"] >= 0.8,
+                    }
+                )
+            elif r.get("is_bounty"):
+                updates.append(
+                    {
+                        "hotkey": r["hotkey"],
+                        "skill_type": r["skill_type"],
+                        "update_type": "bounty",
+                        "bounty_passed": r["epsilon"] >= 0.5,
+                        "epsilon": r["epsilon"],
                     }
                 )
             else:

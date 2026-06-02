@@ -65,6 +65,7 @@ class RoundTask:
     ground_truth: dict[str, Any] = field(default_factory=dict)
     ground_truth_evidence: dict[str, Any] = field(default_factory=dict)
     annotated_by: str | None = None
+    is_bounty: bool = False
 
 
 def normalise_skill_type_str(raw: str | None) -> str | None:
@@ -202,6 +203,7 @@ def task_from_server_dict(raw: dict) -> RoundTask | None:
         ground_truth=raw.get("ground_truth") or {},
         ground_truth_evidence=raw.get("ground_truth_evidence") or {},
         annotated_by=raw.get("annotated_by") or metadata.get("annotated_by") or "human",
+        is_bounty=bool(raw.get("is_bounty") or metadata.get("is_bounty") or False),
     )
 
 
