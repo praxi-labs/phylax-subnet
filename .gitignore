@@ -3,6 +3,9 @@
 .env.local
 *.local.env
 
+# Claude Code local settings (per-machine; do not commit)
+.claude/
+
 # Wallets — NEVER commit
 wallets/
 *.keypair
