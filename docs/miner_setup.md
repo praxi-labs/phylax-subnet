@@ -1,5 +1,5 @@
 # Phylax Miner Guide
-## Testnet (netuid 486)
+## netuid 486 (testnet)
 
 ## Overview
 
