@@ -1,13 +1,13 @@
 # Phylax: Decentralized Trust Layer for AI Agent Skills
 
-> *φύλαξ — Ancient Greek for guardian, sentinel, watchman.*
+> *φύλαξ, Ancient Greek for guardian, sentinel, watchman.*
 
 [![Bittensor](https://img.shields.io/badge/Bittensor-Subnet-blue)](https://bittensor.com)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-green)](https://python.org)
 [![Status: Pre-launch](https://img.shields.io/badge/Status-Pre--launch-orange)]()
 
-Phylax is a Bittensor subnet that turns untrusted AI agent skill bundles into Signed Skill Safety Attestations (SSSAs) — portable, verifiable, cryptographically-signed artifacts with enforceable execution policies.
+Phylax is a Bittensor subnet that turns untrusted AI agent skill bundles into Signed Skill Safety Attestations (SSSAs): portable, verifiable, cryptographically-signed artifacts with enforceable execution policies.
 
 ## The Problem
 
@@ -17,87 +17,91 @@ Existing approaches use an LLM as the scanner. They are fast to build but fundam
 
 ## The Phylax Approach
 
-Phylax runs a decentralized competition in which miners perform real behavioural sandbox detonation, produce cryptographically-signed evidence packs, and emit machine-readable policies that runtimes can enforce automatically. Validators independently replay the same pipeline under a per-miner nonce and score on hash equality — claims without matching evidence earn zero.
+Phylax runs a decentralized competition in which miners perform real behavioural sandbox detonation, produce cryptographically-signed evidence packs, and emit machine-readable policies that runtimes can enforce automatically. Validators independently verify submissions through multi-miner consensus and async sandbox reruns. Claims without matching evidence earn zero.
 
 | | Traditional Scanners | Phylax |
 |---|---|---|
 | Analysis method | LLM text analysis | Real sandbox detonation |
 | Evasion resistance | Low (prompt-injectable) | High (behavioural observation) |
 | Output | Text report | Signed, enforceable contract |
-| Verification | None | Validator-replayed evidence hashes |
+| Verification | None | Multi-miner consensus + validator sandbox rerun |
 | Scale | Centralized | Decentralized competition |
 | Incentive | None | Bittensor TAO emissions |
 
-## How it works
+## Skill Types
 
-Each skill bundle submitted to Phylax passes through a three-layer miner pipeline (whitepaper §4.1) before producing a signed attestation.
+Phylax supports six skill types, each with its own analysis pipeline and scoring. Miners choose which types to specialise in.
 
-**Layer 1 — Static Analysis.** Scans code structure, dangerous API patterns, permission discrepancies, and **prompt-injection / network-persistence** patterns.
+| Skill type | What it covers |
+|---|---|
+| `rag_knowledge` | Document collections and knowledge-base content |
+| `declarative` | Natural-language instruction files (SKILL.md) |
+| `executable_python` | Python source code and dependency manifests |
+| `executable_script` | Shell scripts and bash files |
+| `mcp_server` | Model Context Protocol server implementations |
+| `agent_composition` | Skills that orchestrate other skills or spawn sub-agents |
 
-**Layer 2 — Supply-Chain + SBOM.** Generates a full dependency graph, cross-references the [osv.dev](https://osv.dev) CVE database, detects typosquatting, flags malicious install hooks.
+Harder skill types carry higher base weights and earn proportionally more emissions. Miners who invest in deeper analysis pipelines reach higher tiers and earn more than those running the reference implementation.
 
-**Layer 3 — Behavioural Sandbox.** Executes the skill in a locked container seeded by the validator's per-miner nonce. Records network egress (with DNS), filesystem access, process spawning, and secrets access (all three Python idioms: `os.environ.get`, `os.environ[K]`, `os.getenv`).
+## How it Works
 
-The validator runs the **same three layers** to produce ground truth and scores miners on byte-equal hash equality (whitepaper §5.2).
+Each skill bundle passes through a miner analysis pipeline before producing a signed attestation.
+
+**Layer 1: Static Analysis.** Scans code structure, dangerous API patterns, permission discrepancies, and prompt-injection patterns using AST analysis, regex banks, and taint flow tracking.
+
+**Layer 2: Supply Chain and SBOM.** Generates a full dependency graph, cross-references the [osv.dev](https://osv.dev) CVE database, detects typosquatting, and flags malicious install hooks.
+
+**Layer 3: Behavioural Sandbox.** Executes the skill in a locked container seeded by a per-task nonce. Records network egress, filesystem access, process spawning, and secrets access. For MCP server skills a dedicated test client exercises all declared tools. For composition skills a cascading multi-container detonation traces inter-skill communication.
+
+Validators verify submissions by checking trace hashes for self-consistency and canary presence, computing full SSSA consensus across a five-miner verification group, and asynchronously rerunning each primary miner's declared sandbox image to confirm their traces are honest.
 
 ## The Signed Skill Safety Attestation (SSSA)
 
 ```text
+skill:                { name, bundle_hash, skill_type, profile }
 verdict:              ALLOW | WARN | BLOCK
 risk_score:           0 - 100
-capabilities:         { network, fs, process, secrets }
-findings:             [ { severity, evidence, fix } ]
+capabilities:         { network, filesystem, process, secrets,
+                        tool_calls, child_skills }
+findings:             [ { severity, evidence_snippet, owasp_ref,
+                          mitre_ref, layer_source } ]
+dependencies:         { sbom_hash, known_cves, install_hooks }
 recommended_policy:   { enforceable JSON }
-evidence:             { sha256 hashes of N, F, P, K traces }
+evidence:             { sha256 hashes of sandbox traces,
+                        type-specific evidence fields }
 attestation:          ed25519:miner_hotkey
-countersignature:     ed25519:validator_hotkey (consensus rounds, §6.2)
 ```
 
-Full reference: [docs/sssa_schema.md](docs/sssa_schema.md).
+Full schema reference: [docs/sssa_schema.md](docs/sssa_schema.md).
 
 ## Scoring
 
-Each (miner, task) submission is scored on four axes combined via an **evidence-gated composite**: evidence is a multiplicative gate (no proof of execution = no reward), not an additive term.
+Each submission is scored across multiple axes that vary by skill type. Detection accuracy is the dominant signal. Evidence is a multiplicative gate. A miner who cannot prove they ran real analysis earns zero regardless of how good their verdict looks.
 
-| Axis | Weight | Measures |
-|---|---|---|
-| Detection accuracy α | 0.45 | Correct verdict with asymmetric FN penalty (λ_FN = 1.0, λ_FP = 0.4) |
-| Evidence integrity ε | 0.30 (gate) | Hash equality of N/F/P/K traces vs validator replay |
-| Policy effectiveness π | 0.20 | Precision-weighted F0.5 over the policy constraint set |
-| Efficiency η | 0.05 | Validator-measured submission latency with τ_min floor |
+On top of per-task scoring, submissions are evaluated against a five-miner verification group. Each miner's score is multiplied by their consensus alignment across verdict, findings, capabilities, dependencies, and recommended policy. A miner who diverges from the group on findings earns less even if their individual axes score well.
 
-```text
-Q(m, S) = 0                                              if ε < 0.10
-Q(m, S) = (0.45·α + 0.20·π + 0.05·η) / 0.70 · ε          otherwise
-```
-
-A miner who skips the sandbox earns zero, regardless of how good the other axes look. A miner with 80% trace agreement and perfect other axes scores ≈ 0.80. A harmonic-mean variant is available as a diagnostic. Epoch aggregation, EMA smoothing, and on-chain weight pushes are documented in [docs/scoring.md](docs/scoring.md).
+Full scoring specification: [docs/scoring.md](docs/scoring.md).
 
 ## Anti-Gaming
 
-| Strategy | Failure mode |
-|---|---|
-| Block-all | Known-Good / Near-Miss tasks crater α; π collapses on deny-all policies |
-| Allow-all | Known-Bad tasks crater α via the asymmetric FN penalty |
-| Copy another miner's SSSA | Per-miner nonce η_i ⇒ unique evidence hashes ⇒ ε = 0; signature/hotkey check also fails |
-| Fabricate hashes / skip detonation | Validator replay produces different H_j*; ε = 0; η = 0 if under τ_min |
-| Overfit public corpus | Synthetic + canary tasks injected per round; corpus is unbounded |
+Phylax layers multiple mechanisms to make gaming more expensive than honest mining.
 
-Conformance tests live in `tests/test_whitepaper_conformance.py` and `tests/test_nonce_anticopy.py`.
+Submitting without running the sandbox fails the evidence gate immediately. Fabricating trace hashes fails against the canary written by the validator's nonce before execution. Copying another miner's submission fails because every miner receives a unique nonce that produces unique trace hashes. Colluding with a fixed group of miners fails because each task also includes randomly selected auditor miners whose verdicts the colluding group cannot predict.
 
 ## Architecture
 
-See [docs/architecture.md](docs/architecture.md) for the full module map. Key new packages:
+Key packages:
 
-- `phylax.validator.baseline` — runs the same pipeline as miners to produce ground truth (§5.2)
-- `phylax.validator.consensus` — quality-weighted argmax verdict (§6.2)
-- `phylax.validator.registry` — SQLite content-addressed attestation store (§6.3)
-- `phylax.validator.corpus` — loads all seven corpus families
-- `phylax.validator.synth` — per-round synthetic challenge generator (§7.3)
-- `phylax.api.server` — POST /scan, GET /attestation, /verify, /invalidate, /health (Appendix A)
-- `phylax.client` + `phylax.cli` — runtime SDK and CI gate (§9)
+- `phylax.validator.consensus` full SSSA consensus across the verification group
+- `phylax.validator.rerun` async miner sandbox image rerun worker
+- `phylax.validator.collusion` per-miner consensus agreement history and collusion detection
+- `phylax.validator.corpus` corpus task fetching and canary injection
+- `phylax.api.server` POST /scan, GET /attestation, /verify, /health
+- `phylax.client` and `phylax.cli` runtime SDK and CI gate
 
-## Getting started
+Full module map: [docs/architecture.md](docs/architecture.md).
+
+## Getting Started
 
 ```bash
 git clone https://github.com/praxi-labs/phylax-subnet.git
@@ -107,6 +111,6 @@ docker build -f docker/Dockerfile.sandbox -t phylax-sandbox:latest .
 ```
 
 - [Miner setup](docs/miner_setup.md)
-- [Validator setup](docs/validator_setup.md) — **note: validators now require Docker**
+- [Validator setup](docs/validator_setup.md)
 - [REST API](docs/api.md)
 - [Runtime integration](docs/integration.md)
