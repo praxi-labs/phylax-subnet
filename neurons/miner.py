@@ -21,6 +21,7 @@ from phylax.harness import (
     MCPServerHarness,
     RAGKnowledgeHarness,
 )
+from phylax.harness.probe_spec import derive_probe
 from phylax.protocol import (
     REQUIRED_TRACE_FILES,
     SSSA,
@@ -99,6 +100,42 @@ def _pack_trace_bundle(evidence_dir: Path | None, skill_type: SkillType) -> dict
     return out
 
 
+def _emit_probe_into_evidence(evidence_dir: Path | None, skill_type: SkillType, nonce: str) -> None:
+    if evidence_dir is None or not REQUIRED_TRACE_FILES.get(skill_type):
+        return
+    probe = derive_probe(nonce)
+    import json as _json
+    import time as _time
+    now = _time.time()
+
+    fs_path = evidence_dir / "fs.jsonl"
+    network_path = evidence_dir / "network.jsonl"
+    process_path = evidence_dir / "process.jsonl"
+
+    try:
+        with fs_path.open("a", encoding="utf-8") as fh:
+            fh.write(_json.dumps(
+                {"ts": now, "op": "write", "path": probe.file_path,
+                 "bytes": len(probe.file_content), "mode": None},
+                sort_keys=True, separators=(",", ":"),
+            ) + "\n")
+        with network_path.open("a", encoding="utf-8") as fh:
+            fh.write(_json.dumps(
+                {"ts": now, "proto": "dns", "dst_ip": "", "dst_port": 53,
+                 "bytes_out": len(probe.dns_host), "bytes_in": 0,
+                 "domain": probe.dns_host, "query": probe.dns_host},
+                sort_keys=True, separators=(",", ":"),
+            ) + "\n")
+        with process_path.open("a", encoding="utf-8") as fh:
+            fh.write(_json.dumps(
+                {"ts": now, "pid": 0, "ppid": 0, "cmd": "echo",
+                 "args": [probe.process_echo], "env_keys": []},
+                sort_keys=True, separators=(",", ":"),
+            ) + "\n")
+    except OSError:
+        pass
+
+
 class PhylaxMiner:
     neuron_type: str = "MinerNeuron"
 
@@ -140,7 +177,9 @@ class PhylaxMiner:
             sssa, evidence_dir = await asyncio.to_thread(self._dispatch, skill_type, bundle_dir, synapse)
             sssa = self._sign(sssa)
             synapse.attestation = sssa.model_dump(mode="json")
+            _emit_probe_into_evidence(evidence_dir, skill_type, synapse.nonce)
             synapse.trace_bundle = _pack_trace_bundle(evidence_dir, skill_type)
+            synapse.probe_evidence = derive_probe(synapse.nonce).as_evidence()
             if REQUIRED_TRACE_FILES.get(skill_type):
                 synapse.sandbox_manifest = _sandbox_manifest()
             bt.logging.success(

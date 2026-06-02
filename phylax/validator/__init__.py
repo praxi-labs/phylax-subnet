@@ -7,7 +7,7 @@ from phylax.validator.canary import (
 )
 from phylax.validator.corpus import CorpusLoader, CorpusTask
 from phylax.validator.ground_truth import BundlePreparation, prepare_bundle
-from phylax.validator.profile_timing import PROFILE_TIMING, resolve_timing
+from phylax.validator.profile_timing import AUDITOR_TIMING, PROFILE_TIMING, resolve_timing
 from phylax.validator.rerun_queue import RerunJob, RerunQueue
 from phylax.validator.rerun_worker import RerunOutcome, RerunWorker
 from phylax.validator.round_composition import (
@@ -21,10 +21,17 @@ from phylax.validator.trace_verification import (
     TraceVerification,
     verify_trace_bundle,
 )
+from phylax.validator.verification_group import (
+    AuditorRotationTracker,
+    VerificationGroup,
+    select_verification_group,
+)
 
 __all__ = [
+    "AUDITOR_TIMING",
     "PROFILE_TIMING",
     "ROUND_COMPOSITION",
+    "AuditorRotationTracker",
     "BundlePreparation",
     "CanaryInjection",
     "CorpusLoader",
@@ -35,6 +42,7 @@ __all__ = [
     "RerunWorker",
     "RoundTask",
     "TraceVerification",
+    "VerificationGroup",
     "build_minimal_declarative_bundle",
     "build_minimal_mcp_bundle",
     "compose_round",
@@ -44,5 +52,6 @@ __all__ = [
     "inject_rag_canary",
     "prepare_bundle",
     "resolve_timing",
+    "select_verification_group",
     "verify_trace_bundle",
 ]

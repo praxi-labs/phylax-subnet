@@ -14,6 +14,7 @@ from phylax.harness import (
     ExecutableScriptHarness,
     MCPServerHarness,
 )
+from phylax.harness.probe_spec import derive_probe
 from phylax.protocol import SkillType
 from phylax.validator.canary import (
     CanaryInjection,
@@ -103,6 +104,13 @@ def _collect_reference_records(evidence_dir: Path | None, type_specific_file: st
     return records, total
 
 
+def _ground_truth_with_probe(nonce: str, base: dict) -> dict:
+    probe = derive_probe(nonce)
+    out = dict(base)
+    out["probe"] = probe.as_evidence()
+    return out
+
+
 def prepare_rag(bundle_bytes: bytes, nonce: str | None = None) -> BundlePreparation:
     nonce = nonce or _new_nonce()
     cid, cval = _derive_canary_pair(nonce)
@@ -113,7 +121,7 @@ def prepare_rag(bundle_bytes: bytes, nonce: str | None = None) -> BundlePreparat
         nonce=nonce,
         canary_id=cid,
         canary_val=cval,
-        ground_truth=injection.ground_truth,
+        ground_truth=_ground_truth_with_probe(nonce, injection.ground_truth),
     )
 
 
@@ -127,7 +135,7 @@ def prepare_declarative(bundle_bytes: bytes, nonce: str | None = None) -> Bundle
         nonce=nonce,
         canary_id=cid,
         canary_val=cval,
-        ground_truth=injection.ground_truth,
+        ground_truth=_ground_truth_with_probe(nonce, injection.ground_truth),
     )
 
 
@@ -146,7 +154,7 @@ def prepare_executable_python(bundle_bytes: bytes, nonce: str | None = None) -> 
         nonce=nonce,
         canary_id=cid,
         canary_val=cval,
-        ground_truth={
+        ground_truth=_ground_truth_with_probe(nonce, {
             "canary_id": cid,
             "canary_val": cval,
             "network_trace_hash": base.network_trace_hash,
@@ -154,7 +162,7 @@ def prepare_executable_python(bundle_bytes: bytes, nonce: str | None = None) -> 
             "process_trace_hash": base.process_trace_hash,
             "secrets_trace_hash": base.secrets_trace_hash,
             "imports_trace_hash": getattr(type_ev, "imports_trace_hash", None),
-        },
+        }),
         reference_records=records,
         reference_event_count=total,
     )
@@ -175,7 +183,7 @@ def prepare_executable_script(bundle_bytes: bytes, nonce: str | None = None) -> 
         nonce=nonce,
         canary_id=cid,
         canary_val=cval,
-        ground_truth={
+        ground_truth=_ground_truth_with_probe(nonce, {
             "canary_id": cid,
             "canary_val": cval,
             "network_trace_hash": base.network_trace_hash,
@@ -183,7 +191,7 @@ def prepare_executable_script(bundle_bytes: bytes, nonce: str | None = None) -> 
             "process_trace_hash": base.process_trace_hash,
             "secrets_trace_hash": base.secrets_trace_hash,
             "shell_commands_hash": getattr(type_ev, "shell_commands_hash", None),
-        },
+        }),
         reference_records=records,
         reference_event_count=total,
     )
@@ -204,7 +212,7 @@ def prepare_mcp_server(bundle_bytes: bytes, nonce: str | None = None) -> BundleP
         nonce=nonce,
         canary_id=cid,
         canary_val=cval,
-        ground_truth={
+        ground_truth=_ground_truth_with_probe(nonce, {
             "canary_id": cid,
             "canary_val": cval,
             "network_trace_hash": base.network_trace_hash,
@@ -213,7 +221,7 @@ def prepare_mcp_server(bundle_bytes: bytes, nonce: str | None = None) -> BundleP
             "secrets_trace_hash": base.secrets_trace_hash,
             "tool_calls_hash": getattr(type_ev, "tool_calls_hash", None),
             "mcp_manifest_hash": getattr(type_ev, "mcp_manifest_hash", None),
-        },
+        }),
         reference_records=records,
         reference_event_count=total,
     )
@@ -239,7 +247,7 @@ def prepare_agent_composition(
         nonce=nonce,
         canary_id=cid,
         canary_val=cval,
-        ground_truth={
+        ground_truth=_ground_truth_with_probe(nonce, {
             "canary_id": cid,
             "canary_val": cval,
             "network_trace_hash": base.network_trace_hash,
@@ -249,7 +257,7 @@ def prepare_agent_composition(
             "agent_calls_hash": getattr(type_ev, "agent_calls_hash", None),
             "dependency_graph_hash": getattr(type_ev, "dependency_graph_hash", None),
             "transitive_risk_score": getattr(type_ev, "transitive_risk_score", None),
-        },
+        }),
         reference_records=records,
         reference_event_count=total,
     )

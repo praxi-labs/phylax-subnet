@@ -5,6 +5,12 @@ import gzip
 import json
 from dataclasses import dataclass, field
 
+from phylax.harness.probe_spec import (
+    ProbeSpec,
+    derive_probe,
+    verify_probe_evidence,
+    verify_probe_in_traces,
+)
 from phylax.harness.trace_normalisation import hash_jsonl_bytes
 from phylax.protocol import REQUIRED_TRACE_FILES, SkillType
 
@@ -102,6 +108,27 @@ def _signatures_for(filename: str, records: list[dict]) -> set[tuple]:
         for r in records:
             sigs.add((str(r.get("caller_skill", "")), str(r.get("callee_skill", ""))))
     return sigs
+
+
+def verify_probe(
+    nonce: str,
+    probe_evidence: dict | None,
+    fs_records: list[dict] | None = None,
+    network_records: list[dict] | None = None,
+    process_records: list[dict] | None = None,
+    runtime_type: bool = False,
+) -> tuple[bool, str, ProbeSpec]:
+    probe = derive_probe(nonce)
+    ok, reason = verify_probe_evidence(probe_evidence, probe)
+    if not ok:
+        return False, reason, probe
+    if runtime_type:
+        ok, reason = verify_probe_in_traces(
+            fs_records, network_records, process_records, probe,
+        )
+        if not ok:
+            return False, reason, probe
+    return True, "", probe
 
 
 def verify_trace_bundle(

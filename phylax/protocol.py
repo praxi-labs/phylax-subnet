@@ -297,6 +297,7 @@ class TaskMetadata(BaseModel):
     deadline_s: int = Field(ge=1)
     t_min_s: int = Field(ge=0)
     skill_type_version: str = SKILL_TYPE_VERSION
+    role: str = "primary"
 
 
 class InferenceConfig(BaseModel):
@@ -355,6 +356,11 @@ REQUIRED_TRACE_FILES: dict[SkillType, tuple[str, ...]] = {
 }
 
 
+class MinerRole(str, Enum):
+    PRIMARY = "primary"
+    AUDITOR = "auditor"
+
+
 class PhylaxSynapse(bt.Synapse):
     skill_bundle: SkillBundle
     nonce: str = ""
@@ -364,6 +370,8 @@ class PhylaxSynapse(bt.Synapse):
     attestation: dict | None = None
     trace_bundle: dict[str, str] | None = None
     sandbox_manifest: dict | None = None
+    probe_evidence: dict | None = None
+    analysis_proof: dict | None = None
     error: str | None = None
 
     def get_sssa(self) -> SSSA | None:

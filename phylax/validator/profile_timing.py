@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from phylax.protocol import SkillType, TestProfile
+from phylax.protocol import MinerRole, SkillType, TestProfile
 
 PROFILE_TIMING: dict[SkillType, dict[TestProfile, tuple[int, int]]] = {
     SkillType.RAG_KNOWLEDGE: {
@@ -36,7 +36,23 @@ PROFILE_TIMING: dict[SkillType, dict[TestProfile, tuple[int, int]]] = {
 }
 
 
-def resolve_timing(skill_type: SkillType, profile: TestProfile) -> tuple[int, int]:
+AUDITOR_TIMING: dict[SkillType, tuple[int, int]] = {
+    SkillType.RAG_KNOWLEDGE: (2, 15),
+    SkillType.DECLARATIVE: (3, 30),
+    SkillType.EXECUTABLE_PYTHON: (10, 90),
+    SkillType.EXECUTABLE_SCRIPT: (10, 90),
+    SkillType.MCP_SERVER: (20, 150),
+    SkillType.AGENT_COMPOSITION: (30, 240),
+}
+
+
+def resolve_timing(
+    skill_type: SkillType, profile: TestProfile, role: MinerRole = MinerRole.PRIMARY,
+) -> tuple[int, int]:
+    if role == MinerRole.AUDITOR:
+        timing = AUDITOR_TIMING.get(skill_type)
+        if timing:
+            return timing
     by_profile = PROFILE_TIMING.get(skill_type)
     if not by_profile:
         return 15, 150

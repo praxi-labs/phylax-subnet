@@ -53,6 +53,7 @@ from phylax.validator import (
     resolve_timing,
     verify_trace_bundle,
 )
+from phylax.validator.trace_verification import verify_probe
 
 logger = get_logger(__name__)
 
@@ -265,6 +266,25 @@ class PhylaxValidator:
                     bt.logging.warning(
                         f"trace verification failed for {hotkey[:10]} "
                         f"{task.skill_type.value}: {verification.reason}"
+                    )
+                    round_results.append(self._failure_record(hotkey, task))
+                    continue
+                fs_records = verification.decoded_records.get("fs.jsonl.gz", [])
+                network_records = verification.decoded_records.get("network.jsonl.gz", [])
+                process_records = verification.decoded_records.get("process.jsonl.gz", [])
+                runtime_type = bool(verification.decoded_records)
+                probe_ok, probe_reason, _ = verify_probe(
+                    prep.nonce,
+                    resp.probe_evidence,
+                    fs_records=fs_records,
+                    network_records=network_records,
+                    process_records=process_records,
+                    runtime_type=runtime_type,
+                )
+                if not probe_ok:
+                    bt.logging.warning(
+                        f"probe verification failed for {hotkey[:10]} "
+                        f"{task.skill_type.value}: {probe_reason}"
                     )
                     round_results.append(self._failure_record(hotkey, task))
                     continue
