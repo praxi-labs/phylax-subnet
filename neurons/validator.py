@@ -134,6 +134,7 @@ class PhylaxValidator:
         self._sandbox_images_by_hotkey: dict[str, dict[str, dict[str, str]]] = {}
         self._active_tasks_by_hotkey: dict[str, dict[str, dict[str, float]]] = {}
         self._per_miner_recent_bundles: dict[str, deque[str]] = {}
+        self._bounty_eligible_by_hotkey: dict[str, dict[str, bool]] = {}
 
         rerun_db = os.getenv(
             "PHYLAX_RERUN_QUEUE_PATH",
@@ -191,23 +192,26 @@ class PhylaxValidator:
             f"types={ {t.skill_type.value for t in round_tasks} }"
         )
 
-        prepared: list[tuple[RoundTask, object]] = []
-        for task in round_tasks:
-            depth = int(task.metadata.get("composition_depth") or self.DEFAULT_COMPOSITION_DEPTH)
+        async def _prep_one(_task: RoundTask) -> tuple[RoundTask, object] | None:
+            depth = int(_task.metadata.get("composition_depth") or self.DEFAULT_COMPOSITION_DEPTH)
             try:
-                prep = await asyncio.to_thread(
+                _prep = await asyncio.to_thread(
                     prepare_bundle,
-                    task.skill_type,
-                    task.bundle_bytes or b"",
-                    task.metadata.get("nonce"),
+                    _task.skill_type,
+                    _task.bundle_bytes or b"",
+                    _task.metadata.get("nonce"),
                     depth,
                 )
             except Exception as e:  # noqa: BLE001
                 bt.logging.warning(
-                    f"bundle preparation failed for {task.skill_type.value} task {task.task_id[:8]}: {e}"
+                    f"bundle preparation failed for {_task.skill_type.value} "
+                    f"task {_task.task_id[:8]}: {e}"
                 )
-                continue
-            prepared.append((task, prep))
+                return None
+            return _task, _prep
+
+        prep_results = await asyncio.gather(*(_prep_one(t) for t in round_tasks))
+        prepared: list[tuple[RoundTask, object]] = [r for r in prep_results if r is not None]
 
         if not prepared:
             bt.logging.info(f"round {round_id[:8]}: every task failed preparation; skipping")
@@ -224,6 +228,11 @@ class PhylaxValidator:
             if len(self._recent_bundle_hashes) > 256:
                 self._recent_bundle_hashes = self._recent_bundle_hashes[-256:]
             candidate_miners = await self._route_miners_for_skill_type(task.skill_type, task.task_type)
+            flagged = self.collusion_tracker.flagged_hotkeys()
+            if flagged:
+                candidate_miners = [
+                    (hk, uid) for hk, uid in candidate_miners if hk not in flagged
+                ]
             filtered = self._filter_dispatchable_miners(
                 candidate_miners, task, prep, per_type_rep,
             )
@@ -290,6 +299,16 @@ class PhylaxValidator:
                 if not self._validate_sssa(sssa, task, hotkey):
                     round_results.append(self._failure_record(hotkey, task))
                     continue
+                if role == MinerRole.PRIMARY and REQUIRED_TRACE_FILES.get(task.skill_type):
+                    if not self._sandbox_digest_matches_registration(
+                        hotkey, task.skill_type, resp.sandbox_manifest,
+                    ):
+                        bt.logging.warning(
+                            f"sandbox digest mismatch for {hotkey[:10]} "
+                            f"{task.skill_type.value}: manifest digest != registered image_hash"
+                        )
+                        round_results.append(self._failure_record(hotkey, task))
+                        continue
                 submitted_hashes = self._extract_submitted_hashes(sssa)
                 fs_records: list[dict] = []
                 network_records: list[dict] = []
@@ -459,9 +478,34 @@ class PhylaxValidator:
         )
 
         self._append_coverage_violations(round_results, miner_types_responded)
+        self._scan_collusion_flags(round_results)
         self._publish_round_results(round_id, per_miner_payload)
         self._push_reputation_updates(round_results)
         self.last_completed_round_id = round_id
+
+    def _scan_collusion_flags(self, round_results: list[dict]) -> None:
+        hotkeys_seen: set[tuple[str, str]] = set()
+        for r in round_results:
+            hk = r.get("hotkey")
+            st = r.get("skill_type")
+            if not hk or not st:
+                continue
+            if (hk, st) in hotkeys_seen:
+                continue
+            hotkeys_seen.add((hk, st))
+            verdict = self.collusion_tracker.evaluate(hk, st)
+            if verdict.flagged:
+                count = self.collusion_tracker.add_flag(
+                    hk,
+                    reason=f"primary_agreement={verdict.primary_agreement:.2f} "
+                    f"auditor_agreement={verdict.auditor_agreement:.2f} "
+                    f"samples={verdict.samples}",
+                )
+                bt.logging.warning(
+                    f"collusion flag {count} for {hk[:10]} {st}: "
+                    f"primary_agr={verdict.primary_agreement:.2f} "
+                    f"auditor_agr={verdict.auditor_agreement:.2f}"
+                )
 
     def _append_coverage_violations(
         self,
@@ -586,6 +630,9 @@ class PhylaxValidator:
             sandbox_image = entry.get("sandbox_image")
             if isinstance(sandbox_image, dict):
                 self._sandbox_images_by_hotkey.setdefault(hotkey, {})[skill_type.value] = sandbox_image
+            self._bounty_eligible_by_hotkey.setdefault(hotkey, {})[skill_type.value] = bool(
+                entry.get("bounty_eligible", False)
+            )
             out.append((hotkey, uid))
         return out
 
@@ -848,6 +895,9 @@ class PhylaxValidator:
         rep = per_type_rep.get(hotkey, {}).get(skill_type.value, 0.0)
         if rep < 0.85:
             return False
+        server_signal = self._bounty_eligible_by_hotkey.get(hotkey, {}).get(skill_type.value)
+        if server_signal is False:
+            return False
         return True
 
     def _filter_dispatchable_miners(
@@ -930,6 +980,22 @@ class PhylaxValidator:
         if cached:
             return cached
         return None
+
+    def _sandbox_digest_matches_registration(
+        self, hotkey: str, skill_type: SkillType, manifest: dict | None,
+    ) -> bool:
+        if not manifest:
+            return False
+        submitted = str(manifest.get("digest", "")).strip()
+        if not submitted:
+            return False
+        registered = self._lookup_registered_sandbox_image(hotkey, skill_type)
+        if not registered:
+            return True
+        expected = str(registered.get("image_hash", "")).strip()
+        if not expected:
+            return True
+        return submitted == expected
 
     def _submit_rerun_outcomes(self, outcomes: list) -> None:
         if self.server_client is None or not outcomes:
