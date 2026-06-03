@@ -178,7 +178,8 @@ if [ -z "$IMG" ]; then
 fi
 
 SRC="$(cd "$(dirname "$0")/src" && pwd)"
-DOCKERFILE="$SRC/phylax/harness/$SKILL/container/Dockerfile"
+CONTAINER_DIR="$SRC/phylax/harness/$SKILL/container"
+DOCKERFILE="$CONTAINER_DIR/Dockerfile"
 
 if [ ! -f "$DOCKERFILE" ]; then
   echo "ERROR: Dockerfile not found at $DOCKERFILE" >&2
@@ -187,7 +188,7 @@ if [ ! -f "$DOCKERFILE" ]; then
 fi
 
 echo "==> Building $IMG from $DOCKERFILE"
-docker build -t "$IMG" -f "$DOCKERFILE" "$SRC"
+docker build -t "$IMG" -f "$DOCKERFILE" "$CONTAINER_DIR"
 
 echo "==> Pushing $IMG"
 docker push "$IMG"
