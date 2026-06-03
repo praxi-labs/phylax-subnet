@@ -57,7 +57,7 @@ This drops the install layout at `~/phylax/miner/`:
     └── scripts/        ← helper scripts (build-sandbox.sh, register.sh, register_miner.py)
 ```
 
-Edit `~/phylax/miner/.env` and set every key in the table below. The miner will not start, register, or score without all of these:
+Edit `~/phylax/miner/.env` and set every key in the table below. **Add any key that is not already in the file.** The shipped `.env.example` leaves the miner-specific keys blank on purpose so the registration script can flag them by name. The miner will not start, register, or score without all of these:
 
 | Variable | What to set | Where it comes from |
 |---|---|---|
