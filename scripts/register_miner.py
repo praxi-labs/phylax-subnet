@@ -43,6 +43,15 @@ def require(env: dict[str, str], key: str) -> str:
     return val
 
 
+def require_any(env: dict[str, str], *keys: str) -> str:
+    """Return the first non-empty value for any of the given keys."""
+    for k in keys:
+        v = env.get(k, "").strip()
+        if v:
+            return v
+    sys.exit(f"ERROR: none of {keys} is set in .env (set one)")
+
+
 def load_keypair(bittensor_dir: str, wallet_name: str, hotkey_name: str):
     try:
         from substrateinterface import Keypair  # type: ignore
@@ -82,7 +91,7 @@ def main() -> int:
 
     env = load_env(env_path)
 
-    coordinator = require(env, "PHYLAX_COORDINATOR_URL").rstrip("/")
+    coordinator = require_any(env, "PHYLAX_COORDINATOR_URL", "PHYLAX_SERVER_URL").rstrip("/")
     wallet_name = require(env, "WALLET_NAME")
     hotkey_name = env.get("WALLET_HOTKEY", "default").strip() or "default"
     bittensor_dir = env.get("BITTENSOR_DIR", "~/.bittensor")
