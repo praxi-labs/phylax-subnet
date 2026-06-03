@@ -146,90 +146,8 @@ if [ "$ROLE" = "miner" ]; then
   fi
 
   if [ -d "$SRC_DIR" ]; then
-    cat > "$TARGET/build-sandbox.sh" <<'BUILDSH'
-#!/usr/bin/env bash
-# build-sandbox.sh — build a custom sandbox image from the cloned source.
-#
-# Usage:
-#   ./build-sandbox.sh <skill_type> <registry/image>:<tag>
-#
-# Example:
-#   ./build-sandbox.sh executable_python ghcr.io/myorg/phylax-sandbox-python:v1
-#
-# After build + push, copy the printed digest into .env as PHYLAX_SANDBOX_DIGEST
-# and run: docker compose up -d --force-recreate
-
-set -euo pipefail
-
-SKILL="${1:-}"
-IMG="${2:-}"
-
-case "$SKILL" in
-  executable_python|executable_script|mcp_server|agent_composition) ;;
-  *)
-    echo "Usage: $0 <executable_python|executable_script|mcp_server|agent_composition> <registry/image>:<tag>" >&2
-    exit 2
-    ;;
-esac
-
-if [ -z "$IMG" ]; then
-  echo "ERROR: target image tag required, e.g. ghcr.io/<you>/phylax-sandbox-python:v1" >&2
-  exit 2
-fi
-
-SRC="$(cd "$(dirname "$0")/src" && pwd)"
-CONTAINER_DIR="$SRC/phylax/harness/$SKILL/container"
-DOCKERFILE="$CONTAINER_DIR/Dockerfile"
-
-if [ ! -f "$DOCKERFILE" ]; then
-  echo "ERROR: Dockerfile not found at $DOCKERFILE" >&2
-  echo "       Make sure source is cloned at $(dirname "$0")/src" >&2
-  exit 1
-fi
-
-echo "==> Building $IMG from $DOCKERFILE"
-docker build -t "$IMG" -f "$DOCKERFILE" "$CONTAINER_DIR"
-
-echo "==> Pushing $IMG"
-docker push "$IMG"
-
-DIGEST="$(docker inspect --format='{{index .RepoDigests 0}}' "$IMG" | awk -F'@' '{print $2}')"
-
-cat <<EOM
-
-==> Built and pushed successfully.
-
-   Image:  $IMG
-   Digest: $DIGEST
-
-Update your .env with:
-
-   PHYLAX_SANDBOX_IMAGE=$IMG
-   PHYLAX_SANDBOX_DIGEST=$DIGEST
-
-Then restart the miner:
-
-   docker compose up -d --force-recreate
-
-EOM
-BUILDSH
-    chmod +x "$TARGET/build-sandbox.sh"
-    echo "==> Wrote helper: $TARGET/build-sandbox.sh"
-
-    cat > "$TARGET/register.sh" <<'REGSH'
-#!/usr/bin/env bash
-# register.sh — declare this miner's specialization with the coordinator.
-#
-# Reads PHYLAX_COORDINATOR_URL, WALLET_NAME, WALLET_HOTKEY,
-# PHYLAX_SUPPORTED_TYPES, PHYLAX_SANDBOX_IMAGE, PHYLAX_SANDBOX_DIGEST
-# from .env in this directory. Run once after editing .env, and re-run
-# whenever you change supported types or rebuild the sandbox image.
-set -euo pipefail
-HERE="$(cd "$(dirname "$0")" && pwd)"
-python3 "$HERE/src/scripts/register_miner.py" "$HERE/.env"
-REGSH
-    chmod +x "$TARGET/register.sh"
-    echo "==> Wrote helper: $TARGET/register.sh"
+    chmod +x "$SRC_DIR/scripts/"*.sh 2>/dev/null || true
+    chmod +x "$SRC_DIR/scripts/"*.py 2>/dev/null || true
   fi
 fi
 
@@ -245,24 +163,16 @@ Files:
   $TARGET/docker-compose.yml   compose stack
   $TARGET/.env                 your config (edit before first run)
   $TARGET/evidence/            bind mount for sandbox trace output
-  $TARGET/src/                 phylax-subnet source (edit phylax/harness/*/runner.py to customise)
-  $TARGET/build-sandbox.sh     helper to build + push a custom sandbox image
+  $TARGET/src/                 phylax-subnet source
+  $TARGET/src/scripts/         helper scripts (build-sandbox.sh, register.sh, register_miner.py)
 
-To run with the reference harness (Tier 1):
-  cd $TARGET
-  # edit .env and set WALLET_NAME, WALLET_HOTKEY, PHYLAX_COORDINATOR_URL,
-  # PHYLAX_SUPPORTED_TYPES, PHYLAX_SANDBOX_IMAGE, PHYLAX_SANDBOX_DIGEST
-  docker compose pull
-  docker compose up -d
-  docker compose logs -f
+Next steps are in the miner guide: https://phylax.mintlify.app/guides/miner
 
-To customise a runner (Tier 2/3):
-  cd $TARGET/src
-  \$EDITOR phylax/harness/executable_python/runner.py
+Common commands:
   cd $TARGET
-  ./build-sandbox.sh executable_python ghcr.io/<you>/phylax-sandbox-python:v1
-  # copy the printed PHYLAX_SANDBOX_DIGEST into .env, then:
-  docker compose up -d --force-recreate
+  docker compose pull && docker compose up -d
+  ./src/scripts/build-sandbox.sh executable_python <registry>/<you>/phylax-sandbox-python:v1
+  ./src/scripts/register.sh
 
 EOF
 else
