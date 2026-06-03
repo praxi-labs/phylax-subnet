@@ -215,6 +215,21 @@ EOM
 BUILDSH
     chmod +x "$TARGET/build-sandbox.sh"
     echo "==> Wrote helper: $TARGET/build-sandbox.sh"
+
+    cat > "$TARGET/register.sh" <<'REGSH'
+#!/usr/bin/env bash
+# register.sh — declare this miner's specialization with the coordinator.
+#
+# Reads PHYLAX_COORDINATOR_URL, WALLET_NAME, WALLET_HOTKEY,
+# PHYLAX_SUPPORTED_TYPES, PHYLAX_SANDBOX_IMAGE, PHYLAX_SANDBOX_DIGEST
+# from .env in this directory. Run once after editing .env, and re-run
+# whenever you change supported types or rebuild the sandbox image.
+set -euo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
+python3 "$HERE/src/scripts/register_miner.py" "$HERE/.env"
+REGSH
+    chmod +x "$TARGET/register.sh"
+    echo "==> Wrote helper: $TARGET/register.sh"
   fi
 fi
 
