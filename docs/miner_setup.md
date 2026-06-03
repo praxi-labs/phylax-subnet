@@ -95,8 +95,8 @@ You decide which skill types to support. No one assigns them. Pick what you have
 
 Two rules apply when you register your specialization:
 
-- You must declare at least two skill types.
-- At least one declared type must be `executable_python`, `executable_script`, `mcp_server`, or `agent_composition`. You cannot earn only from `rag_knowledge` and `declarative`.
+- `declarative` is mandatory and automatic. Every miner declares it. The register helper and the server both inject it for you. You only put the EXTRA types in `PHYLAX_SUPPORTED_TYPES`.
+- You must declare at least one other type, and `rag_knowledge` does not count on its own. So `PHYLAX_SUPPORTED_TYPES` must contain at least one of: `executable_python`, `executable_script`, `mcp_server`, `agent_composition` (or `rag_knowledge` plus one of those four).
 
 
 ## 4. Build Your Pipeline

@@ -97,6 +97,11 @@ def main() -> int:
     bittensor_dir = env.get("BITTENSOR_DIR", "~/.bittensor")
 
     supported = [t.strip() for t in require(env, "PHYLAX_SUPPORTED_TYPES").split(",") if t.strip()]
+    # declarative is the default skill type for every miner. Inject it if
+    # the operator did not list it explicitly so the server's same rule sees
+    # a consistent payload.
+    if "declarative" not in supported:
+        supported.append("declarative")
     sandbox_image = require(env, "PHYLAX_SANDBOX_IMAGE")
     sandbox_digest = require(env, "PHYLAX_SANDBOX_DIGEST")
     if not sandbox_digest.startswith("sha256:"):
