@@ -46,16 +46,38 @@ btcli wallet overview --wallet.name miner --subtensor.network test
 curl -fsSL https://raw.githubusercontent.com/praxi-labs/phylax-subnet/main/scripts/install.sh | bash -s miner
 ```
 
-Edit `~/phylax/miner/.env`:
+This drops the install layout at `~/phylax/miner/`:
 
-| Variable | What to set |
-|---|---|
-| `PHYLAX_NETUID` | `486` |
-| `SUBTENSOR_NETWORK` | `test` |
-| `WALLET_NAME` | folder name in `~/.bittensor/wallets/` |
-| `WALLET_HOTKEY` | `default` (or the hotkey you registered) |
-| `PHYLAX_SERVER_URL` | `https://<phylax-server-host>` |
-| `PHYLAX_SERVER_HOTKEY` | hex from `curl $PHYLAX_SERVER_URL/v1/server-identity` |
+```
+~/phylax/miner/
+├── docker-compose.yml
+├── .env                ← edit this
+├── evidence/           ← bind mount for sandbox traces
+└── src/                ← full source clone
+    └── scripts/        ← helper scripts (build-sandbox.sh, register.sh, register_miner.py)
+```
+
+Edit `~/phylax/miner/.env` and set every key in the table below. The miner will not start, register, or score without all of these:
+
+| Variable | What to set | Where it comes from |
+|---|---|---|
+| `PHYLAX_NETUID` | `486` | testnet |
+| `SUBTENSOR_NETWORK` | `test` | testnet |
+| `WALLET_NAME` | folder name in `~/.bittensor/wallets/` | `btcli wallet create` step |
+| `WALLET_HOTKEY` | `default` (or the hotkey you registered) | `btcli wallet create` step |
+| `PHYLAX_SERVER_URL` | `https://54-225-20-32.nip.io` | testnet coordinator |
+| `PHYLAX_SERVER_HOTKEY` | `a53f8e390446e31cd077517e44e585c0e0474bbd5b1db5864c52fb07bcbe541c` | pinned anti-impersonation key |
+| `PHYLAX_SUPPORTED_TYPES` | comma list, e.g. `executable_python,declarative` | which types you'll serve (see step 3) |
+| `PHYLAX_SANDBOX_IMAGE` | e.g. `docker.io/<you>/phylax-sandbox-python:v1` | set after step 5 |
+| `PHYLAX_SANDBOX_DIGEST` | `sha256:...` of the image above | set after step 5 |
+
+Optional but useful:
+
+| Variable | Default | Description |
+|---|---|---|
+| `PHYLAX_MIN_PROFILE` | `standard` | Lowest task profile you'll accept |
+| `PHYLAX_MAX_CONCURRENT_TASKS` | `2` | Throttle concurrent dispatches |
+| `PHYLAX_TIER_CLAIM` | `reference` | Informational. Real tier is set by your scores. |
 
 
 ## 3. Choose Your Skill Types
@@ -81,16 +103,16 @@ Two rules apply when you register your specialization:
 
 The reference repo ships a working harness for every skill type. Each harness satisfies the structural contract out of the box and earns Tier 1 (Reference) emissions. Replacing the internals with your own analysis logic is how you reach Tier 2 (Optimised) or Tier 3 (Novel) and earn more.
 
-For each skill type you chose, open the corresponding runner and container files and build your analysis logic inside them.
+All paths below are relative to `~/phylax/miner/`. For each skill type you chose, open the corresponding runner and container files and build your analysis logic inside them.
 
 | Skill type | Runner file to edit | Sandbox container to edit |
 |---|---|---|
-| `rag_knowledge` | `phylax/harness/rag_knowledge/runner.py` | none |
-| `declarative` | `phylax/harness/declarative/runner.py` | none |
-| `executable_python` | `phylax/harness/executable_python/runner.py` | `phylax/harness/executable_python/container/` |
-| `executable_script` | `phylax/harness/executable_script/runner.py` | `phylax/harness/executable_script/container/` |
-| `mcp_server` | `phylax/harness/mcp_server/runner.py` | `phylax/harness/mcp_server/container/` |
-| `agent_composition` | `phylax/harness/agent_composition/runner.py` | `phylax/harness/agent_composition/container/` |
+| `rag_knowledge` | `src/phylax/harness/rag_knowledge/runner.py` | none |
+| `declarative` | `src/phylax/harness/declarative/runner.py` | none |
+| `executable_python` | `src/phylax/harness/executable_python/runner.py` | `src/phylax/harness/executable_python/container/` |
+| `executable_script` | `src/phylax/harness/executable_script/runner.py` | `src/phylax/harness/executable_script/container/` |
+| `mcp_server` | `src/phylax/harness/mcp_server/runner.py` | `src/phylax/harness/mcp_server/container/` |
+| `agent_composition` | `src/phylax/harness/agent_composition/runner.py` | `src/phylax/harness/agent_composition/container/` |
 
 Each runner exposes a `run(bundle_dir, nonce, canary_id, canary_val)` method. As long as your replacement returns the same dataclass shape and emits the required trace files into the evidence directory, the miner glue code does not care what is inside.
 
@@ -103,66 +125,84 @@ For runtime types (`executable_python`, `executable_script`, `mcp_server`, `agen
 
 ## 5. Build and Tag Your Sandbox Image
 
-Once your container is ready, build and tag it:
+You'll need to be logged into your container registry first. Any public registry works (Docker Hub, GHCR, Quay, ECR Public).
 
 ```bash
-docker build -t my-sandbox:custom -f phylax/harness/executable_python/container/Dockerfile .
+docker login                       # Docker Hub
+# or:  docker login ghcr.io        # GitHub Container Registry
+# or:  docker login quay.io
 ```
 
-Get the content-addressable digest:
+The namespace in your image tag must match the username you logged in with. `docker.io/alice/<repo>` can only be pushed by `alice`. Mismatched namespace produces `push access denied ... insufficient_scope`.
+
+Then run the helper script:
 
 ```bash
-docker inspect --format='{{index .RepoDigests 0}}' my-sandbox:custom
+cd ~/phylax/miner
+./src/scripts/build-sandbox.sh executable_python docker.io/<you>/phylax-sandbox-python:v1
 ```
 
-Push it to a registry that validators can pull from publicly:
+It builds the Dockerfile at `src/phylax/harness/<skill>/container/Dockerfile`, pushes it, and prints both the image URI and its `sha256:` digest. Paste both into `.env`:
 
 ```bash
-docker tag my-sandbox:custom ghcr.io/<you>/phylax-sandbox-python:v1
-docker push ghcr.io/<you>/phylax-sandbox-python:v1
+PHYLAX_SANDBOX_IMAGE=docker.io/<you>/phylax-sandbox-python:v1
+PHYLAX_SANDBOX_DIGEST=sha256:<digest from the helper output>
 ```
 
-Update your `.env` to point the miner at your image:
+Repeat for each runtime skill type you plan to declare. `rag_knowledge` and `declarative` do not need sandbox images.
+
+For GHCR specifically, after the first push you must mark the package as **Public** on the GitHub UI, otherwise validators get 403 when they try to pull. Docker Hub repos are public by default for free accounts.
+
+Verify your image is anonymously pullable before moving on:
 
 ```bash
-PHYLAX_SANDBOX_IMAGE=ghcr.io/<you>/phylax-sandbox-python:v1
-PHYLAX_SANDBOX_DIGEST=sha256:<digest from above>
+docker logout
+docker pull docker.io/<you>/phylax-sandbox-python:v1     # should succeed with no creds
+docker login                                              # log back in for next time
 ```
-
-You must do this for each runtime skill type you plan to declare. `rag_knowledge` and `declarative` do not need sandbox images.
 
 
 ## 6. Register Your Specialization
 
-phylax-server only routes tasks to miners with a current specialization on file. You register once and re-register whenever you update your image or add a new skill type.
+The coordinator only routes tasks to miners with a current specialization on file. The helper script reads your `.env`, signs the request with your hotkey, and POSTs it.
+
+First-time only, install the signing dependency:
 
 ```bash
-curl -X POST "$PHYLAX_SERVER_URL/v1/specialization/register" \
-  -H "Content-Type: application/json" \
-  -H "X-Phylax-Hotkey: <your-ss58-address>" \
-  -H "X-Phylax-Timestamp: $(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
-  -H "X-Phylax-Signature: ed25519:<hex-sig-of-canonical-body>" \
-  -d '{
-    "hotkey": "<your-ss58-address>",
-    "registration_version": "2.0",
-    "specialization": {
-      "supported_types": ["executable_python", "declarative"],
-      "sandbox_images": {
-        "executable_python": {
-          "image_uri":  "ghcr.io/<you>/phylax-sandbox-python:v1",
-          "image_hash": "sha256:abc123..."
-        }
-      },
-      "min_profile": "standard",
-      "max_concurrent_tasks": 2,
-      "implementation_tier_claim": "reference"
-    }
-  }'
+pip3 install --user substrate-interface
 ```
 
-Every runtime type you declare requires a matching entry in `sandbox_images` with `image_uri` and `image_hash`. Missing entries will cause registration to be rejected. The `image_hash` must be the content-addressable digest starting with `sha256:`. Validators will pull and rerun this exact image to verify your traces, so the digest must match what is actually in your registry.
+Then register:
 
-`implementation_tier_claim` is informational only. Your actual tier is determined by your SSSA quality and validator rerun results.
+```bash
+cd ~/phylax/miner
+./src/scripts/register.sh
+```
+
+Expected output:
+
+```
+==> POST https://54-225-20-32.nip.io/v1/specialization/register
+    hotkey: 5DLAsRvT...
+    types:  ['executable_python', 'declarative']
+    image:  docker.io/<you>/phylax-sandbox-python:v1
+    digest: sha256:abc123...
+==> 200 OK
+{"hotkey":"...","supported_types":[...],"sandbox_images":{...},"reputation":{...}}
+```
+
+Re-run this whenever you change `PHYLAX_SUPPORTED_TYPES` or rebuild the sandbox image.
+
+If you serve multiple runtime types and use a different image per type, edit `.env` between runs (set `PHYLAX_SUPPORTED_TYPES` to one type and update image/digest), then call `./src/scripts/register.sh` after each.
+
+Common errors:
+
+| Error | Cause |
+|---|---|
+| `PHYLAX_SUPPORTED_TYPES is not set` | Add the line to `.env`. |
+| `401 invalid signature` | `.env` `WALLET_NAME`/`WALLET_HOTKEY` doesn't match the wallet you registered on chain. |
+| `403 hotkey not on allowlist` | Coordinator operator hasn't added your hotkey. |
+| `400 sandbox_image must be sha256:` | Your `PHYLAX_SANDBOX_DIGEST` is missing the `sha256:` prefix. |
 
 
 ## 7. Run
