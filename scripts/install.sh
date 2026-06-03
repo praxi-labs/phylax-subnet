@@ -121,9 +121,136 @@ EOF
 fi
 
 # ---------------------------------------------------------------------------
+# Miner-only: clone source so the operator can customise the harness runners
+# and rebuild a sandbox image. Validators do not need source on disk.
+# ---------------------------------------------------------------------------
+if [ "$ROLE" = "miner" ]; then
+  SRC_DIR="$TARGET/src"
+  REPO_URL_GIT="https://github.com/praxi-labs/phylax-subnet.git"
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    REPO_URL_GIT="https://${GITHUB_TOKEN}@github.com/praxi-labs/phylax-subnet.git"
+  fi
+
+  if [ -d "$SRC_DIR/.git" ]; then
+    echo "==> Updating existing source at $SRC_DIR"
+    git -C "$SRC_DIR" pull --ff-only origin main || \
+      echo "==> WARNING: git pull failed; leaving existing source as-is"
+  else
+    echo "==> Cloning phylax-subnet source into $SRC_DIR (for harness customisation)"
+    if ! git clone --depth 1 "$REPO_URL_GIT" "$SRC_DIR" 2>/dev/null; then
+      echo "==> WARNING: git clone failed."
+      echo "    If the repo is private, export GITHUB_TOKEN first and re-run."
+      echo "    You can still run the miner with the reference image; you just won't"
+      echo "    be able to customise the harness from this host."
+    fi
+  fi
+
+  if [ -d "$SRC_DIR" ]; then
+    cat > "$TARGET/build-sandbox.sh" <<'BUILDSH'
+#!/usr/bin/env bash
+# build-sandbox.sh — build a custom sandbox image from the cloned source.
+#
+# Usage:
+#   ./build-sandbox.sh <skill_type> <registry/image>:<tag>
+#
+# Example:
+#   ./build-sandbox.sh executable_python ghcr.io/myorg/phylax-sandbox-python:v1
+#
+# After build + push, copy the printed digest into .env as PHYLAX_SANDBOX_DIGEST
+# and run: docker compose up -d --force-recreate
+
+set -euo pipefail
+
+SKILL="${1:-}"
+IMG="${2:-}"
+
+case "$SKILL" in
+  executable_python|executable_script|mcp_server|agent_composition) ;;
+  *)
+    echo "Usage: $0 <executable_python|executable_script|mcp_server|agent_composition> <registry/image>:<tag>" >&2
+    exit 2
+    ;;
+esac
+
+if [ -z "$IMG" ]; then
+  echo "ERROR: target image tag required, e.g. ghcr.io/<you>/phylax-sandbox-python:v1" >&2
+  exit 2
+fi
+
+SRC="$(cd "$(dirname "$0")/src" && pwd)"
+DOCKERFILE="$SRC/phylax/harness/$SKILL/container/Dockerfile"
+
+if [ ! -f "$DOCKERFILE" ]; then
+  echo "ERROR: Dockerfile not found at $DOCKERFILE" >&2
+  echo "       Make sure source is cloned at $(dirname "$0")/src" >&2
+  exit 1
+fi
+
+echo "==> Building $IMG from $DOCKERFILE"
+docker build -t "$IMG" -f "$DOCKERFILE" "$SRC"
+
+echo "==> Pushing $IMG"
+docker push "$IMG"
+
+DIGEST="$(docker inspect --format='{{index .RepoDigests 0}}' "$IMG" | awk -F'@' '{print $2}')"
+
+cat <<EOM
+
+==> Built and pushed successfully.
+
+   Image:  $IMG
+   Digest: $DIGEST
+
+Update your .env with:
+
+   PHYLAX_SANDBOX_IMAGE=$IMG
+   PHYLAX_SANDBOX_DIGEST=$DIGEST
+
+Then restart the miner:
+
+   docker compose up -d --force-recreate
+
+EOM
+BUILDSH
+    chmod +x "$TARGET/build-sandbox.sh"
+    echo "==> Wrote helper: $TARGET/build-sandbox.sh"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # Done
 # ---------------------------------------------------------------------------
-cat <<EOF
+if [ "$ROLE" = "miner" ]; then
+  cat <<EOF
+
+==> Installed at: $TARGET
+
+Files:
+  $TARGET/docker-compose.yml   compose stack
+  $TARGET/.env                 your config (edit before first run)
+  $TARGET/evidence/            bind mount for sandbox trace output
+  $TARGET/src/                 phylax-subnet source (edit phylax/harness/*/runner.py to customise)
+  $TARGET/build-sandbox.sh     helper to build + push a custom sandbox image
+
+To run with the reference harness (Tier 1):
+  cd $TARGET
+  # edit .env and set WALLET_NAME, WALLET_HOTKEY, PHYLAX_COORDINATOR_URL,
+  # PHYLAX_SUPPORTED_TYPES, PHYLAX_SANDBOX_IMAGE, PHYLAX_SANDBOX_DIGEST
+  docker compose pull
+  docker compose up -d
+  docker compose logs -f
+
+To customise a runner (Tier 2/3):
+  cd $TARGET/src
+  \$EDITOR phylax/harness/executable_python/runner.py
+  cd $TARGET
+  ./build-sandbox.sh executable_python ghcr.io/<you>/phylax-sandbox-python:v1
+  # copy the printed PHYLAX_SANDBOX_DIGEST into .env, then:
+  docker compose up -d --force-recreate
+
+EOF
+else
+  cat <<EOF
 
 ==> Installed at: $TARGET
 
@@ -134,3 +261,4 @@ Next:
   docker compose logs -f
 
 EOF
+fi
