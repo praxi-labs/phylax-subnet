@@ -1,8 +1,10 @@
 # Core
-# bittensor pinned because validator and miner must agree on the synapse wire
-# format. v9 and v10 dendrite encodings are not compatible — mismatched
-# versions surface as SynapseParsingError on the receiving axon.
-bittensor==10.4.0
+# bittensor is intentionally unpinned here; the validator and miner
+# Dockerfiles force-reinstall the testnet-compatible stack on top of
+# requirements.txt. See docker/Dockerfile.validator and docker/Dockerfile.miner
+# for the actual pins (bittensor 9.12.2, async-substrate-interface <2,
+# cyscale in place of scalecodec). They must match between the two images.
+bittensor
 pydantic
 torch
 numpy

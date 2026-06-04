@@ -58,7 +58,8 @@ RUN pip install --force-reinstall \
         'bittensor-wallet>=4.1.0' \
         'async-substrate-interface<2' \
  && pip uninstall -y scalecodec cyscale \
- && pip install cyscale
+ && pip install --no-deps cyscale \
+ && pip uninstall -y scalecodec
 
 COPY . .
 RUN pip install -e .
