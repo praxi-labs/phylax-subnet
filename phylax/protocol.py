@@ -261,23 +261,34 @@ class SSSA(BaseModel):
 
 
 class BundleMetadata(BaseModel):
-    skill_name: str
+    # Defaults make this default-constructible so bittensor's Synapse.from_headers()
+    # can build a placeholder from an empty header dict (the actual data arrives
+    # later via the request body). Validators below still enforce the contract
+    # whenever a non-default value is supplied.
+    skill_name: str = ""
     skill_version: str = "unknown"
-    skill_type: SkillType
+    skill_type: SkillType = SkillType.DECLARATIVE
     profile: TestProfile = TestProfile.STANDARD
     composition_depth: int | None = None
     child_skill_hashes: list[str] = Field(default_factory=list)
 
 
 class SkillBundle(BaseModel):
-    bundle_hash: str
+    # Same reason as BundleMetadata: all input fields need defaults so the
+    # bittensor axon can `from_headers({})` without exploding before the body
+    # parser fills in the real data.
+    bundle_hash: str = ""
     bundle_url: str | None = None
     bundle_bytes: bytes | None = None
-    metadata: BundleMetadata
+    metadata: BundleMetadata = Field(default_factory=BundleMetadata)
 
     @field_validator("bundle_hash")
     @classmethod
     def _hash_shape(cls, v: str) -> str:
+        # Empty string is the placeholder used by from_headers; only validate
+        # the format when an actual value is supplied.
+        if v == "":
+            return v
         if not v.startswith("sha256:") or len(v) != 71:
             raise ValueError("bundle_hash must be 'sha256:<64 hex chars>'")
         return v
@@ -297,10 +308,14 @@ class SkillBundle(BaseModel):
 
 
 class TaskMetadata(BaseModel):
-    task_id: str
-    task_type: TaskType
-    deadline_s: int = Field(ge=1)
-    t_min_s: int = Field(ge=0)
+    # Defaults make this default-constructible (see BundleMetadata).
+    # deadline_s used to enforce ge=1 unconditionally; we keep that bound
+    # but seed a placeholder of 1 so an empty-dict init still passes. The
+    # actual deadline arrives via the request body and overrides this.
+    task_id: str = ""
+    task_type: TaskType = TaskType.SERVER_CURATED
+    deadline_s: int = Field(default=1, ge=1)
+    t_min_s: int = Field(default=0, ge=0)
     skill_type_version: str = SKILL_TYPE_VERSION
     role: str = "primary"
 
