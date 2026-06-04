@@ -16,9 +16,9 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
-import os
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -136,7 +136,16 @@ def main() -> int:
     signature = sign("POST", path, timestamp, body, keypair)
 
     url = coordinator + path
-    req = urllib.request.Request(url, data=body, method="POST")
+    # Refuse anything that isn't plain HTTP(S). Closes ruff S310 by making the
+    # scheme an explicit gate rather than relying on user input.
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        sys.exit(
+            f"ERROR: PHYLAX_COORDINATOR_URL / PHYLAX_SERVER_URL must use http or https, "
+            f"got scheme={parsed.scheme!r}"
+        )
+
+    req = urllib.request.Request(url, data=body, method="POST")  # noqa: S310
     req.add_header("Content-Type", "application/json")
     req.add_header("X-Phylax-Hotkey", hotkey_ss58)
     req.add_header("X-Phylax-Timestamp", timestamp)
@@ -149,7 +158,7 @@ def main() -> int:
     print(f"    digest: {sandbox_digest[:24]}...")
 
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
             data = resp.read().decode("utf-8")
             print(f"==> {resp.status} {resp.reason}")
             print(data)
@@ -158,8 +167,8 @@ def main() -> int:
         print(f"==> {exc.code} {exc.reason}", file=sys.stderr)
         try:
             print(exc.read().decode("utf-8"), file=sys.stderr)
-        except Exception:
-            pass
+        except OSError as read_exc:
+            print(f"    (could not read response body: {read_exc})", file=sys.stderr)
         return 1
     except urllib.error.URLError as exc:
         print(f"==> URL error: {exc.reason}", file=sys.stderr)
