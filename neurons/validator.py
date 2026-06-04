@@ -921,12 +921,27 @@ class PhylaxValidator:
         is_bounty = bool(getattr(task, "is_bounty", False))
         for hotkey, uid in candidates:
             if self._miner_saw_bundle_recently(hotkey, prep.bundle_hash):
+                bt.logging.warning(
+                    f"PROBE F1 saw-bundle-recently: hk={hotkey[:10]} {task.skill_type.value} "
+                    f"bundle={prep.bundle_hash[:16]} history_len={len(self._per_miner_recent_bundles.get(hotkey, []))}"
+                )
                 continue
             if is_bounty:
                 if not self._is_bounty_eligible(hotkey, task.skill_type, per_type_rep):
+                    rep_val = per_type_rep.get(hotkey, {}).get(task.skill_type.value, 0.0)
+                    bt.logging.warning(
+                        f"PROBE F2 bounty-ineligible: hk={hotkey[:10]} {task.skill_type.value} "
+                        f"rep={rep_val} server_signal={self._bounty_eligible_by_hotkey.get(hotkey, {}).get(task.skill_type.value)}"
+                    )
                     continue
             else:
                 if self._miner_has_open_task(hotkey, task.skill_type):
+                    bucket = self._active_tasks_by_hotkey.get(hotkey, {}).get(task.skill_type.value, {})
+                    now = time.time()
+                    bt.logging.warning(
+                        f"PROBE F3 has-open-task: hk={hotkey[:10]} {task.skill_type.value} "
+                        f"open_count={len(bucket)} expires_in={[int(exp-now) for exp in bucket.values()]}"
+                    )
                     continue
             out.append((hotkey, uid))
         return out
