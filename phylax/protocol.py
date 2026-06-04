@@ -393,6 +393,7 @@ class PhylaxSynapse(bt.Synapse):
     probe_evidence: dict | None = None
     analysis_proof: dict | None = None
     error: str | None = None
+    latency_ms: int | None = None
 
     def get_sssa(self) -> SSSA | None:
         if self.attestation is None:
