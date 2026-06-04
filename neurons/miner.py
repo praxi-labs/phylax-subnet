@@ -253,7 +253,13 @@ class PhylaxMiner:
         if synapse.dendrite.hotkey not in self.metagraph.hotkeys:
             return True, "hotkey not registered on subnet"
         uid = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
-        if not self.metagraph.validator_permit[uid]:
+        # Validator permit is the standard Bittensor signal that a hotkey has
+        # enough stake to participate as a validator. On a fresh testnet the
+        # chain hasn't always assigned permits yet, so let the operator skip
+        # this check via PHYLAX_REQUIRE_VALIDATOR_PERMIT=false. Default keeps
+        # the production-safe behaviour.
+        require_permit = os.getenv("PHYLAX_REQUIRE_VALIDATOR_PERMIT", "true").lower() == "true"
+        if require_permit and not self.metagraph.validator_permit[uid]:
             return True, "hotkey does not have validator permit"
         return False, "OK"
 
