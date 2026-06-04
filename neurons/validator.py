@@ -194,11 +194,21 @@ class PhylaxValidator:
 
         async def _prep_one(_task: RoundTask) -> tuple[RoundTask, object] | None:
             depth = int(_task.metadata.get("composition_depth") or self.DEFAULT_COMPOSITION_DEPTH)
+            bundle_bytes = _task.bundle_bytes
+            if not bundle_bytes and _task.bundle_url:
+                bundle_bytes = await self._fetch_bundle_bytes(_task.bundle_url)
+                if bundle_bytes is None:
+                    bt.logging.warning(
+                        f"bundle fetch returned no bytes for {_task.skill_type.value} "
+                        f"task {_task.task_id[:8]} url={_task.bundle_url}"
+                    )
+                    return None
+                _task.bundle_bytes = bundle_bytes
             try:
                 _prep = await asyncio.to_thread(
                     prepare_bundle,
                     _task.skill_type,
-                    _task.bundle_bytes or b"",
+                    bundle_bytes or b"",
                     _task.metadata.get("nonce"),
                     depth,
                 )
@@ -280,25 +290,15 @@ class PhylaxValidator:
                 deadline_s = primary_deadline if role == MinerRole.PRIMARY else auditor_deadline
                 t_min_s = primary_t_min if role == MinerRole.PRIMARY else auditor_t_min
                 if isinstance(resp, BaseException) or resp is None:
-                    bt.logging.warning(
-                        f"PROBE A: resp dropped hk={hotkey[:10]} {task.skill_type.value} "
-                        f"type={type(resp).__name__} repr={repr(resp)[:200]}"
-                    )
                     continue
                 latency_ms = int(getattr(resp, "latency_ms", 0) or 0)
                 if latency_ms > deadline_s * 1000:
-                    bt.logging.warning(
-                        f"PROBE B: late response from {hotkey[:10]} ({role.value}): "
+                    bt.logging.debug(
+                        f"discard late response from {hotkey[:10]} ({role.value}): "
                         f"{latency_ms}ms > {deadline_s}s"
                     )
                     continue
                 if resp.error or resp.attestation is None:
-                    bt.logging.warning(
-                        f"PROBE C: resp.error or attestation=None hk={hotkey[:10]} "
-                        f"{task.skill_type.value} error={resp.error!r} "
-                        f"attestation_is_none={resp.attestation is None} "
-                        f"verdict_attr={hasattr(resp, 'verdict')}"
-                    )
                     continue
                 self._mark_task_complete(hotkey, task.skill_type, task.task_id)
                 try:
@@ -571,6 +571,17 @@ class PhylaxValidator:
                 t.setdefault("task_type", TaskType.SERVER_CURATED.value)
                 collected.append(t)
         return collected
+
+    async def _fetch_bundle_bytes(self, url: str) -> bytes | None:
+        import httpx
+        try:
+            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+                return resp.content
+        except Exception as e:  # noqa: BLE001
+            bt.logging.warning(f"bundle fetch failed url={url}: {e}")
+            return None
 
     async def _route_miners_for_skill_type(
         self, skill_type: SkillType, task_type: TaskType,
@@ -921,27 +932,12 @@ class PhylaxValidator:
         is_bounty = bool(getattr(task, "is_bounty", False))
         for hotkey, uid in candidates:
             if self._miner_saw_bundle_recently(hotkey, prep.bundle_hash):
-                bt.logging.warning(
-                    f"PROBE F1 saw-bundle-recently: hk={hotkey[:10]} {task.skill_type.value} "
-                    f"bundle={prep.bundle_hash[:16]} history_len={len(self._per_miner_recent_bundles.get(hotkey, []))}"
-                )
                 continue
             if is_bounty:
                 if not self._is_bounty_eligible(hotkey, task.skill_type, per_type_rep):
-                    rep_val = per_type_rep.get(hotkey, {}).get(task.skill_type.value, 0.0)
-                    bt.logging.warning(
-                        f"PROBE F2 bounty-ineligible: hk={hotkey[:10]} {task.skill_type.value} "
-                        f"rep={rep_val} server_signal={self._bounty_eligible_by_hotkey.get(hotkey, {}).get(task.skill_type.value)}"
-                    )
                     continue
             else:
                 if self._miner_has_open_task(hotkey, task.skill_type):
-                    bucket = self._active_tasks_by_hotkey.get(hotkey, {}).get(task.skill_type.value, {})
-                    now = time.time()
-                    bt.logging.warning(
-                        f"PROBE F3 has-open-task: hk={hotkey[:10]} {task.skill_type.value} "
-                        f"open_count={len(bucket)} expires_in={[int(exp-now) for exp in bucket.values()]}"
-                    )
                     continue
             out.append((hotkey, uid))
         return out
