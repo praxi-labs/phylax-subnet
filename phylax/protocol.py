@@ -177,26 +177,31 @@ class DeclarativeEvidence(BaseModel):
 
 
 class ExecutablePythonEvidence(BaseModel):
-    imports_trace_hash: str
+    # Per-type hashes are populated by the miner at submission time from real
+    # sandbox execution. They are nullable on the validator side so that
+    # task_definitions rows ingested under the legacy v1 schema (where these
+    # fields did not exist) can still be parsed into the ground-truth model
+    # without exploding bundle preparation. Scoring already null-guards.
+    imports_trace_hash: str | None = None
 
 
 class ExecutableScriptEvidence(BaseModel):
-    shell_commands_hash: str
+    shell_commands_hash: str | None = None
 
 
 class MCPServerEvidence(BaseModel):
-    tool_calls_hash: str
-    mcp_manifest_hash: str
-    tool_poisoning_score: float = Field(ge=0.0, le=1.0)
-    tool_shadowing_detected: bool
-    rug_pull_risk: bool
+    tool_calls_hash: str | None = None
+    mcp_manifest_hash: str | None = None
+    tool_poisoning_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    tool_shadowing_detected: bool = False
+    rug_pull_risk: bool = False
 
 
 class AgentCompositionEvidence(BaseModel):
-    agent_calls_hash: str
-    dependency_graph_hash: str
-    transitive_risk_score: float = Field(ge=0.0, le=1.0)
-    composition_depth_observed: int = Field(ge=0)
+    agent_calls_hash: str | None = None
+    dependency_graph_hash: str | None = None
+    transitive_risk_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    composition_depth_observed: int = Field(default=0, ge=0)
 
 
 class TypeSpecificEvidence(BaseModel):
