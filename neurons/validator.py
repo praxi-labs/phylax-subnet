@@ -290,15 +290,24 @@ class PhylaxValidator:
                 deadline_s = primary_deadline if role == MinerRole.PRIMARY else auditor_deadline
                 t_min_s = primary_t_min if role == MinerRole.PRIMARY else auditor_t_min
                 if isinstance(resp, BaseException) or resp is None:
+                    bt.logging.warning(
+                        f"no response from {hotkey[:10]} ({role.value}) {task.skill_type.value}: "
+                        f"{type(resp).__name__}={repr(resp)[:160]}"
+                    )
                     continue
                 latency_ms = int(getattr(resp, "latency_ms", 0) or 0)
                 if latency_ms > deadline_s * 1000:
-                    bt.logging.debug(
-                        f"discard late response from {hotkey[:10]} ({role.value}): "
+                    bt.logging.warning(
+                        f"late response from {hotkey[:10]} ({role.value}) {task.skill_type.value}: "
                         f"{latency_ms}ms > {deadline_s}s"
                     )
                     continue
                 if resp.error or resp.attestation is None:
+                    bt.logging.warning(
+                        f"empty response from {hotkey[:10]} ({role.value}) {task.skill_type.value}: "
+                        f"error={resp.error!r} attestation_present={resp.attestation is not None} "
+                        f"trace_bundle_present={resp.trace_bundle is not None}"
+                    )
                     continue
                 self._mark_task_complete(hotkey, task.skill_type, task.task_id)
                 try:
