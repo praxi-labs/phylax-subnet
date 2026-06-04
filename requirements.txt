@@ -1,5 +1,8 @@
 # Core
-bittensor
+# bittensor pinned because validator and miner must agree on the synapse wire
+# format. v9 and v10 dendrite encodings are not compatible — mismatched
+# versions surface as SynapseParsingError on the receiving axon.
+bittensor==10.4.0
 pydantic
 torch
 numpy
