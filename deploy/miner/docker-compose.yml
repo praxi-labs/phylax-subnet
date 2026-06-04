@@ -4,7 +4,7 @@
 #   docker compose pull
 #   docker compose up -d
 #
-# To opt into automatic image updates (Watchtower polls GHCR every 6h,
+# To opt into automatic image updates (Watchtower polls GHCR every 10 min,
 # pulls new versions, recreates the container, and prunes old layers):
 #
 #   docker compose --profile auto-update up -d
@@ -80,9 +80,11 @@ services:
   # Opt-in auto-updater. Starts only with `docker compose --profile
   # auto-update up -d`; absent from the default `docker compose up -d`
   # so operators who want manual control aren't surprised. When enabled,
-  # polls GHCR every 6h, pulls new images for labeled containers (just
-  # phylax-miner), recreates them, and prunes the old layers. Solves
-  # miner-image drift and accumulated-disk pressure in one stroke.
+  # polls GHCR every 10 minutes, pulls new images for labeled containers
+  # (just phylax-miner), recreates them, and prunes the old layers.
+  # Solves miner-image drift and accumulated-disk pressure in one stroke.
+  # Override the interval by setting WATCHTOWER_POLL_INTERVAL (seconds)
+  # in .env.
   watchtower:
     image: containrrr/watchtower:latest
     container_name: phylax-watchtower
@@ -95,5 +97,9 @@ services:
       WATCHTOWER_CLEANUP: "true"
       WATCHTOWER_INCLUDE_RESTARTING: "false"
       WATCHTOWER_ROLLING_RESTART: "true"
-      WATCHTOWER_POLL_INTERVAL: "${WATCHTOWER_POLL_INTERVAL:-21600}"
+      WATCHTOWER_POLL_INTERVAL: "${WATCHTOWER_POLL_INTERVAL:-600}"
+      # Docker 27+ refuses API versions below 1.40 on the daemon side.
+      # Pinning here keeps Watchtower compatible with both new and old
+      # daemons. Override if you need a specific value.
+      DOCKER_API_VERSION: "${DOCKER_API_VERSION:-1.41}"
       TZ: "UTC"
