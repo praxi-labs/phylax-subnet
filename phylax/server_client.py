@@ -160,6 +160,23 @@ class PhylaxServerClient:
             },
         )
 
+    def open_round(
+        self,
+        *,
+        round_id: str,
+        task_count: int,
+        bundle_hashes: list[str],
+    ) -> dict:
+        return self._request(
+            "POST",
+            "/v1/rounds/open",
+            json_body={
+                "round_id": round_id,
+                "task_count": int(task_count),
+                "bundle_hashes": bundle_hashes,
+            },
+        )
+
     def submit_round_results(
         self,
         round_id: str,

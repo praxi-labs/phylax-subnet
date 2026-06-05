@@ -191,6 +191,17 @@ class PhylaxValidator:
             f"round {round_id[:8]} | tasks={len(round_tasks)} "
             f"types={ {t.skill_type.value for t in round_tasks} }"
         )
+        if self.server_client is not None:
+            try:
+                await asyncio.to_thread(
+                    self.server_client.open_round,
+                    round_id=round_id,
+                    task_count=len(round_tasks),
+                    bundle_hashes=[t.bundle_hash for t in round_tasks if t.bundle_hash],
+                )
+            except Exception as e:  # noqa: BLE001
+                bt.logging.warning(f"round {round_id[:8]} open failed: {e}; skipping round")
+                return
 
         async def _prep_one(_task: RoundTask) -> tuple[RoundTask, object] | None:
             depth = int(_task.metadata.get("composition_depth") or self.DEFAULT_COMPOSITION_DEPTH)
