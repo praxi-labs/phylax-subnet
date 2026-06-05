@@ -10,7 +10,7 @@ import time
 import traceback
 import zipfile
 from pathlib import Path
-from typing import Tuple  # noqa: UP035  bittensor 9.x inspect.signature requires typing.Tuple, not tuple[...]
+from typing import Tuple
 
 import bittensor as bt
 
@@ -249,7 +249,7 @@ class PhylaxMiner:
             evidence=evidence_pack,
         )
 
-    async def blacklist(self, synapse: PhylaxSynapse) -> Tuple[bool, str]:  # noqa: UP006
+    async def blacklist(self, synapse: PhylaxSynapse) -> Tuple[bool, str]:
         if synapse.dendrite.hotkey not in self.metagraph.hotkeys:
             return True, "hotkey not registered on subnet"
         uid = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
