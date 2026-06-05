@@ -376,8 +376,7 @@ class PhylaxValidator:
                 ctx.submission_latency_ms = latency_ms
                 axes = score_all_axes(sssa, ctx)
                 q = compute_Q(axes, task.skill_type)
-                threshold = self._novel_thresholds().get(task.skill_type.value, 0.6)
-                tier = classify_tier(q, task.skill_type, threshold)
+                tier = classify_tier(q, task.skill_type, self._novel_thresholds())
                 if role == MinerRole.PRIMARY:
                     self._epoch_q_scores.setdefault(task.skill_type.value, []).append(float(q))
                 miner_types_responded.setdefault(hotkey, set()).add(task.skill_type.value)
