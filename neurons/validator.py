@@ -96,7 +96,7 @@ class PhylaxValidator:
     neuron_type: str = "ValidatorNeuron"
 
     SERVER_CURATED_PULL: int = int(os.getenv("SERVER_CURATED_PULL", "18"))
-    WEIGHT_UPDATE_INTERVAL: int = int(os.getenv("WEIGHT_UPDATE_INTERVAL", "100"))
+    WEIGHT_UPDATE_INTERVAL: int = int(os.getenv("WEIGHT_UPDATE_INTERVAL", "360"))
     EMA_ALPHA: float = float(os.getenv("EMA_ALPHA", "0.2"))
     THRESHOLD_CACHE_TTL_S: int = 300
     REPUTATION_CACHE_TTL_S: int = 60

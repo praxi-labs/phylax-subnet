@@ -139,7 +139,7 @@ Weights are pushed on-chain only when phylax-server issues a fresh attestation c
 | `PHYLAX_SERVER_URL` | (empty) | Required. Base URL of phylax-server. |
 | `PHYLAX_SERVER_HOTKEY` | (empty) | Pinned server signing-key hotkey. |
 | `PHYLAX_VALIDATOR_LABEL` | (empty) | Friendly label shown in server dashboards. |
-| `WEIGHT_UPDATE_INTERVAL` | `100` | Blocks between `set_weights` pushes. |
+| `WEIGHT_UPDATE_INTERVAL` | `360` | Blocks between `set_weights` pushes. Default matches one tempo on netuid 486; the chain rate-limit is 100 blocks, so going lower than ~110 risks `set_weights returned False: too soon to commit`. |
 | `QUERY_TIMEOUT` | `150` | Hard ceiling on dendrite calls in seconds. |
 | `PHYLAX_RERUN_QUEUE_PATH` | `~/.phylax/rerun_queue.sqlite3` | Persistent queue for async miner-image reruns. |
 | `PHYLAX_EVIDENCE_HOST_DIR` | set by install.sh | Host-side path of the evidence bind mount. |
