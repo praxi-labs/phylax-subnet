@@ -47,6 +47,8 @@ services:
       # Per-scan evidence dir — also bind-mounted by the sandbox container,
       # so it must be writable to the same UID the sandbox runs as
       - ./evidence:/opt/phylax/evidence
+      - ./src/phylax:/opt/phylax/phylax
+      - ./src/neurons:/opt/phylax/neurons
     environment:
       # Force HOME because the process runs as a UID with no /etc/passwd
       # entry (--user 1000:1000), so ~ would otherwise resolve to /. We
