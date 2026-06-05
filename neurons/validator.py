@@ -431,19 +431,19 @@ class PhylaxValidator:
                         aligned_with_primaries=pmc.aligned_with_primaries,
                         aligned_with_auditors=pmc.aligned_with_auditors,
                     )
-                round_results.append(
-                    {
-                        "hotkey": hotkey,
-                        "skill_type": task.skill_type.value,
-                        "task_type": task.task_type.value,
-                        "epsilon": float(axes.epsilon),
-                        "composite_q": float(q),
-                        "tier": tier.value,
-                        "is_bounty": bool(getattr(task, "is_bounty", False)),
-                        "consensus_score": consensus_mult,
-                        "role": role.value,
-                    }
-                )
+                result_entry = {
+                    "hotkey": hotkey,
+                    "skill_type": task.skill_type.value,
+                    "task_type": task.task_type.value,
+                    "epsilon": float(axes.epsilon),
+                    "composite_q": float(q),
+                    "tier": tier.value,
+                    "is_bounty": bool(getattr(task, "is_bounty", False)),
+                    "consensus_score": consensus_mult,
+                    "role": role.value,
+                }
+                round_results.append(result_entry)
+                per_uid_results.setdefault(int(uid), []).append(result_entry)
                 emission = compute_task_emissions_score(
                     float(q), task.skill_type, tier, self.current_epoch,
                 )
