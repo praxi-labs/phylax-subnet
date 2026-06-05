@@ -205,7 +205,7 @@ class PhylaxMiner:
 
     def _audit_dispatch(self, skill_type: SkillType, bundle_dir: Path, synapse: PhylaxSynapse) -> SSSA:
         bundle = synapse.skill_bundle
-        canary_id = synapse.task_metadata.task_id
+        canary_id = hashlib.sha256((synapse.nonce + "id").encode()).hexdigest()[:16]
         if skill_type == SkillType.RAG_KNOWLEDGE:
             result = self.h_rag.run(bundle_dir, canary_id=canary_id)
             type_specific = TypeSpecificEvidence(rag_knowledge=result.evidence)
@@ -272,8 +272,8 @@ class PhylaxMiner:
     def _dispatch(
         self, skill_type: SkillType, bundle_dir: Path, synapse: PhylaxSynapse,
     ) -> tuple[SSSA, Path | None]:
-        canary_id = synapse.task_metadata.task_id
-        canary_val = synapse.nonce
+        canary_id = hashlib.sha256((synapse.nonce + "id").encode()).hexdigest()[:16]
+        canary_val = hashlib.sha256((synapse.nonce + "val").encode()).hexdigest()[:16]
         bundle = synapse.skill_bundle
 
         type_specific = TypeSpecificEvidence()
