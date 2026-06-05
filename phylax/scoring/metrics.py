@@ -19,6 +19,7 @@ _PROVENANCE_WEIGHT_DEFAULTS = {
     "human": 1.0,
     "consensus": 0.7,
     "consensus_expired": 0.4,
+    "canary": 1.0,
 }
 
 _VERDICT_RANK = {Verdict.ALLOW: 0, Verdict.WARN: 1, Verdict.BLOCK: 2}
