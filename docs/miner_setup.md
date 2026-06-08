@@ -65,7 +65,7 @@ Edit `~/phylax/miner/.env` and set every key in the table below. **Add any key t
 | `SUBTENSOR_NETWORK` | `test` | testnet |
 | `WALLET_NAME` | folder name in `~/.bittensor/wallets/` | `btcli wallet create` step |
 | `WALLET_HOTKEY` | `default` (or the hotkey you registered) | `btcli wallet create` step |
-| `PHYLAX_SERVER_URL` | `https://54-225-20-32.nip.io` | testnet coordinator |
+| `PHYLAX_SERVER_URL` | `https://api.phyi.dev` | testnet coordinator |
 | `PHYLAX_SERVER_HOTKEY` | `a53f8e390446e31cd077517e44e585c0e0474bbd5b1db5864c52fb07bcbe541c` | pinned anti-impersonation key |
 | `PHYLAX_SUPPORTED_TYPES` | comma list, e.g. `executable_python,declarative` | which types you'll serve (see step 3) |
 | `PHYLAX_SANDBOX_IMAGE` | e.g. `docker.io/<you>/phylax-sandbox-python:v1` | set after step 5 |
@@ -182,7 +182,7 @@ cd ~/phylax/miner
 Expected output:
 
 ```
-==> POST https://54-225-20-32.nip.io/v1/specialization/register
+==> POST https://api.phyi.dev/v1/specialization/register
     hotkey: 5DLAsRvT...
     types:  ['executable_python', 'declarative']
     image:  docker.io/<you>/phylax-sandbox-python:v1

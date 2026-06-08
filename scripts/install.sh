@@ -166,7 +166,7 @@ Files:
   $TARGET/src/                 phylax-subnet source
   $TARGET/src/scripts/         helper scripts (build-sandbox.sh, register.sh, register_miner.py)
 
-Next steps are in the miner guide: https://phylax.mintlify.app/guides/miner
+Next steps are in the miner guide: https://docs.phyi.dev/guides/miner
 
 Common commands:
   cd $TARGET
