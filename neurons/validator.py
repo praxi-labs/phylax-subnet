@@ -476,6 +476,7 @@ class PhylaxValidator:
                         "verdict": sssa.verdict.decision.value,
                         "risk_score": int(sssa.verdict.risk_score),
                         "submission_latency_ms": int(latency_ms),
+                        "sssa": sssa.model_dump(mode="json"),
                     }
                 )
                 bt.logging.info(
