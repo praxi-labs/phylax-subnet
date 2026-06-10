@@ -71,6 +71,10 @@ PERMITTED_LLM_USES: set[str | None] = {
     LLMAllowedUse.CVE_EXPLANATION.value,
 }
 
+EVOLVE_SHARE = 0.05
+SHARED_COMPONENTS = ("classifier", "reference_harness", "sandbox_probes")
+_ADOPTIONS_CACHE_TTL = 600.0
+
 
 def _metagraph_size(metagraph) -> int:
     if metagraph is None:
@@ -127,6 +131,8 @@ class PhylaxValidator:
 
         self._threshold_cache: dict[str, float] = {}
         self._threshold_cached_at: float = 0.0
+        self._adoptions_cache: dict[str, str] = {}
+        self._adoptions_cached_at: float = 0.0
         self._per_type_rep_cache: dict[str, dict[str, float]] = {}
         self._per_type_rep_cached_at: float = 0.0
         self._recent_bundle_hashes: list[str] = []
@@ -1218,12 +1224,57 @@ class PhylaxValidator:
         self._threshold_cached_at = 0.0
         self._epoch_q_scores = {}
 
+    def _fetch_adopted_components(self) -> dict[str, str]:
+        now = time.time()
+        if now - self._adoptions_cached_at < _ADOPTIONS_CACHE_TTL:
+            return self._adoptions_cache
+        adoptions: dict[str, str] = {}
+        if self.server_client is not None:
+            try:
+                data = self.server_client.get("/v1/components/adopted", signed=False)
+                for entry in data.get("components", []):
+                    component = entry.get("component")
+                    hotkey = entry.get("author_hotkey")
+                    if component in SHARED_COMPONENTS and hotkey:
+                        adoptions[component] = hotkey
+            except Exception as e:  # noqa: BLE001
+                bt.logging.debug(f"adopted components fetch failed: {e}")
+        self._adoptions_cache = adoptions
+        self._adoptions_cached_at = now
+        return adoptions
+
+    def _apply_emission_split(self, weights: torch.Tensor) -> torch.Tensor:
+        adoptions = self._fetch_adopted_components()
+        hotkey_to_uid = {hk: uid for uid, hk in enumerate(self.metagraph.hotkeys)}
+        treasury_uid = hotkey_to_uid.get(os.getenv("PHYLAX_TREASURY_HOTKEY", ""))
+
+        out = weights * (1.0 - EVOLVE_SHARE)
+        per_component = EVOLVE_SHARE / len(SHARED_COMPONENTS)
+        unallocated = 0.0
+        for component in SHARED_COMPONENTS:
+            uid = hotkey_to_uid.get(adoptions.get(component, ""))
+            if uid is None:
+                uid = treasury_uid
+            if uid is None:
+                unallocated += per_component
+                continue
+            out[uid] += per_component
+
+        if unallocated > 0.0:
+            bt.logging.warning(
+                f"emission split: {unallocated:.3f} developer share has no adopted author "
+                f"and no registered PHYLAX_TREASURY_HOTKEY; folding back into operate weights"
+            )
+            out = out / out.sum()
+        return out
+
     def set_weights(self) -> None:
         if self.scores.sum().item() <= 0.0:
             bt.logging.info("set_weights: all-zero scores; skipping")
             return
         weights = self.scores.clone()
         weights = weights / weights.sum()
+        weights = self._apply_emission_split(weights)
         bt.logging.info(f"set_weights | non-zero={int((weights > 0).sum().item())}")
 
         if self.server_client is None:
