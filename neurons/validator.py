@@ -1245,31 +1245,18 @@ class PhylaxValidator:
     def _apply_emission_split(self, weights: torch.Tensor) -> torch.Tensor:
         adoptions = self._fetch_adopted_components()
         hotkey_to_uid = {hk: uid for uid, hk in enumerate(self.metagraph.hotkeys)}
-        treasury_uid = hotkey_to_uid.get(os.getenv("PHYLAX_TREASURY_HOTKEY", ""))
 
         out = weights * (1.0 - EVOLVE_SHARE)
-        unallocated = 0.0
         if adoptions:
             per_contribution = EVOLVE_SHARE / len(adoptions)
             for hotkey in adoptions.values():
                 uid = hotkey_to_uid.get(hotkey)
-                if uid is None:
-                    uid = treasury_uid
-                if uid is None:
-                    unallocated += per_contribution
-                    continue
-                out[uid] += per_contribution
-        elif treasury_uid is not None:
-            out[treasury_uid] += EVOLVE_SHARE
-        else:
-            unallocated = EVOLVE_SHARE
+                if uid is not None:
+                    out[uid] += per_contribution
 
-        if unallocated > 0.0:
-            bt.logging.warning(
-                f"emission split: {unallocated:.3f} developer share has no adopted author "
-                f"and no registered PHYLAX_TREASURY_HOTKEY; folding back into operate weights"
-            )
-            out = out / out.sum()
+        total = out.sum()
+        if total > 0.0:
+            out = out / total
         return out
 
     def set_weights(self) -> None:
