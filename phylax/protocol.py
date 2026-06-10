@@ -416,3 +416,26 @@ class PhylaxSynapse(bt.Synapse):
             return True
         except Exception:  # noqa: BLE001
             return False
+
+
+class ClassifySynapse(bt.Synapse):
+    skill_id: str = ""
+    slug: str = ""
+    source_url: str = ""
+    pinned_commit: str = ""
+    deadline_s: int = Field(default=1, ge=1)
+
+    bundle_hash: str | None = None
+    skill_type: str | None = None
+    error: str | None = None
+    latency_ms: int | None = None
+
+    def is_valid_response(self) -> bool:
+        if self.error or not self.bundle_hash or not self.skill_type:
+            return False
+        try:
+            SkillType(self.skill_type)
+        except ValueError:
+            return False
+        h = self.bundle_hash.removeprefix("sha256:")
+        return len(h) == 64 and all(c in "0123456789abcdef" for c in h)

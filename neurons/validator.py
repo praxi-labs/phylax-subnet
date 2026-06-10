@@ -17,6 +17,7 @@ from phylax.protocol import (
     REQUIRED_TRACE_FILES,
     SSSA,
     BundleMetadata,
+    ClassifySynapse,
     InferenceConfig,
     LLMAllowedUse,
     MinerRole,
@@ -73,6 +74,12 @@ PERMITTED_LLM_USES: set[str | None] = {
 
 EVOLVE_SHARE = 0.05
 _ADOPTIONS_CACHE_TTL = 600.0
+
+CLASSIFY_GROUP_SIZE = 3
+CLASSIFY_BATCH_MIN = int(os.getenv("PHYLAX_CLASSIFY_BATCH_MIN", "12"))
+CLASSIFY_BATCH_MAX = 200
+CLASSIFY_DEADLINE_S = int(os.getenv("PHYLAX_CLASSIFY_DEADLINE", "180"))
+CLASSIFY_SCORE_ALPHA = float(os.getenv("PHYLAX_CLASSIFY_SCORE_ALPHA", "0.05"))
 
 
 def _metagraph_size(metagraph) -> int:
@@ -178,6 +185,96 @@ class PhylaxValidator:
         else:
             bt.logging.warning(
                 "PHYLAX_SERVER_URL not configured — validator will not be able to set_weights"
+            )
+
+    async def run_classify_round(self) -> None:
+        if self.server_client is None:
+            return
+        uids = self._get_active_miner_uids()
+        if len(uids) < CLASSIFY_GROUP_SIZE:
+            return
+        count = min(CLASSIFY_BATCH_MAX, max(CLASSIFY_BATCH_MIN, len(uids) // CLASSIFY_GROUP_SIZE))
+        try:
+            payload = await asyncio.to_thread(
+                self.server_client.post, "/v1/tasks/classify-batch", {"count": count}
+            )
+        except Exception as e:  # noqa: BLE001
+            bt.logging.debug(f"classify-batch fetch failed: {e}")
+            return
+        tasks = (payload or {}).get("tasks", []) if isinstance(payload, dict) else []
+        if not tasks:
+            return
+        bt.logging.info(f"classify round | tasks={len(tasks)} miners={len(uids)}")
+
+        _random.shuffle(uids)
+        groups = [
+            [uids[(i * CLASSIFY_GROUP_SIZE + j) % len(uids)] for j in range(CLASSIFY_GROUP_SIZE)]
+            for i in range(len(tasks))
+        ]
+        credits: dict[int, float] = {}
+
+        async def _classify_one(task: dict, group: list[int]) -> None:
+            synapse = ClassifySynapse(
+                skill_id=task.get("skill_id") or "",
+                slug=task.get("slug") or "",
+                source_url=task.get("source_url") or "",
+                pinned_commit=task.get("pinned_commit") or "",
+                deadline_s=CLASSIFY_DEADLINE_S,
+            )
+            axons = [self.metagraph.axons[uid] for uid in group]
+            try:
+                responses = await self.dendrite(
+                    axons=axons,
+                    synapse=synapse,
+                    deserialize=False,
+                    timeout=CLASSIFY_DEADLINE_S,
+                )
+            except Exception as e:  # noqa: BLE001
+                bt.logging.debug(f"classify dial failed for {task.get('slug')}: {e}")
+                responses = []
+            if not isinstance(responses, list):
+                responses = [responses]
+
+            votes: dict[tuple[str, str], list[int]] = {}
+            for uid, resp in zip(group, responses, strict=False):
+                if resp is None or not isinstance(resp, ClassifySynapse):
+                    continue
+                if not resp.is_valid_response():
+                    continue
+                key = (resp.bundle_hash.removeprefix("sha256:"), resp.skill_type)
+                votes.setdefault(key, []).append(uid)
+
+            winner = max(votes.items(), key=lambda kv: len(kv[1]), default=None)
+            report: dict = {"skill_id": task.get("skill_id"), "consensus": False}
+            if winner is not None and len(winner[1]) >= 2:
+                (bundle_hash, skill_type), agreeing = winner
+                report = {
+                    "skill_id": task.get("skill_id"),
+                    "consensus": True,
+                    "skill_type": skill_type,
+                    "bundle_hash": bundle_hash,
+                    "pinned_commit": task.get("pinned_commit") or None,
+                    "classifier_hotkeys": [self.metagraph.hotkeys[u] for u in agreeing],
+                }
+                for u in agreeing:
+                    credits[u] = credits.get(u, 0.0) + 1.0
+            try:
+                await asyncio.to_thread(
+                    self.server_client.post, "/v1/tasks/classify-report", report
+                )
+            except Exception as e:  # noqa: BLE001
+                bt.logging.debug(f"classify-report failed for {task.get('slug')}: {e}")
+
+        await asyncio.gather(*(_classify_one(t, g) for t, g in zip(tasks, groups, strict=True)))
+
+        if credits:
+            credit = torch.zeros_like(self.scores)
+            for uid, c in credits.items():
+                if uid < credit.numel():
+                    credit[uid] = c / len(tasks)
+            self.scores = self.scores + CLASSIFY_SCORE_ALPHA * credit
+            bt.logging.info(
+                f"classify round done | consensus_credits={len(credits)} miners"
             )
 
     async def run_round(self) -> None:
@@ -1337,6 +1434,7 @@ class PhylaxValidator:
                         new[:n] = self.scores[:n]
                         self.scores = new
 
+                    loop.run_until_complete(self.run_classify_round())
                     loop.run_until_complete(self.run_round())
 
                     current_block = self.subtensor.get_current_block()

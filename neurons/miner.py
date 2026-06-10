@@ -22,12 +22,14 @@ from phylax.harness import (
     MCPServerHarness,
     RAGKnowledgeHarness,
 )
+from phylax.harness.classifier import canonical_bundle_hash, classify_tree, fetch_source
 from phylax.harness.probe_spec import derive_probe
 from phylax.protocol import (
     REQUIRED_TRACE_FILES,
     SSSA,
     AttestationBlock,
     Capabilities,
+    ClassifySynapse,
     Dependencies,
     EvidencePack,
     MinerRole,
@@ -152,6 +154,11 @@ class PhylaxMiner:
         self.metagraph = self.subtensor.metagraph(netuid=config.netuid)
         self.axon = bt.Axon(wallet=self.wallet, config=config)
         self.axon.attach(forward_fn=self.forward, blacklist_fn=self.blacklist, priority_fn=self.priority)
+        self.axon.attach(
+            forward_fn=self.classify_forward,
+            blacklist_fn=self.classify_blacklist,
+            priority_fn=self.classify_priority,
+        )
         self.should_exit = False
         self._build_internal_state()
 
@@ -248,6 +255,46 @@ class PhylaxMiner:
             recommended_policy=recommended_policy,
             evidence=evidence_pack,
         )
+
+    async def classify_forward(self, synapse: ClassifySynapse) -> ClassifySynapse:
+        start = time.time()
+        bt.logging.info(
+            f"classify: slug={synapse.slug} commit={synapse.pinned_commit[:12] if synapse.pinned_commit else '?'}"
+        )
+        try:
+            with tempfile.TemporaryDirectory(prefix="phylax-classify-") as td:
+                root = await asyncio.to_thread(
+                    fetch_source, synapse.source_url, synapse.pinned_commit, Path(td)
+                )
+                synapse.bundle_hash = await asyncio.to_thread(canonical_bundle_hash, root)
+                synapse.skill_type = await asyncio.to_thread(classify_tree, root)
+            bt.logging.success(
+                f"classify done: {synapse.slug} -> {synapse.skill_type} "
+                f"hash={synapse.bundle_hash[:23]}"
+            )
+        except Exception as exc:  # noqa: BLE001
+            bt.logging.error(f"classify error for {synapse.slug}: {exc}")
+            synapse.error = str(exc)[:300]
+        synapse.latency_ms = int((time.time() - start) * 1000)
+        return synapse
+
+    async def classify_blacklist(self, synapse: ClassifySynapse) -> Tuple[bool, str]:
+        return await self._blacklist_dendrite(synapse)
+
+    async def classify_priority(self, synapse: ClassifySynapse) -> float:
+        if synapse.dendrite.hotkey not in self.metagraph.hotkeys:
+            return 0.0
+        uid = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
+        return float(self.metagraph.S[uid])
+
+    async def _blacklist_dendrite(self, synapse) -> Tuple[bool, str]:
+        if synapse.dendrite.hotkey not in self.metagraph.hotkeys:
+            return True, "hotkey not registered on subnet"
+        uid = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
+        require_permit = os.getenv("PHYLAX_REQUIRE_VALIDATOR_PERMIT", "true").lower() == "true"
+        if require_permit and not self.metagraph.validator_permit[uid]:
+            return True, "hotkey does not have validator permit"
+        return False, "OK"
 
     async def blacklist(self, synapse: PhylaxSynapse) -> Tuple[bool, str]:
         if synapse.dendrite.hotkey not in self.metagraph.hotkeys:
