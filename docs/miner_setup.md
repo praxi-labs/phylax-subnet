@@ -8,6 +8,38 @@ A Phylax miner registers a Bittensor axon on netuid 486 and responds to `PhylaxS
 The subnet team defines the structural contract: what inputs you receive, what outputs you must produce, and how your submission is scored. Your internal analysis pipeline is entirely your own. That is where you compete.
 
 
+## Two Ways to Earn
+
+Phylax miners earn through two independent tracks. You can participate in either or both with the same hotkey.
+
+### Track 1: Operate
+
+Run a miner around the clock, respond to scan and classification tasks, earn per-task emissions through your Q scores. This is the track this guide sets up. Your private analysis pipeline is your competitive edge and stays private. 95% of miner emissions flow through this track.
+
+### Track 2: Evolve
+
+Improve the shared components every miner depends on and earn a developer stream when your version is adopted. Submissions are one-shot, like a pull request with a stake behind it. No uptime requirement.
+
+The shared components open to evolution:
+
+| Component | What it does | Why it must be shared |
+|---|---|---|
+| Classifier | Determines a skill's `skill_type` from its fetched tree | Deterministic and version-pinned so auditors can reproduce any classification |
+| Reference harness | The open-source baseline pipeline new miners clone | Common starting point that sets the network's quality floor |
+| Sandbox probes | Instrumentation that captures evidence during detonation | Evidence semantics must be identical across miners for traces to be comparable |
+
+How adoption works:
+
+1. Submit a component version, hotkey-signed
+2. The validator benchmarks it against the ground-truth corpus (canaries plus known-good and known-bad skills) on detection accuracy, false-positive rate, classification accuracy, and runtime cost
+3. Your version must beat the current champion by the adoption threshold (2% composite) to proceed
+4. Passing submissions go to human review (Praxi Labs during testnet)
+5. On adoption your version becomes canonical, pinned by hash, and announced to the network
+6. While your version stays canonical, you earn the developer stream: 5% of miner emissions
+
+The threshold exists because submissions are public. Copying the champion and resubmitting earns nothing; you must measurably improve it.
+
+
 ## Requirements
 
 - Docker 24+ with the compose plugin (`docker compose version` must work)

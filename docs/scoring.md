@@ -453,3 +453,17 @@ else:
 | Coordinate with other miners (collusion) | The validator records agreement with primaries vs agreement with random auditors over 30 rounds. A consistent gap of `agree_with_primaries > 0.90` and `agree_with_auditors < 0.60` accumulates collusion flags. Three flags excludes the miner from group selection. |
 | Fabricate trace_bundle hashes | Validator decompresses each trace file, normalises with `ts`-sorted JSON, and recomputes the sha256. Mismatch with the miner's own SSSA fails the round immediately. |
 | Run the reference image but claim a different one | Async miner-image rerun pulls the registered image. Pulled digest must equal the registered `image_hash`. Mismatch fails. |
+
+
+## Emission Split: Operate vs Evolve
+
+Miner emissions are divided across two tracks.
+
+| Track | Share | Earned by |
+|---|---|---|
+| Operate | 95% | Running a miner: per-task Q scores aggregated into round scores, EMA-blended, pushed on-chain. Everything above this section describes Track 1. |
+| Evolve | 5% | Authoring the currently-adopted version of a shared component (classifier, reference harness, sandbox probes). Paid continuously while the version stays canonical. |
+
+The Evolve stream pays the author of each adopted component version. When a component has had no adopted external submission, its share of the developer stream accrues to the subnet treasury rather than redistributing to Track 1, so there is always a standing bounty for improving the shared code.
+
+Adoption requires beating the current champion by at least 2% composite on the ground-truth benchmark (detection accuracy, false-positive rate, classification accuracy, runtime cost), followed by human review. Submissions are public; the threshold makes copy-resubmission worthless.
