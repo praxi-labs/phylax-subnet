@@ -462,8 +462,8 @@ Miner emissions are divided across two tracks.
 | Track | Share | Earned by |
 |---|---|---|
 | Operate | 95% | Running a miner: per-task Q scores aggregated into round scores, EMA-blended, pushed on-chain. Everything above this section describes Track 1. |
-| Evolve | 5% | Authoring the currently-adopted version of a shared component (classifier, reference harness, sandbox probes). Paid continuously while the version stays canonical. |
+| Evolve | 5% | Authoring an adopted improvement to any subnet component: detection, sandbox, validator, scoring, protocol, tooling. Divided equally across all currently adopted contributions. |
 
-The Evolve stream pays the author of each adopted component version. When a component has had no adopted external submission, its share of the developer stream accrues to the subnet treasury rather than redistributing to Track 1, so there is always a standing bounty for improving the shared code.
+The Evolve stream pays the author of each adopted contribution for as long as it stays canonical. When no external contribution is currently adopted, the developer stream accrues to the subnet treasury rather than redistributing to Track 1, so there is always a standing bounty for improving the subnet.
 
-Adoption requires beating the current champion by at least 2% composite on the ground-truth benchmark (detection accuracy, false-positive rate, classification accuracy, runtime cost), followed by human review. Submissions are public; the threshold makes copy-resubmission worthless.
+Adoption of detection and classification changes requires beating the current champion by at least 2% composite on the ground-truth benchmark (detection accuracy, false-positive rate, classification accuracy, runtime cost). Changes outside the detection path are assessed on measurable impact: performance, cost, correctness, tests. Everything passes human review before adoption. Submissions are public; the threshold makes copy-resubmission worthless.

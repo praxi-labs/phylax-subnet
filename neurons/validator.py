@@ -72,7 +72,6 @@ PERMITTED_LLM_USES: set[str | None] = {
 }
 
 EVOLVE_SHARE = 0.05
-SHARED_COMPONENTS = ("classifier", "reference_harness", "sandbox_probes")
 _ADOPTIONS_CACHE_TTL = 600.0
 
 
@@ -1235,7 +1234,7 @@ class PhylaxValidator:
                 for entry in data.get("components", []):
                     component = entry.get("component")
                     hotkey = entry.get("author_hotkey")
-                    if component in SHARED_COMPONENTS and hotkey:
+                    if component and hotkey:
                         adoptions[component] = hotkey
             except Exception as e:  # noqa: BLE001
                 bt.logging.debug(f"adopted components fetch failed: {e}")
@@ -1249,16 +1248,21 @@ class PhylaxValidator:
         treasury_uid = hotkey_to_uid.get(os.getenv("PHYLAX_TREASURY_HOTKEY", ""))
 
         out = weights * (1.0 - EVOLVE_SHARE)
-        per_component = EVOLVE_SHARE / len(SHARED_COMPONENTS)
         unallocated = 0.0
-        for component in SHARED_COMPONENTS:
-            uid = hotkey_to_uid.get(adoptions.get(component, ""))
-            if uid is None:
-                uid = treasury_uid
-            if uid is None:
-                unallocated += per_component
-                continue
-            out[uid] += per_component
+        if adoptions:
+            per_contribution = EVOLVE_SHARE / len(adoptions)
+            for hotkey in adoptions.values():
+                uid = hotkey_to_uid.get(hotkey)
+                if uid is None:
+                    uid = treasury_uid
+                if uid is None:
+                    unallocated += per_contribution
+                    continue
+                out[uid] += per_contribution
+        elif treasury_uid is not None:
+            out[treasury_uid] += EVOLVE_SHARE
+        else:
+            unallocated = EVOLVE_SHARE
 
         if unallocated > 0.0:
             bt.logging.warning(

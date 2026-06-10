@@ -18,24 +18,18 @@ Run a miner around the clock, respond to scan and classification tasks, earn per
 
 ### Track 2: Evolve
 
-Improve the shared components every miner depends on and earn a developer stream when your version is adopted. Submissions are one-shot, like a pull request with a stake behind it. No uptime requirement.
+Improve any component of the subnet and earn a developer stream while your contribution stays adopted. Submissions are one-shot, like a pull request with a stake behind it. No uptime requirement.
 
-The shared components open to evolution:
-
-| Component | What it does | Why it must be shared |
-|---|---|---|
-| Classifier | Determines a skill's `skill_type` from its fetched tree | Deterministic and version-pinned so auditors can reproduce any classification |
-| Reference harness | The open-source baseline pipeline new miners clone | Common starting point that sets the network's quality floor |
-| Sandbox probes | Instrumentation that captures evidence during detonation | Evidence semantics must be identical across miners for traces to be comparable |
+Nothing in the subnet repo is off limits: the classifier, the reference harness, sandbox probes, validator orchestration, consensus logic, scoring formulas, the protocol, the server, the tooling. The only thing not eligible is your private Operate pipeline, which is your Track 1 edge and stays yours.
 
 How adoption works:
 
-1. Submit a component version, hotkey-signed
-2. The validator benchmarks it against the ground-truth corpus (canaries plus known-good and known-bad skills) on detection accuracy, false-positive rate, classification accuracy, and runtime cost
-3. Your version must beat the current champion by the adoption threshold (2% composite) to proceed
+1. Submit your improved component version, hotkey-signed
+2. Detection and classification changes are benchmarked against the ground-truth corpus (canaries plus known-good and known-bad skills) on detection accuracy, false-positive rate, classification accuracy, and runtime cost. Changes outside the detection path are assessed on measurable impact: performance, cost, correctness, test results
+3. Benchmarked changes must beat the current champion by the adoption threshold (2% composite) to proceed
 4. Passing submissions go to human review (Praxi Labs during testnet)
 5. On adoption your version becomes canonical, pinned by hash, and announced to the network
-6. While your version stays canonical, you earn the developer stream: 5% of miner emissions
+6. While your contribution stays adopted you earn an equal share of the developer stream (5% of miner emissions) alongside every other adopted contribution
 
 The threshold exists because submissions are public. Copying the champion and resubmitting earns nothing; you must measurably improve it.
 

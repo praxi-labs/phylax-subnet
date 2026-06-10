@@ -74,29 +74,32 @@ End-to-end picture of how a skill bundle becomes a Signed Skill Safety Attestati
 
 These are exercised by `tests/test_whitepaper_conformance.py` and `tests/test_nonce_anticopy.py`.
 
-## Harness evolution
+## Subnet evolution
 
-The components every miner must run identically (the classifier, the reference harness, the sandbox probes) are not frozen. They evolve through a competitive submission track open to any registered hotkey.
+No component of the subnet is frozen. Everything in this repo evolves through a competitive submission track open to any registered hotkey: detection components (classifier, static rules, sandbox probes), the reference harness, validator orchestration, consensus logic, scoring formulas, protocol, server, and tooling. The only thing outside the track is each miner's private Operate pipeline.
 
 ```
 SUBMIT          miner uploads a component version, hotkey-signed
    │
-BENCHMARK       validator replays it against the ground-truth corpus
-   │            (canaries + known-good + known-bad)
+BENCHMARK       detection and classification changes replay against the
+   │            ground-truth corpus (canaries + known-good + known-bad)
    │            axes: detection accuracy, false-positive rate,
-   │            classification accuracy, runtime cost
+   │            classification accuracy, runtime cost.
+   │            changes outside the detection path are assessed on
+   │            measurable impact: performance, cost, correctness, tests
    │
-THRESHOLD       composite must beat the current champion by >= 2%
+THRESHOLD       benchmarked changes must beat the champion by >= 2%
    │
 REVIEW          human gate (Praxi Labs during testnet)
    │
 ADOPT           version becomes canonical, pinned by hash,
    │            announced to the network on the next round
    │
-REWARD          author earns the developer stream (5% of miner
-                emissions) while their version stays canonical
+REWARD          author earns an equal share of the developer stream
+                (5% of miner emissions, divided across all currently
+                adopted contributions) while their version is canonical
 ```
 
-Version pinning is what keeps this compatible with the anti-gaming invariants above: every classification and every probe result carries the component version that produced it, so auditors reproduce results against the same pinned code, and rounds stay replayable after an upgrade.
+Version pinning is what keeps this compatible with the anti-gaming invariants above: components that affect consensus (the classifier, the sandbox probes) carry the component version that produced each result, so auditors reproduce results against the same pinned code, and rounds stay replayable after an upgrade.
 
 Execution stays distributed. Evolution changes which shared code the network runs, never who runs it: scan and audit work continues to flow through independent miners exactly as described in the high-level flow.
