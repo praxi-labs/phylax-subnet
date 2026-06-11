@@ -40,12 +40,12 @@ CORPUS_FALLBACK_ORDER: dict[SkillType, tuple[SkillType, ...]] = {
 }
 
 ROUND_COMPOSITION: dict[SkillType, tuple[TaskType, ...]] = {
-    SkillType.RAG_KNOWLEDGE: (TaskType.SERVER_CURATED, TaskType.LOCAL_SYNTH),
-    SkillType.DECLARATIVE: (TaskType.SERVER_CURATED, TaskType.CANARY),
-    SkillType.EXECUTABLE_PYTHON: (TaskType.SERVER_CURATED, TaskType.LOCAL_SYNTH),
-    SkillType.EXECUTABLE_SCRIPT: (TaskType.SERVER_CURATED, TaskType.LOCAL_SYNTH),
-    SkillType.MCP_SERVER: (TaskType.SERVER_CURATED, TaskType.CANARY),
-    SkillType.AGENT_COMPOSITION: (TaskType.SERVER_CURATED, TaskType.LOCAL_SYNTH),
+    SkillType.RAG_KNOWLEDGE:      (TaskType.SERVER_CURATED,),
+    SkillType.DECLARATIVE:        (TaskType.SERVER_CURATED, TaskType.CANARY),
+    SkillType.EXECUTABLE_PYTHON:  (TaskType.SERVER_CURATED,),
+    SkillType.EXECUTABLE_SCRIPT:  (TaskType.SERVER_CURATED,),
+    SkillType.MCP_SERVER:         (TaskType.SERVER_CURATED, TaskType.CANARY),
+    SkillType.AGENT_COMPOSITION:  (TaskType.SERVER_CURATED,),
 }
 
 

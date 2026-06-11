@@ -73,6 +73,7 @@ PERMITTED_LLM_USES: set[str | None] = {
 }
 
 EVOLVE_SHARE = 0.05
+ROUND_INTERVAL_S: int = 720  # one round every 60 blocks (~12 min) → 6 rounds per epoch
 _ADOPTIONS_CACHE_TTL = 600.0
 
 CLASSIFY_GROUP_SIZE = 3
@@ -1443,7 +1444,7 @@ class PhylaxValidator:
                         last_weight_block = current_block
 
                     self.step += 1
-                    time.sleep(12)
+                    time.sleep(ROUND_INTERVAL_S)
 
                 except KeyboardInterrupt:
                     bt.logging.info("validator stopped by KeyboardInterrupt")
@@ -1451,7 +1452,7 @@ class PhylaxValidator:
                 except Exception as e:  # noqa: BLE001
                     bt.logging.error(f"run loop error: {e}")
                     bt.logging.debug(traceback.format_exc())
-                    time.sleep(12)
+                    time.sleep(ROUND_INTERVAL_S)
         finally:
             self.rerun_worker.stop()
             loop.close()
