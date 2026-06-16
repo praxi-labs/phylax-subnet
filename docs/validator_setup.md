@@ -50,11 +50,22 @@ btcli wallet overview --wallet.name validator --subtensor.network test
 Look for `validator/default` with a non-zero stake on subnet 486.
 
 
-## 2. Get on the Phylax-Server Allowlist
+## 2. Get the Server URL
 
-The server gates all task distribution and weight attestation behind an allowlist. You cannot run a meaningful validator without being on it.
+Access to phylax-server is permissionless. The server checks your hotkey directly against the Bittensor metagraph on every request. Two conditions must both be true before it will accept you:
 
-Send the phylax-server operator your validator hotkey ss58 address and the source IP your validator will dial from. They will reply with the server base URL and the server signing-key hotkey. Pin that hotkey in your `.env` so a rogue server cannot impersonate the real one.
+- Your hotkey holds a **validator permit** on netuid 486 (requires sufficient stake)
+- Your **vtrust is greater than zero** (rises as you actively set weights each round)
+
+No manual registration or allowlist is needed. Once those conditions are met on-chain, the server grants access automatically.
+
+Get the server URL from the Phylax community channels. Then fetch the server signing-key hotkey and pin it in your `.env` so a rogue server cannot impersonate the real one:
+
+```bash
+curl https://<phylax-server-host>/v1/server-identity
+```
+
+Set `PHYLAX_SERVER_HOTKEY` to the `server_hotkey` value returned.
 
 
 ## 3. Install and Configure
@@ -173,7 +184,7 @@ Your `.env`, rerun queue, and local state all persist across updates.
 |---|---|---|
 | Container exits immediately | Hotkey not found | Check `~/.bittensor/wallets/<WALLET_NAME>/hotkeys/<WALLET_HOTKEY>` exists |
 | `.env` edits not taking effect | `docker compose restart` reuses baked-in env | Use `docker compose up -d --force-recreate` |
-| `403 Forbidden` from phylax-server | Hotkey or IP not on the server allowlist | Contact the server operator |
+| `403 Forbidden` from phylax-server | Hotkey does not yet have a validator permit or vtrust is still zero | Wait for stake to earn a permit and for vtrust to rise after setting weights |
 | `phylax-server identity mismatch` | Server signing key changed or `PHYLAX_SERVER_HOTKEY` is wrong | Re-fetch `/v1/server-identity` and update `.env` |
 | `500` on reputation endpoints | Server schema out of date | Operator must run `alembic upgrade head` |
 | `no dispatchable miners` in logs | No miners declared this skill type or all are filtered | Wait for more miners to register |
