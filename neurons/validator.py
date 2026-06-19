@@ -1317,11 +1317,12 @@ class PhylaxValidator:
             bt.logging.debug(f"forbidden-LLM flag push failed: {e}")
 
     def _get_active_miner_uids(self) -> list[int]:
+        own_hotkey = self.wallet.hotkey.ss58_address
         out: list[int] = []
         for uid, axon in enumerate(self.metagraph.axons):
             if axon.ip == "0.0.0.0":
                 continue
-            if self.metagraph.validator_permit[uid]:
+            if self.metagraph.hotkeys[uid] == own_hotkey:
                 continue
             out.append(uid)
         return out
