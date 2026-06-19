@@ -86,6 +86,8 @@ CLASSIFY_BATCH_MIN = int(os.getenv("PHYLAX_CLASSIFY_BATCH_MIN", "12"))
 CLASSIFY_BATCH_MAX = 200
 CLASSIFY_DEADLINE_S = int(os.getenv("PHYLAX_CLASSIFY_DEADLINE", "180"))
 CLASSIFY_SCORE_ALPHA = float(os.getenv("PHYLAX_CLASSIFY_SCORE_ALPHA", "0.05"))
+_MAX_BUNDLE_COMPRESSED_BYTES = 16 * 1024 * 1024
+_MAX_BUNDLE_UNCOMPRESSED_BYTES = 64 * 1024 * 1024
 
 
 def _verify_classify_bundle(bundle_b64: str, expected_hash: str) -> bool:
@@ -93,11 +95,15 @@ def _verify_classify_bundle(bundle_b64: str, expected_hash: str) -> bool:
         data = base64.b64decode(bundle_b64, validate=True)
     except Exception:  # noqa: BLE001
         return False
+    if not data or len(data) > _MAX_BUNDLE_COMPRESSED_BYTES:
+        return False
     try:
         with tempfile.TemporaryDirectory(prefix="phylax-verify-") as td:
             root = Path(td)
             root_resolved = root.resolve()
             with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                if sum(i.file_size for i in zf.infolist()) > _MAX_BUNDLE_UNCOMPRESSED_BYTES:
+                    return False
                 for member in zf.infolist():
                     target = (root / member.filename).resolve()
                     if target != root_resolved and root_resolved not in target.parents:
