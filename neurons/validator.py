@@ -589,6 +589,8 @@ class PhylaxValidator:
 
             self._maybe_enqueue_reruns(task, prep, scored_members, consensus_report)
 
+            self._publish_canonical_attestation(round_id, task, prep, scored_members)
+
         if not per_uid_results:
             bt.logging.info(f"round {round_id[:8]} produced no scores; not publishing")
             return
@@ -1201,6 +1203,33 @@ class PhylaxValidator:
             self._per_type_rep_cache = out
             self._per_type_rep_cached_at = time.time()
         return out
+
+    def _publish_canonical_attestation(
+        self, round_id: str, task: RoundTask, prep, scored_members: list[dict],
+    ) -> None:
+        if self.server_client is None or task.task_type != TaskType.SERVER_CURATED:
+            return
+        primaries = [m for m in scored_members if m["role"] == MinerRole.PRIMARY]
+        if not primaries:
+            return
+        best = max(primaries, key=lambda m: m["q"])
+        try:
+            self.server_client.push_attestation(
+                bundle_hash=prep.bundle_hash,
+                sssa=best["sssa"].model_dump(mode="json"),
+                quality_score=max(0.0, min(1.0, float(best["q"]))),
+                round_id=round_id,
+            )
+        except Exception as e:  # noqa: BLE001
+            bt.logging.warning(
+                f"attestation push failed bundle={prep.bundle_hash[:16]} "
+                f"{task.skill_type.value}: {e}"
+            )
+            return
+        bt.logging.info(
+            f"attestation pushed {task.skill_type.value} "
+            f"bundle={prep.bundle_hash[:16]} q={best['q']:.3f} hk={best['hotkey'][:10]}"
+        )
 
     def _publish_round_results(self, round_id: str, per_miner_payload: list[dict]) -> None:
         if self.server_client is None or not per_miner_payload:
