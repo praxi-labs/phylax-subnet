@@ -2,17 +2,22 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
+import io
 import os
 import random as _random
+import tempfile
 import time
 import traceback
 import uuid
+import zipfile
 from collections import deque
 from pathlib import Path
 
 import bittensor as bt
 import torch
 
+from phylax.harness.classifier import canonical_bundle_hash
 from phylax.protocol import (
     REQUIRED_TRACE_FILES,
     SSSA,
@@ -81,6 +86,22 @@ CLASSIFY_BATCH_MIN = int(os.getenv("PHYLAX_CLASSIFY_BATCH_MIN", "12"))
 CLASSIFY_BATCH_MAX = 200
 CLASSIFY_DEADLINE_S = int(os.getenv("PHYLAX_CLASSIFY_DEADLINE", "180"))
 CLASSIFY_SCORE_ALPHA = float(os.getenv("PHYLAX_CLASSIFY_SCORE_ALPHA", "0.05"))
+
+
+def _verify_classify_bundle(bundle_b64: str, expected_hash: str) -> bool:
+    try:
+        data = base64.b64decode(bundle_b64, validate=True)
+    except Exception:  # noqa: BLE001
+        return False
+    try:
+        with tempfile.TemporaryDirectory(prefix="phylax-verify-") as td:
+            root = Path(td)
+            with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                zf.extractall(root)
+            actual = canonical_bundle_hash(root)
+    except Exception:  # noqa: BLE001
+        return False
+    return actual.removeprefix("sha256:") == expected_hash.removeprefix("sha256:")
 
 
 def _metagraph_size(metagraph) -> int:
@@ -251,9 +272,14 @@ class PhylaxValidator:
             report: dict = {"skill_id": task.get("skill_id"), "consensus": False}
             if winner is not None and len(winner[1]) >= 2:
                 (bundle_hash, skill_type), agreeing = winner
-                bundle_b64 = next(
-                    (bundle_by_uid[u] for u in agreeing if bundle_by_uid.get(u)), None
-                )
+                bundle_b64 = None
+                for u in agreeing:
+                    cand = bundle_by_uid.get(u)
+                    if cand and await asyncio.to_thread(
+                        _verify_classify_bundle, cand, bundle_hash
+                    ):
+                        bundle_b64 = cand
+                        break
                 report = {
                     "skill_id": task.get("skill_id"),
                     "consensus": True,
