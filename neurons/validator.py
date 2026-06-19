@@ -96,7 +96,12 @@ def _verify_classify_bundle(bundle_b64: str, expected_hash: str) -> bool:
     try:
         with tempfile.TemporaryDirectory(prefix="phylax-verify-") as td:
             root = Path(td)
+            root_resolved = root.resolve()
             with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                for member in zf.infolist():
+                    target = (root / member.filename).resolve()
+                    if target != root_resolved and root_resolved not in target.parents:
+                        return False
                 zf.extractall(root)
             actual = canonical_bundle_hash(root)
     except Exception:  # noqa: BLE001
