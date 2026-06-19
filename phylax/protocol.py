@@ -427,6 +427,7 @@ class ClassifySynapse(bt.Synapse):
 
     bundle_hash: str | None = None
     skill_type: str | None = None
+    bundle_b64: str | None = None
     error: str | None = None
     latency_ms: int | None = None
 

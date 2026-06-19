@@ -4,6 +4,7 @@ import base64
 import datetime as dt
 import gzip
 import hashlib
+import io
 import os
 import tempfile
 import time
@@ -49,6 +50,19 @@ SKILL_TYPES = {t.value for t in SkillType}
 
 TRACER_VERSION = "1.0.0"
 DEFAULT_SANDBOX_IMAGE = "ghcr.io/praxi-labs/phylax-sandbox:latest"
+
+_MAX_CLASSIFY_BUNDLE_BYTES = 5 * 1024 * 1024
+
+
+def _zip_tree_b64(root: Path, max_bytes: int = _MAX_CLASSIFY_BUNDLE_BYTES) -> str | None:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for path in sorted(p for p in root.rglob("*") if p.is_file()):
+            zf.write(path, path.relative_to(root).as_posix())
+    data = buf.getvalue()
+    if len(data) > max_bytes:
+        return None
+    return base64.b64encode(data).decode("ascii")
 
 
 def _sandbox_manifest() -> dict[str, str]:
@@ -268,6 +282,7 @@ class PhylaxMiner:
                 )
                 synapse.bundle_hash = await asyncio.to_thread(canonical_bundle_hash, root)
                 synapse.skill_type = await asyncio.to_thread(classify_tree, root)
+                synapse.bundle_b64 = await asyncio.to_thread(_zip_tree_b64, root)
             bt.logging.success(
                 f"classify done: {synapse.slug} -> {synapse.skill_type} "
                 f"hash={synapse.bundle_hash[:23]}"

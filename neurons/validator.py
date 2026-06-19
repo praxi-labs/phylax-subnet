@@ -237,6 +237,7 @@ class PhylaxValidator:
                 responses = [responses]
 
             votes: dict[tuple[str, str], list[int]] = {}
+            bundle_by_uid: dict[int, str | None] = {}
             for uid, resp in zip(group, responses, strict=False):
                 if resp is None or not isinstance(resp, ClassifySynapse):
                     continue
@@ -244,11 +245,15 @@ class PhylaxValidator:
                     continue
                 key = (resp.bundle_hash.removeprefix("sha256:"), resp.skill_type)
                 votes.setdefault(key, []).append(uid)
+                bundle_by_uid[uid] = resp.bundle_b64
 
             winner = max(votes.items(), key=lambda kv: len(kv[1]), default=None)
             report: dict = {"skill_id": task.get("skill_id"), "consensus": False}
             if winner is not None and len(winner[1]) >= 2:
                 (bundle_hash, skill_type), agreeing = winner
+                bundle_b64 = next(
+                    (bundle_by_uid[u] for u in agreeing if bundle_by_uid.get(u)), None
+                )
                 report = {
                     "skill_id": task.get("skill_id"),
                     "consensus": True,
@@ -256,6 +261,7 @@ class PhylaxValidator:
                     "bundle_hash": bundle_hash,
                     "pinned_commit": task.get("pinned_commit") or None,
                     "classifier_hotkeys": [self.metagraph.hotkeys[u] for u in agreeing],
+                    "bundle_b64": bundle_b64,
                 }
                 for u in agreeing:
                     credits[u] = credits.get(u, 0.0) + 1.0
