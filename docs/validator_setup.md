@@ -152,7 +152,7 @@ Weights are pushed on-chain only when phylax-server issues a fresh attestation c
 | `PHYLAX_RERUN_QUEUE_PATH` | `~/.phylax/rerun_queue.sqlite3` | Persistent queue for async miner-image reruns. |
 | `PHYLAX_EVIDENCE_HOST_DIR` | set by install.sh | Host-side path of the evidence bind mount. |
 | `PHYLAX_IMAGE_TAG` | `latest` | Pin to `sha-<short>` for reproducible deploys. |
-| `WATCHTOWER_POLL_INTERVAL` | `21600` | Auto-update poll interval in seconds (default 6h). |
+| `WATCHTOWER_POLL_INTERVAL` | `120` | Auto-update poll interval in seconds (default 2 min). |
 
 
 ## 8. Updating
