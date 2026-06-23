@@ -25,11 +25,13 @@ is prose rather than something a runtime can enforce.
 
 ## How Phylax is different
 
-Phylax runs the analysis as a decentralized competition. A miner submits an agent
-(its code, the sandbox image it runs in, and an inference key) for a single track.
-Validators run that agent on real artifacts, confirm it actually executed by
-checking a probe the server planted, score the result, and set weights on chain.
-A claim with no matching evidence earns nothing.
+Phylax runs the analysis as a decentralized competition. A miner builds an agent
+(its code, the sandbox image it runs in, and an inference key) for a single track
+and runs it on the tasks validators dispatch. Validators confirm it actually
+executed by checking a probe they issued, score the result, rerun a sample to keep
+it honest, and set weights on chain. A claim with no matching evidence earns
+nothing. There is no central server in this loop; it is validator to miner over
+Bittensor.
 
 | | Traditional scanners | Phylax |
 |---|---|---|
@@ -60,15 +62,16 @@ track only the top three agents earn in a given round.
 
 ### Agents are the artifact
 
-A miner writes an agent that implements `agent_main(context)` and returns an SSSA.
-They submit it once, signed with their hotkey: the code, the sandbox image it runs
-in (pinned by digest), an inference key, and the track it belongs to. The miner
-then runs that agent live on each task and submits a signed SSSA, while the
-validator reruns a sample in the registered image to audit that verdicts hold up.
+A miner writes an agent that implements `agent_main(context)` and returns an SSSA,
+pinned to a sandbox image by digest. The miner runs it on each task a validator
+dispatches and returns a signed SSSA over Bittensor, while the validator reruns a
+sample in the miner's registered image to audit that verdicts hold up. The agent is
+also registered with the server once so it appears in the marketplace, but that
+registration is not part of the protocol.
 
 ### Proof of execution
 
-For every task the server issues a fresh nonce and derives a probe from it: a
+For every task the validator issues a fresh nonce and derives a probe from it: a
 specific file to write, a host to look up, and a token to echo. The agent performs
 these during detonation. The validator then reads the captured traces and confirms
 the probe really fired. If it did not, the result scores zero.
@@ -99,7 +102,7 @@ attestation:  { miner_hotkey, signature: ed25519:…, canonical_hash }
 ```
 
 The agent fills in the verdict, evidence, and findings, and the miner signs the
-attestation with its hotkey before submitting it. Full reference in
+attestation with its hotkey before returning it to the validator. Full reference in
 [docs/sssa_schema.md](docs/sssa_schema.md) and
 [docs/agent_contract.md](docs/agent_contract.md).
 
@@ -113,7 +116,7 @@ top three emission split. Full specification in [docs/scoring.md](docs/scoring.m
 
 ## Anti gaming
 
-- The nonce is issued by the server, so the probe cannot be precomputed. Only a
+- The nonce is issued by the validator, so the probe cannot be precomputed. Only a
   real run produces matching traces.
 - The evidence gate means a submission with no verifiable execution earns nothing.
 - Sampled reruns require a claimed result to reproduce in the miner's registered
@@ -125,18 +128,21 @@ top three emission split. Full specification in [docs/scoring.md](docs/scoring.m
 
 The subnet is well focused:
 
-- `neurons/miner.py` runs the active loop: request a task, run the agent, sign the
-  SSSA, and submit it.
-- `neurons/validator.py` runs the audit loop: rerun a sampled subset, report
-  reproduction, and set weights.
+- `neurons/miner.py` serves an axon: receive a dispatched task, run the agent,
+  return the signed SSSA, and serve the agent to validators for reruns.
+- `neurons/validator.py` runs the loop: dispatch tasks to miners, verify the proof,
+  score, rerun a sampled subset, and set weights.
+- `phylax/protocol.py` defines the task and agent synapses exchanged between them.
+- `phylax/analysis/` holds the scoring spine, proof verification, capability
+  taxonomy, and per track evaluators that the validator runs.
 - `phylax/harness/runner.py` is the shared agent runner used by both.
 - `phylax/harness/executor.py` runs an agent in the registered image, jailed.
 - `phylax/harness/skills_reference_agent.py` is the reference skills agent.
-- `phylax/server_client.py` is the signed client for the control plane.
+- `phylax/server_client.py` is the thin client for the server's product registration.
 
-The control plane (task dispatch, scoring, weights, and the SSSA schema) lives in
-the separate phylax-server repository. Full module map in
-[docs/architecture.md](docs/architecture.md).
+Scoring, reruns, and weights all run in the validator. The separate phylax-server
+is product only (marketplace, agent registration, rentals) and is never in the
+protocol path. Full module map in [docs/architecture.md](docs/architecture.md).
 
 ## Getting started
 

@@ -20,9 +20,9 @@ track-specific `evidence` block and `findings` list. The canonical models live i
 
 - `verdict.decision`: `ALLOW`/`WARN`/`BLOCK`. `risk_score` 0-100, `confidence` 0-1.
 - `attestation.miner_hotkey` identifies whose agent ran. The **miner signs** the
-  SSSA with that hotkey before submitting it, so the signature binds the result to
-  the miner who produced it. The server verifies the proof-of-execution on intake,
-  and the validator independently reruns a sample to confirm the verdict holds.
+  SSSA with that hotkey before returning it to the validator, so the signature binds
+  the result to the miner who produced it. The validator verifies the
+  proof-of-execution and reruns a sample to confirm the verdict holds.
 
 The agent fills `verdict`, `evidence`, and `findings`, and the miner signs the
 envelope with its hotkey.
@@ -127,4 +127,5 @@ benchmark's known vulnerabilities.
 The miner computes `canonical_hash` over the canonical JSON of
 `{track, bundle_hash, nonce, verdict, evidence}` (sorted keys, no whitespace),
 then sets `attestation.signature = "ed25519:" + sign(sha256(canonical_body))`
-with the miner hotkey. The server verifies the probe before accepting it.
+with the miner hotkey. The validator verifies the signature and the probe before
+scoring it.
