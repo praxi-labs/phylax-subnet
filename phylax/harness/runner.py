@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import io
 import os
 import shutil
@@ -28,22 +30,13 @@ def _download(url: str, log: Callable[[str], None] | None) -> bytes | None:
         return None
 
 
-def materialise_artifact(
-    url: str | None, work_dir: Path, log: Callable[[str], None] | None = None
-) -> Path:
-    artifact_dir = work_dir / "artifact"
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-    if not url:
-        return artifact_dir
-    data = _download(url, log)
-    if not data:
-        return artifact_dir
+def _extract_into(data: bytes, artifact_dir: Path, log: Callable[[str], None] | None) -> None:
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
             if sum(m.file_size for m in zf.infolist()) > _MAX_ARTIFACT_UNCOMPRESSED_BYTES:
                 if log:
                     log("artifact exceeds uncompressed cap; skipping extraction")
-                return artifact_dir
+                return
             root = artifact_dir.resolve()
             for member in zf.infolist():
                 target = (artifact_dir / member.filename).resolve()
@@ -54,6 +47,29 @@ def materialise_artifact(
                 zf.extract(member, artifact_dir)
     except zipfile.BadZipFile:
         (artifact_dir / "artifact.bin").write_bytes(data)
+
+
+def materialise_artifact(
+    url: str | None, work_dir: Path, log: Callable[[str], None] | None = None
+) -> Path:
+    artifact_dir = work_dir / "artifact"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    if not url:
+        return artifact_dir
+    data = _download(url, log)
+    if not data:
+        return artifact_dir
+    _extract_into(data, artifact_dir, log)
+    return artifact_dir
+
+
+def materialise_bytes(
+    data: bytes | None, work_dir: Path, log: Callable[[str], None] | None = None
+) -> Path:
+    artifact_dir = work_dir / "artifact"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    if data:
+        _extract_into(data, artifact_dir, log)
     return artifact_dir
 
 
@@ -65,7 +81,15 @@ def run_task(
 ) -> dict | None:
     work_dir = Path(tempfile.mkdtemp(prefix="phylax-run-"))
     try:
-        artifact_dir = materialise_artifact(dispatch.get("artifact_url"), work_dir, log)
+        b64 = dispatch.get("artifact_b64")
+        if b64:
+            try:
+                data = base64.b64decode(b64)
+            except (binascii.Error, ValueError):
+                data = None
+            artifact_dir = materialise_bytes(data, work_dir, log)
+        else:
+            artifact_dir = materialise_artifact(dispatch.get("artifact_url"), work_dir, log)
         agent_path = work_dir / "agent.py"
         agent_path.write_text(runnable.get("code", ""), encoding="utf-8")
 

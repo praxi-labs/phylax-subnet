@@ -13,16 +13,21 @@ services:
       - PHYLAX_SERVER_URL=${PHYLAX_SERVER_URL:-}
       - PHYLAX_SERVER_HOTKEY=${PHYLAX_SERVER_HOTKEY:-}
       - PHYLAX_EXECUTOR=${PHYLAX_EXECUTOR:-sandbox}
+      - PHYLAX_AXON_PORT=${PHYLAX_AXON_PORT:-8091}
+      - PHYLAX_AXON_EXTERNAL_IP=${PHYLAX_AXON_EXTERNAL_IP:-}
     volumes:
       - ../:/opt/phylax
     networks:
       - egress
+    ports:
+      - "${PHYLAX_AXON_PORT:-8091}:${PHYLAX_AXON_PORT:-8091}"
     command: >
       python neurons/miner.py
       --netuid ${PHYLAX_NETUID:-486}
       --subtensor.network ${SUBTENSOR_NETWORK:-test}
       --wallet.name ${WALLET_NAME:-miner}
       --wallet.hotkey ${WALLET_HOTKEY:-default}
+      --axon.port ${PHYLAX_AXON_PORT:-8091}
       --logging.debug
 
   validator:

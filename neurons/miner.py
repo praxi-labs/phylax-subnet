@@ -10,6 +10,7 @@ from pathlib import Path
 import bittensor as bt
 
 from phylax.harness.runner import run_task
+from phylax.protocol import AgentSynapse, TaskSynapse
 from phylax.server_client import PhylaxServerClient
 
 MINER_INTERVAL_S: int = int(os.getenv("PHYLAX_MINER_INTERVAL", "20"))
@@ -44,17 +45,25 @@ class PhylaxMiner:
         self.sandbox_image = os.getenv("PHYLAX_SANDBOX_IMAGE", "")
         self.sandbox_digest = os.getenv("PHYLAX_SANDBOX_DIGEST", "")
 
-        server_url = os.getenv("PHYLAX_SERVER_URL", "")
-        expected_server_hotkey = os.getenv("PHYLAX_SERVER_HOTKEY", "").strip() or None
-        self.server_client: PhylaxServerClient | None = None
-        if server_url:
-            self.server_client = PhylaxServerClient(
-                base_url=server_url,
-                wallet=self.wallet,
-                expected_server_hotkey=expected_server_hotkey,
-            )
-        else:
-            bt.logging.warning("PHYLAX_SERVER_URL not configured — miner cannot fetch tasks")
+        axon_kwargs: dict = {"wallet": self.wallet, "config": config}
+        axon_port = os.getenv("PHYLAX_AXON_PORT", "").strip()
+        if axon_port:
+            axon_kwargs["port"] = int(axon_port)
+        axon_external_ip = os.getenv("PHYLAX_AXON_EXTERNAL_IP", "").strip()
+        if axon_external_ip:
+            axon_kwargs["external_ip"] = axon_external_ip
+        self.axon = bt.axon(**axon_kwargs)
+        self.axon.attach(
+            forward_fn=self.handle_task,
+            blacklist_fn=self.blacklist_task,
+            priority_fn=self.priority,
+        ).attach(
+            forward_fn=self.handle_agent,
+            blacklist_fn=self.blacklist_agent,
+            priority_fn=self.priority,
+        )
+
+        self._register_agent_for_marketplace()
 
     def _provider(self) -> str:
         if self.execution_api_key.startswith("cpk_"):
@@ -74,12 +83,39 @@ class PhylaxMiner:
             "sandbox_digest": self.sandbox_digest,
         }
 
-    def _sign_sssa(self, dispatch: dict, verdict: dict, evidence: dict) -> str:
+    def _register_agent_for_marketplace(self) -> None:
+        server_url = os.getenv("PHYLAX_SERVER_URL", "")
+        if not server_url:
+            return
+        expected = os.getenv("PHYLAX_SERVER_HOTKEY", "").strip() or None
+        try:
+            client = PhylaxServerClient(
+                base_url=server_url, wallet=self.wallet, expected_server_hotkey=expected
+            )
+            client.register_track(
+                self.wallet.hotkey.ss58_address, self.track,
+                label=os.getenv("PHYLAX_MINER_LABEL", ""),
+            )
+            client.submit_agent(
+                hotkey=self.wallet.hotkey.ss58_address,
+                code=Path(self.agent_path).read_text(encoding="utf-8"),
+                execution_api_key=self.execution_api_key,
+                sandbox_image=self.sandbox_image,
+                sandbox_digest=self.sandbox_digest,
+                entrypoint=self.entrypoint,
+                name=os.getenv("PHYLAX_MINER_LABEL", ""),
+                inference_model=self.inference_model,
+            )
+            bt.logging.success("registered agent with marketplace")
+        except Exception as e:  # noqa: BLE001
+            bt.logging.warning(f"marketplace registration skipped: {e}")
+
+    def _sign(self, track: str, bundle_hash: str, nonce: str, verdict: dict, evidence: dict):
         body = json.dumps(
             {
-                "track": dispatch.get("track", ""),
-                "bundle_hash": dispatch.get("artifact_ref", ""),
-                "nonce": dispatch.get("nonce", ""),
+                "track": track,
+                "bundle_hash": bundle_hash,
+                "nonce": nonce,
                 "verdict": verdict,
                 "evidence": evidence,
             },
@@ -87,56 +123,80 @@ class PhylaxMiner:
             separators=(",", ":"),
         ).encode("utf-8")
         digest = hashlib.sha256(body).digest()
-        return "ed25519:" + self.wallet.hotkey.sign(digest).hex()
+        return "sha256:" + digest.hex(), "ed25519:" + self.wallet.hotkey.sign(digest).hex()
 
-    def _run_one(self) -> None:
-        if self.server_client is None:
-            return
-        try:
-            dispatch = self.server_client.dispatch_track_task(self.track)
-        except Exception as e:  # noqa: BLE001
-            bt.logging.warning(f"task dispatch failed: {e}")
-            return
-        if not dispatch:
-            bt.logging.info(f"no task available for {self.track}")
-            return
-
-        runnable = self._local_runnable()
-        result = run_task(dispatch, runnable, log=bt.logging.warning)
+    def handle_task(self, synapse: TaskSynapse) -> TaskSynapse:
+        if synapse.track and synapse.track != self.track:
+            return synapse
+        dispatch = {
+            "track": self.track,
+            "nonce": synapse.nonce,
+            "probe": synapse.probe or {},
+            "artifact_ref": synapse.artifact_ref,
+            "artifact_b64": synapse.artifact_b64,
+        }
+        result = run_task(dispatch, self._local_runnable(), log=bt.logging.warning)
         if result is None:
-            return
-
+            return synapse
         verdict = result["verdict"]
         evidence = result["evidence"]
-        signature = self._sign_sssa(dispatch, verdict, evidence)
-        try:
-            resp = self.server_client.submit_track_attestation(
-                dispatch["task_id"],
-                verdict=verdict.get("decision", "ALLOW"),
-                evidence=evidence,
-                risk_score=int(verdict.get("risk_score", 0) or 0),
-                miner_signature=signature,
-            )
-        except Exception as e:  # noqa: BLE001
-            bt.logging.warning(f"submit attestation failed task={dispatch['task_id'][:8]}: {e}")
-            return
-
-        bt.logging.success(
-            f"task={dispatch['task_id'][:8]} verdict={verdict.get('decision')} "
-            f"score={resp.get('score')} gate={resp.get('evidence_gate_passed')}"
+        canonical_hash, signature = self._sign(
+            self.track, synapse.artifact_ref, synapse.nonce, verdict, evidence
         )
+        synapse.sssa = {
+            "track": self.track,
+            "artifact": {"bundle_hash": synapse.artifact_ref, "nonce": synapse.nonce},
+            "verdict": verdict,
+            "evidence": evidence,
+            "findings": result.get("findings") or [],
+            "attestation": {
+                "miner_hotkey": self.wallet.hotkey.ss58_address,
+                "signature": signature,
+                "canonical_hash": canonical_hash,
+            },
+        }
+        return synapse
+
+    def handle_agent(self, synapse: AgentSynapse) -> AgentSynapse:
+        synapse.track = self.track
+        synapse.code = Path(self.agent_path).read_text(encoding="utf-8")
+        synapse.entrypoint = self.entrypoint
+        synapse.execution_api_key = self.execution_api_key
+        synapse.inference_model = self.inference_model
+        synapse.sandbox_image = self.sandbox_image
+        synapse.sandbox_digest = self.sandbox_digest
+        return synapse
+
+    def blacklist_task(self, synapse: TaskSynapse) -> tuple[bool, str]:
+        return self._blacklist(synapse)
+
+    def blacklist_agent(self, synapse: AgentSynapse) -> tuple[bool, str]:
+        return self._blacklist(synapse)
+
+    def _blacklist(self, synapse) -> tuple[bool, str]:
+        hotkey = getattr(synapse.dendrite, "hotkey", None)
+        if hotkey is None or hotkey not in self.metagraph.hotkeys:
+            return True, "unrecognised hotkey"
+        return False, ""
+
+    def priority(self, synapse) -> float:
+        hotkey = getattr(synapse.dendrite, "hotkey", None)
+        if hotkey in self.metagraph.hotkeys:
+            uid = self.metagraph.hotkeys.index(hotkey)
+            return float(self.metagraph.S[uid])
+        return 0.0
 
     def run(self):
         bt.logging.info(
             f"Starting Phylax miner on subnet {self.config.netuid} track={self.track} "
             f"| hotkey: {self.wallet.hotkey.ss58_address}"
         )
+        self.axon.serve(netuid=self.config.netuid, subtensor=self.subtensor).start()
         step = 0
         while not self.should_exit:
             try:
                 if step % 10 == 0:
                     self.metagraph.sync(subtensor=self.subtensor)
-                self._run_one()
                 step += 1
                 time.sleep(MINER_INTERVAL_S)
             except KeyboardInterrupt:

@@ -6,6 +6,8 @@ services:
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
+    ports:
+      - "${PHYLAX_AXON_PORT:-8091}:${PHYLAX_AXON_PORT:-8091}"
     volumes:
       - ${BITTENSOR_DIR:-~/.bittensor}:/opt/phylax/.bittensor
     environment:
@@ -27,6 +29,8 @@ services:
       - "${WALLET_NAME:-miner}"
       - --wallet.hotkey
       - "${WALLET_HOTKEY:-default}"
+      - --axon.port
+      - "${PHYLAX_AXON_PORT:-8091}"
       - --logging.debug
 
   watchtower:
