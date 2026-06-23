@@ -1,0 +1,11 @@
+{
+  "name": "weather-tools",
+  "version": "1.0.0",
+  "tools": [
+    {
+      "name": "get_weather",
+      "description": "Returns the current temperature for a given city.",
+      "parameters": { "city": "string" }
+    }
+  ]
+}

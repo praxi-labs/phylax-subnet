@@ -1,58 +1,19 @@
-# Phylax miner runtime
-#
-# Builds an image that contains the miner code plus its analysis tooling
-# (bandit, syft, cyclonedx). Sandboxed skill execution happens in a SEPARATE
-# image — see Dockerfile.sandbox.
-
 FROM python:3.11-slim AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PHYLAX_HOME=/opt/phylax \
-    PHYLAX_EVIDENCE_DIR=/opt/phylax/evidence \
-    PHYLAX_SANDBOX_IMAGE=ghcr.io/praxi-labs/phylax-sandbox:latest \
-    SANDBOX_TIMEOUT=60 \
-    QUERY_TIMEOUT=60
+    PHYLAX_TRACK=skills
 
-# ---------------------------------------------------------------------------
-# OS-level tools needed by the static + SBOM layers
-# ---------------------------------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl ca-certificates git build-essential \
         && rm -rf /var/lib/apt/lists/*
 
-# syft — SBOM generation
-RUN curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
-        | sh -s -- -b /usr/local/bin
-
-# Docker CLI (the miner shells out to docker to launch the sandbox image)
-RUN install -m 0755 -d /etc/apt/keyrings \
- && curl -fsSL https://download.docker.com/linux/debian/gpg \
-        -o /etc/apt/keyrings/docker.asc \
- && chmod a+r /etc/apt/keyrings/docker.asc \
- && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
-         https://download.docker.com/linux/debian bookworm stable" \
-        > /etc/apt/sources.list.d/docker.list \
- && apt-get update && apt-get install -y --no-install-recommends docker-ce-cli \
- && rm -rf /var/lib/apt/lists/*
-
-# ---------------------------------------------------------------------------
-# Python deps + Phylax package
-# ---------------------------------------------------------------------------
 WORKDIR ${PHYLAX_HOME}
 COPY requirements.txt ./
 RUN pip install --upgrade pip && pip install -r requirements.txt
 
-# Pin the bittensor stack to versions known to work with the current testnet
-# runtime. bittensor 10.x calls a NeuronInfoRuntimeApi path the testnet's
-# older WASM runtime panics on; 9.12 matches what btcli 9.x talks to.
-# async-substrate-interface 1.x is the last line that still exposes ScaleObj
-# (2.x removed it). scalecodec gets pulled as a dep but its namespace collides
-# with cyscale (the faster reimplementation we actually want), so swap them.
-# bittensor-wallet 4.0.x deserializes keyfiles as HashMap<String, Option<String>>
-# in Rust, which rejects modern btcli's `"cryptoType": 1` (integer). 4.1.0+
-# accepts it. Pin explicitly so a transitive resolution doesn't drop us back.
 RUN pip install --force-reinstall \
         bittensor==9.12.2 \
         'bittensor-wallet>=4.1.0' \
@@ -64,13 +25,5 @@ RUN pip install --force-reinstall \
 COPY . .
 RUN pip install -e .
 
-# Pre-create the evidence dir with write perms so any UID can scribble in it
-# at runtime. Operators almost always run the container with --user $(id -u),
-# so we can't rely on a baked-in user owning the path.
-RUN mkdir -p "${PHYLAX_EVIDENCE_DIR}" && chmod 777 "${PHYLAX_EVIDENCE_DIR}"
-
-# ---------------------------------------------------------------------------
-# Default command — miner entry point
-# ---------------------------------------------------------------------------
 EXPOSE 8091
 CMD ["python", "neurons/miner.py"]

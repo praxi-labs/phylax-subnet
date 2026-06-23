@@ -1,0 +1,21 @@
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PHYLAX_TASK_DIR=/task
+
+RUN useradd --no-create-home --shell /usr/sbin/nologin agent
+
+RUN mkdir -p /task && chmod 777 /task
+
+WORKDIR /agent
+COPY docker/agent/requirements.txt ./
+RUN pip install --upgrade pip && pip install -r requirements.txt
+
+COPY phylax /agent/phylax
+COPY docker/agent/entrypoint.py /agent/entrypoint.py
+COPY phylax/harness/skills_reference_agent.py /agent/agent.py
+
+USER agent
+ENTRYPOINT ["python", "/agent/entrypoint.py"]

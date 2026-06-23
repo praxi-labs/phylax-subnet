@@ -1,0 +1,27 @@
+{
+  "artifact_id": "packages/known-bad/postinstall-exec",
+  "track": "packages",
+  "ground_truth": { "verdict": "BLOCK", "risk_score": 92, "classification": "dangerous" },
+  "expected_findings": [
+    { "category": "install_hook_exec", "severity": "CRIT", "phase": "install",
+      "title": "setup.py runs code on install that exfiltrates environment variables",
+      "evidence_ref": "setup.py" },
+    { "category": "credential_theft", "severity": "HIGH", "phase": "install",
+      "title": "Environment (may contain tokens) POSTed to external host", "evidence_ref": "setup.py" }
+  ],
+  "expected_capabilities": [
+    { "capability": "READ_ENV", "group": "Secrets and Credentials", "protection": "dangerous" },
+    { "capability": "POST_WEB", "group": "Network", "protection": "dangerous" },
+    { "capability": "SPAWN_PROCESS", "group": "Process and Execution", "protection": "dangerous" }
+  ],
+  "lifecycle": {
+    "install_time": { "hook_executed": true },
+    "import_time": { "side_effects": false }
+  },
+  "supply_chain": {
+    "typosquat": { "suspected": false },
+    "dependency_confusion": false
+  },
+  "source": { "origin": "synthetic", "collected_at": "2026-06-01" },
+  "notes": "PyPI package with a malicious postinstall in setup.py that exfiltrates os.environ at install time. The defining package attack: damage happens on install, before import. The package's own code is benign, which is why static reading of src misses it."
+}

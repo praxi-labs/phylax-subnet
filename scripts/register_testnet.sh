@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # scripts/register_testnet.sh
 #
-# One-command registration for a fresh Phylax miner or validator on the
-# Bittensor testnet. Reads config from .env in the project root.
+# Step 1 of onboarding: register a fresh Phylax miner or validator hotkey on
+# the Bittensor testnet (chain identity only). Reads config from .env.
+#
+# Miners then run ./scripts/register.sh to declare their track and submit their
+# agent. Validators establish eligibility on-chain via permit + vtrust (stake +
+# active weight-setting); there is no manual approval step.
 
 set -euo pipefail
 
@@ -32,9 +36,9 @@ echo "→ Netuid:         $PHYLAX_NETUID"
 echo "→ Network:        $SUBTENSOR_NETWORK"
 echo "→ Wallet name:    $WALLET_NAME"
 echo "→ Wallet hotkey:  $WALLET_HOTKEY"
+echo "→ Track:          ${PHYLAX_TRACK:-skills}"
 echo
 
-# Verify wallet exists
 if ! btcli wallet list --wallet.name "$WALLET_NAME" >/dev/null 2>&1; then
     echo "✗ Wallet '$WALLET_NAME' not found. Create it first:"
     echo "    btcli wallet create --wallet.name $WALLET_NAME --wallet.hotkey $WALLET_HOTKEY"
@@ -50,9 +54,14 @@ btcli subnet register \
 
 if [[ "$ROLE" == "validator" ]]; then
     echo
-    echo "→ Validator requires stake. Run:"
+    echo "→ Validator eligibility needs stake (permit) and active weight-setting (vtrust):"
     echo "    btcli stake add --wallet.name $WALLET_NAME --wallet.hotkey $WALLET_HOTKEY --amount <TAO>"
+else
+    echo
+    echo "→ Next: declare your track and submit your agent:"
+    echo "    ./scripts/build-agent.sh <registry/image>:<tag>   # build + push, copy digest to .env"
+    echo "    ./scripts/register.sh"
 fi
 
 echo
-echo "✓ Registration complete."
+echo "✓ Chain registration complete."

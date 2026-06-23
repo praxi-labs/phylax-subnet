@@ -143,6 +143,89 @@ class PhylaxServerClient:
     def whoami(self) -> dict:
         return self._request("GET", "/v1/validators/me")
 
+    def dispatch_track_task(self, track: str) -> dict | None:
+        resp = self._request("POST", "/v1/tasks/track/next", json_body={"track": track})
+        return resp or None
+
+    def get_runnable_agent(self, hotkey: str) -> dict:
+        return self._request("GET", f"/v1/specialization/agent/{hotkey}/runnable")
+
+    def fetch_track_weights(self) -> dict:
+        return self._request("GET", "/v1/tasks/track/weights")
+
+    def submit_track_attestation(
+        self,
+        task_id: str,
+        *,
+        verdict: str,
+        evidence: dict,
+        risk_score: int = 0,
+        miner_signature: str | None = None,
+    ) -> dict:
+        return self._request(
+            "POST",
+            f"/v1/tasks/track/{task_id}/attestation",
+            json_body={
+                "verdict": verdict,
+                "risk_score": risk_score,
+                "evidence": evidence,
+                "miner_signature": miner_signature,
+            },
+        )
+
+    def report_rerun(self, task_id: str, *, reproduced: bool) -> dict:
+        return self._request(
+            "POST",
+            f"/v1/tasks/track/{task_id}/rerun",
+            json_body={"reproduced": reproduced},
+        )
+
+    def fetch_rerun_sample(self, track: str, limit: int = 3) -> dict:
+        return self._request(
+            "POST",
+            "/v1/tasks/track/rerun-sample",
+            json_body={"track": track, "limit": limit},
+        )
+
+    def register_track(self, hotkey: str, track: str, specialization: dict) -> dict:
+        return self._request(
+            "POST",
+            "/v1/specialization/register",
+            json_body={
+                "hotkey": hotkey,
+                "track": track,
+                "specialization": specialization,
+            },
+        )
+
+    def submit_agent(
+        self,
+        *,
+        hotkey: str,
+        code: str,
+        execution_api_key: str,
+        sandbox_image: str,
+        sandbox_digest: str,
+        entrypoint: str = "agent_main",
+        name: str = "",
+        inference_model: str = "",
+        dependency_manifest: str = "",
+    ) -> dict:
+        return self._request(
+            "POST",
+            "/v1/specialization/agent",
+            json_body={
+                "hotkey": hotkey,
+                "name": name,
+                "code": code,
+                "entrypoint": entrypoint,
+                "execution_api_key": execution_api_key,
+                "inference_model": inference_model,
+                "sandbox": {"image_uri": sandbox_image, "image_hash": sandbox_digest},
+                "dependency_manifest": dependency_manifest,
+            },
+        )
+
     def fetch_task_batch(
         self,
         n_curated: int = 8,

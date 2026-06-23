@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # scripts/run_local.sh
 #
-# Bring up a local Phylax dev stack via docker compose.
-# Logs are streamed to stdout; CTRL+C stops everything.
+# Bring up a local Phylax subnet dev stack (miner + validator) via docker
+# compose. Builds the reference agent base image first so a submitted agent
+# has something to run inside. Requires a reachable phylax-server set via
+# PHYLAX_SERVER_URL in .env. Logs stream to stdout; CTRL+C stops everything.
 
 set -euo pipefail
 
@@ -14,9 +16,8 @@ if [ ! -f .env ]; then
     exit 1
 fi
 
-# Build the sandbox image first — both miner and validator shell out to it.
-echo "→ Building phylax-sandbox image…"
-docker build -f docker/Dockerfile.sandbox -t phylax-sandbox:latest .
+echo "→ Building phylax-agent:reference base image…"
+docker build -f docker/Dockerfile.agent -t phylax-agent:reference .
 
-echo "→ Starting docker compose stack (miner + validator + api)…"
+echo "→ Starting docker compose stack (miner + validator)…"
 docker compose -f docker/docker-compose.yml up --build

@@ -1,19 +1,3 @@
-# Canonical phylax-validator deployment. Operators run:
-#
-#   cd ~/phylax/validator
-#   docker compose pull
-#   docker compose up -d
-#
-# To opt into automatic image updates (Watchtower polls GHCR every 2 min, pulls
-# new versions, recreates the container, and prunes old layers):
-#
-#   docker compose --profile auto-update up -d
-#
-# Configuration lives in ./.env next to this file. The bootstrap script at
-# scripts/install.sh seeds .env with sensible defaults (including the host
-# UID/GID needed for the sandbox bind mount to be writable) and prompts for
-# the phylax-server URL + pinned server hotkey.
-
 services:
   phylax-validator:
     image: ghcr.io/praxi-labs/phylax-validator:${PHYLAX_IMAGE_TAG:-latest}
@@ -21,48 +5,25 @@ services:
     restart: unless-stopped
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     labels:
-      # Watchtower (in the auto-update profile below) only manages
-      # containers carrying this label. Keeps it from touching anything
-      # else the operator runs on the same host.
       - "com.centurylinklabs.watchtower.enable=true"
-    # Add the host's docker group so the container UID can open
-    # /var/run/docker.sock — BaselineRunner shells out to docker run for
-    # ground-truth detonation, and without socket access it produces no
-    # evidence hashes, dragging every miner's evidence_score to 0.
-    # install.sh detects the GID from `getent group docker` and writes it
-    # to .env.
     group_add:
       - "${DOCKER_GID:-999}"
     volumes:
-      # Wallet hotkey — needed to sign SSSAs and call set_weights. Mounted
-      # read-write because bittensor's settings.py calls
-      # WALLETS_DIR.mkdir(exist_ok=True) at import time, and a :ro mount
-      # makes even the no-op mkdir on the existing dir raise PermissionError.
-      # Mounted under /opt/phylax so the non-root container user can traverse
-      # the parent dir (/root would be 700-root and unreachable).
       - ${BITTENSOR_DIR:-~/.bittensor}:/opt/phylax/.bittensor
-      # Docker socket — BaselineRunner shells out to docker run for ground-truth detonation
       - /var/run/docker.sock:/var/run/docker.sock
-      # Per-scan evidence dir — also bind-mounted by the sandbox container
-      - ./evidence:/opt/phylax/evidence
-      # Attestation registry — must persist across restarts
-      - ./registry.sqlite3:/opt/phylax/registry.sqlite3
     environment:
-      # Force HOME because the process runs as a UID with no /etc/passwd
-      # entry (--user 1000:1000), so ~ would otherwise resolve to /. We
-      # use /opt/phylax (already 755 in the image) instead of /root so
-      # the non-root container user can traverse it and reach the
-      # bind-mounted wallet under ~/.bittensor.
       HOME: /opt/phylax
-      # Host-side path of the evidence bind mount. The BaselineRunner shells
-      # out to ``docker run -v`` through the host docker socket, so dockerd
-      # resolves -v sources against the HOST filesystem (NOT this
-      # container's view). Without this, the sandbox would mount empty
-      # root-owned dirs and the harness would fail with EACCES, producing
-      # no ground-truth evidence and pinning evidence_score to 0 forever.
-      PHYLAX_EVIDENCE_HOST_DIR: "${PHYLAX_EVIDENCE_HOST_DIR:-${PWD}/evidence}"
+      PHYLAX_TRACK: "${PHYLAX_TRACK:-skills}"
+      PHYLAX_SERVER_URL: "${PHYLAX_SERVER_URL:-}"
+      PHYLAX_SERVER_HOTKEY: "${PHYLAX_SERVER_HOTKEY:-}"
+      PHYLAX_VALIDATOR_LABEL: "${PHYLAX_VALIDATOR_LABEL:-}"
+      PHYLAX_EXECUTOR: "${PHYLAX_EXECUTOR:-docker}"
+      PHYLAX_JAIL_NETWORK: "phylax-jail"
+      PHYLAX_INFERENCE_PROXY_URL: "${PHYLAX_INFERENCE_PROXY_URL:-http://phylax-proxy:8900}"
     env_file:
       - .env
+    networks:
+      - egress
     command:
       - python
       - neurons/validator.py
@@ -76,15 +37,19 @@ services:
       - "${WALLET_HOTKEY:-default}"
       - --logging.debug
 
-  # Opt-in auto-updater. Starts only with `docker compose --profile
-  # auto-update up -d`; absent from the default `docker compose up -d`
-  # so operators who want manual control aren't surprised. When
-  # enabled, polls GHCR every 10 minutes, pulls new images for labeled
-  # containers (just phylax-validator), recreates them with the new
-  # image, and prunes the old layers. Override the interval by setting
-  # WATCHTOWER_POLL_INTERVAL (seconds) in .env. Solves two recurring operational
-  # problems at once: validators drifting onto stale code, and disk
-  # pressure from accumulated old image layers.
+  inference-proxy:
+    image: ghcr.io/praxi-labs/phylax-proxy:${PHYLAX_IMAGE_TAG:-latest}
+    container_name: phylax-proxy
+    restart: unless-stopped
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+    environment:
+      PHYLAX_PROXY_HOST: "0.0.0.0"
+      PHYLAX_PROXY_PORT: "8900"
+    networks:
+      - phylax-jail
+      - egress
+
   watchtower:
     image: containrrr/watchtower:latest
     container_name: phylax-watchtower
@@ -98,8 +63,13 @@ services:
       WATCHTOWER_INCLUDE_RESTARTING: "false"
       WATCHTOWER_ROLLING_RESTART: "true"
       WATCHTOWER_POLL_INTERVAL: "${WATCHTOWER_POLL_INTERVAL:-120}"
-      # Docker 27+ refuses API versions below 1.40 on the daemon side.
-      # Pinning here keeps Watchtower compatible with both new and old
-      # daemons. Override if you need a specific value.
       DOCKER_API_VERSION: "${DOCKER_API_VERSION:-1.41}"
       TZ: "UTC"
+
+networks:
+  egress:
+    driver: bridge
+  phylax-jail:
+    name: phylax-jail
+    driver: bridge
+    internal: true

@@ -1,28 +1,14 @@
-# Phylax validator runtime.
-#
-# The validator runs its own baseline pipeline, so this image bundles the
-# Phylax package, syft for SBOM generation, and the Docker CLI (the
-# validator shells out to docker to launch the phylax-sandbox image).
-# Kept separate from Dockerfile.miner so the images can diverge later.
-
 FROM python:3.11-slim AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PHYLAX_HOME=/opt/phylax \
-    PHYLAX_EVIDENCE_DIR=/opt/phylax/evidence \
-    PHYLAX_REGISTRY_PATH=/opt/phylax/registry.sqlite3 \
-    PHYLAX_SANDBOX_IMAGE=ghcr.io/praxi-labs/phylax-sandbox:latest \
-    SANDBOX_TIMEOUT=60 \
-    QUERY_TIMEOUT=60
+    PHYLAX_TRACK=skills
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl ca-certificates git build-essential \
         && rm -rf /var/lib/apt/lists/*
-
-RUN curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
-        | sh -s -- -b /usr/local/bin
 
 RUN install -m 0755 -d /etc/apt/keyrings \
  && curl -fsSL https://download.docker.com/linux/debian/gpg \
@@ -38,15 +24,6 @@ WORKDIR ${PHYLAX_HOME}
 COPY requirements.txt ./
 RUN pip install --upgrade pip && pip install -r requirements.txt
 
-# Pin the bittensor stack to versions known to work with the current testnet
-# runtime. bittensor 10.x calls a NeuronInfoRuntimeApi path the testnet's
-# older WASM runtime panics on; 9.12 matches what btcli 9.x talks to.
-# async-substrate-interface 1.x is the last line that still exposes ScaleObj
-# (2.x removed it). scalecodec gets pulled as a dep but its namespace collides
-# with cyscale (the faster reimplementation we actually want), so swap them.
-# bittensor-wallet 4.0.x deserializes keyfiles as HashMap<String, Option<String>>
-# in Rust, which rejects modern btcli's `"cryptoType": 1` (integer). 4.1.0+
-# accepts it. Pin explicitly so a transitive resolution doesn't drop us back.
 RUN pip install --force-reinstall \
         bittensor==9.12.2 \
         'bittensor-wallet>=4.1.0' \
@@ -58,9 +35,4 @@ RUN pip install --force-reinstall \
 COPY . .
 RUN pip install -e .
 
-# Pre-create evidence + registry parent so any UID can write at runtime.
-RUN mkdir -p "${PHYLAX_EVIDENCE_DIR}" "$(dirname ${PHYLAX_REGISTRY_PATH})" \
- && chmod 777 "${PHYLAX_EVIDENCE_DIR}" "$(dirname ${PHYLAX_REGISTRY_PATH})"
-
-EXPOSE 8080
 CMD ["python", "neurons/validator.py"]

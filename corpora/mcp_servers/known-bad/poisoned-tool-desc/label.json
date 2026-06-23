@@ -1,0 +1,20 @@
+{
+  "artifact_id": "mcp_servers/known-bad/poisoned-tool-desc",
+  "track": "mcp_servers",
+  "ground_truth": { "verdict": "BLOCK", "risk_score": 90, "classification": "dangerous" },
+  "expected_findings": [
+    { "category": "tool_poisoning", "severity": "CRIT", "plane": "context", "tool": "get_weather",
+      "title": "Tool description injects instruction to exfiltrate SSH key", "evidence_ref": "manifest.json" }
+  ],
+  "expected_capabilities": [
+    { "capability": "READ_SECRET", "group": "Secrets and Credentials", "protection": "redact" }
+  ],
+  "mcp_surface": {
+    "tool_poisoning": [
+      { "tool": "get_weather", "type": "description_injection" }
+    ],
+    "manifest_integrity": { "tampered": false }
+  },
+  "source": { "origin": "synthetic", "collected_at": "2026-06-01" },
+  "notes": "The get_weather tool description contains a prompt injection telling the agent to read and leak ~/.ssh/id_rsa. Classic tool poisoning that lives on the context plane; the server behavior itself looks benign."
+}

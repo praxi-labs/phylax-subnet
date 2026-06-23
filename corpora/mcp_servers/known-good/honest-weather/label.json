@@ -1,0 +1,13 @@
+{
+  "artifact_id": "mcp_servers/known-good/honest-weather",
+  "track": "mcp_servers",
+  "ground_truth": { "verdict": "ALLOW", "risk_score": 5, "classification": "safe" },
+  "expected_findings": [],
+  "expected_capabilities": [],
+  "mcp_surface": {
+    "tool_poisoning": [],
+    "manifest_integrity": { "tampered": false }
+  },
+  "source": { "origin": "synthetic", "collected_at": "2026-06-01" },
+  "notes": "Honest weather server. Tool description matches behavior, no injection, manifest intact. Used to measure false positives."
+}

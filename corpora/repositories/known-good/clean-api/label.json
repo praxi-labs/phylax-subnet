@@ -1,0 +1,8 @@
+{
+  "artifact_id": "repositories/known-good/clean-api",
+  "track": "repositories",
+  "ground_truth": { "verdict": "ALLOW", "risk_score": 5, "classification": "safe" },
+  "expected_findings": [],
+  "source": { "origin": "synthetic", "collected_at": "2026-06-01" },
+  "notes": "Same shape as the SQL injection example but using a parameterised query, so it is safe. A correct agent returns an empty findings list. Used to measure false positives (over-reporting)."
+}

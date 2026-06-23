@@ -1,0 +1,17 @@
+{
+  "artifact_id": "packages/known-good/clean-utils",
+  "track": "packages",
+  "ground_truth": { "verdict": "ALLOW", "risk_score": 3, "classification": "safe" },
+  "expected_findings": [],
+  "expected_capabilities": [],
+  "lifecycle": {
+    "install_time": { "hook_executed": false },
+    "import_time": { "side_effects": false }
+  },
+  "supply_chain": {
+    "typosquat": { "suspected": false },
+    "dependency_confusion": false
+  },
+  "source": { "origin": "synthetic", "collected_at": "2026-06-01" },
+  "notes": "Clean utility package. Standard setup, no custom install command, no install or import side effects. Used to measure false positives."
+}

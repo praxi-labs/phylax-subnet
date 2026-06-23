@@ -1,18 +1,3 @@
-# Local development stack for Phylax.
-#
-# Services:
-#   miner       — runs the 3-layer pipeline against incoming validator queries
-#   validator   — runs its own baseline pipeline, scores miners, sets weights,
-#                 publishes consensus SSSAs to the registry
-#   api         — exposes the validator's registry over REST (POST /v1/scan,
-#                 GET /v1/attestation/{hash})
-#
-# Both miner and validator require the host Docker socket because they
-# shell out to docker to launch the phylax-sandbox image for detonation.
-#
-# Usage:
-#   docker compose -f docker/docker-compose.yml up --build
-
 services:
 
   miner:
@@ -23,19 +8,21 @@ services:
     container_name: phylax-miner
     env_file: ../.env
     environment:
+      - PHYLAX_TRACK=${PHYLAX_TRACK:-skills}
       - PHYLAX_LOG_LEVEL=DEBUG
+      - PHYLAX_SERVER_URL=${PHYLAX_SERVER_URL:-}
+      - PHYLAX_SERVER_HOTKEY=${PHYLAX_SERVER_HOTKEY:-}
+      - PHYLAX_EXECUTOR=${PHYLAX_EXECUTOR:-sandbox}
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
       - ../:/opt/phylax
-    ports:
-      - "8091:8091"
+    networks:
+      - egress
     command: >
       python neurons/miner.py
-      --netuid ${PHYLAX_NETUID:-1}
+      --netuid ${PHYLAX_NETUID:-486}
       --subtensor.network ${SUBTENSOR_NETWORK:-test}
       --wallet.name ${WALLET_NAME:-miner}
       --wallet.hotkey ${WALLET_HOTKEY:-default}
-      --axon.port 8091
       --logging.debug
 
   validator:
@@ -46,52 +33,46 @@ services:
     container_name: phylax-validator
     env_file: ../.env
     environment:
+      - PHYLAX_TRACK=${PHYLAX_TRACK:-skills}
       - PHYLAX_LOG_LEVEL=DEBUG
-      - PHYLAX_REGISTRY_PATH=/opt/phylax/state/phylax_registry.sqlite3
-      - PHYLAX_SANDBOX_IMAGE=phylax-sandbox:latest
-      # ── phylax-server (control plane) ──
-      # Required for the validator to fetch tasks and call set_weights().
-      # All of these resolve from ../.env via env_file; listing them here
-      # makes the dependency obvious to anyone reading the compose file.
       - PHYLAX_SERVER_URL=${PHYLAX_SERVER_URL:-}
       - PHYLAX_SERVER_HOTKEY=${PHYLAX_SERVER_HOTKEY:-}
       - PHYLAX_VALIDATOR_LABEL=${PHYLAX_VALIDATOR_LABEL:-}
-      - PHYLAX_OFFLINE_FALLBACK=${PHYLAX_OFFLINE_FALLBACK:-false}
+      - PHYLAX_EXECUTOR=${PHYLAX_EXECUTOR:-sandbox}
+      - PHYLAX_JAIL_NETWORK=phylax-jail
+      - PHYLAX_INFERENCE_PROXY_URL=${PHYLAX_INFERENCE_PROXY_URL:-http://phylax-proxy:8900}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ../:/opt/phylax
-      - phylax-state:/opt/phylax/state
     depends_on:
       - miner
+    networks:
+      - egress
     command: >
       python neurons/validator.py
-      --netuid ${PHYLAX_NETUID:-1}
+      --netuid ${PHYLAX_NETUID:-486}
       --subtensor.network ${SUBTENSOR_NETWORK:-test}
       --wallet.name ${WALLET_NAME_VAL:-validator}
       --wallet.hotkey ${WALLET_HOTKEY:-default}
       --logging.debug
 
-  api:
+  inference-proxy:
     build:
       context: ..
-      dockerfile: docker/Dockerfile.validator
-    image: phylax-validator:dev
-    container_name: phylax-api
-    env_file: ../.env
+      dockerfile: docker/Dockerfile.proxy
+    image: phylax-proxy:dev
+    container_name: phylax-proxy
     environment:
-      - PHYLAX_LOG_LEVEL=INFO
-      - PHYLAX_REGISTRY_PATH=/opt/phylax/state/phylax_registry.sqlite3
-      - PHYLAX_API_HOST=0.0.0.0
-      - PHYLAX_API_PORT=8080
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ../:/opt/phylax
-      - phylax-state:/opt/phylax/state
-    depends_on:
-      - validator
-    ports:
-      - "8080:8080"
-    command: python -m phylax.api.server
+      - PHYLAX_PROXY_HOST=0.0.0.0
+      - PHYLAX_PROXY_PORT=8900
+    networks:
+      - phylax-jail
+      - egress
 
-volumes:
-  phylax-state:
+networks:
+  egress:
+    driver: bridge
+  phylax-jail:
+    name: phylax-jail
+    driver: bridge
+    internal: true

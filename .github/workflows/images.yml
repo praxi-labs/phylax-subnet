@@ -34,9 +34,10 @@ jobs:
       fail-fast: false
       matrix:
         image:
-          - { name: sandbox,   dockerfile: docker/Dockerfile.sandbox }
           - { name: miner,     dockerfile: docker/Dockerfile.miner }
           - { name: validator, dockerfile: docker/Dockerfile.validator }
+          - { name: agent,     dockerfile: docker/Dockerfile.agent }
+          - { name: proxy,     dockerfile: docker/Dockerfile.proxy }
     steps:
       - name: Checkout
         uses: actions/checkout@v4

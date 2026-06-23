@@ -1,116 +1,154 @@
-# Phylax: Decentralized Trust Layer for AI Agent Skills
+# Phylax: Decentralized Trust Layer for the AI Supply Chain
 
-> *φύλαξ, Ancient Greek for guardian, sentinel, watchman.*
+*φύλαξ, Ancient Greek for guardian, sentinel, watchman.*
 
 [![Bittensor](https://img.shields.io/badge/Bittensor-Subnet-blue)](https://bittensor.com)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-green)](https://python.org)
 [![Status: Pre-launch](https://img.shields.io/badge/Status-Pre--launch-orange)]()
 
-Phylax is a Bittensor subnet that turns untrusted AI agent skill bundles into Signed Skill Safety Attestations (SSSAs): portable, verifiable, cryptographically-signed artifacts with enforceable execution policies.
+Phylax is a Bittensor subnet that vets the AI supply chain. It takes untrusted
+artifacts (agent skills, MCP servers, packages, and source repositories) and
+produces a Signed Skill and Supply chain Safety Attestation (SSSA): a portable,
+cryptographically signed verdict backed by proof that the analysis actually ran.
 
-## The Problem
+## The problem
 
-Agent ecosystems scale through composable skills. The same extensibility creates a large attack surface: a malicious skill can steal API keys, exfiltrate data, establish persistence, or hijack agent behaviour through prompt injection.
+Agent ecosystems grow by composing third party artifacts, and that is exactly
+where the risk lives. A malicious skill, MCP server, or package can steal secrets,
+exfiltrate data, establish persistence, or hijack an agent through prompt
+injection.
 
-Existing approaches use an LLM as the scanner. They are fast to build but fundamentally limited: the model itself is prompt-injectable, evasion via obfuscation is trivial without real execution, and the output is plain text rather than an enforceable contract.
+Scanners built on an LLM alone do not hold up. The model itself can be prompt
+injected, obfuscation defeats it because nothing is ever executed, and the output
+is prose rather than something a runtime can enforce.
 
-## The Phylax Approach
+## How Phylax is different
 
-Phylax runs a decentralized competition in which miners perform real behavioural sandbox detonation, produce cryptographically-signed evidence packs, and emit machine-readable policies that runtimes can enforce automatically. Validators independently verify submissions through multi-miner consensus and async sandbox reruns. Claims without matching evidence earn zero.
+Phylax runs the analysis as a decentralized competition. A miner submits an agent
+(its code, the sandbox image it runs in, and an inference key) for a single track.
+Validators run that agent on real artifacts, confirm it actually executed by
+checking a probe the server planted, score the result, and set weights on chain.
+A claim with no matching evidence earns nothing.
 
-| | Traditional Scanners | Phylax |
+| | Traditional scanners | Phylax |
 |---|---|---|
-| Analysis method | LLM text analysis | Real sandbox detonation |
-| Evasion resistance | Low (prompt-injectable) | High (behavioural observation) |
-| Output | Text report | Signed, enforceable contract |
-| Verification | None | Multi-miner consensus + validator sandbox rerun |
+| Analysis method | LLM text analysis | Real detonation and static audit |
+| Evasion resistance | Low, the model is prompt injectable | High, behaviour is observed |
+| Output | Text report | Signed, gated attestation (SSSA) |
+| Verification | None | Proof of execution, sampled rerun, benchmark |
 | Scale | Centralized | Decentralized competition |
 | Incentive | None | Bittensor TAO emissions |
 
-## Skill Types
+## The four tracks
 
-Phylax supports six skill types, each with its own analysis pipeline and scoring. Miners choose which types to specialise in.
+Every miner and validator commits to one track. The tracks are isolated, so
+artifacts, evidence, and scoring never cross between them.
 
-| Skill type | What it covers |
-|---|---|
-| `rag_knowledge` | Document collections and knowledge-base content |
-| `declarative` | Natural-language instruction files (SKILL.md) |
-| `executable_python` | Python source code and dependency manifests |
-| `executable_script` | Shell scripts and bash files |
-| `mcp_server` | Model Context Protocol server implementations |
-| `agent_composition` | Skills that orchestrate other skills or spawn sub-agents |
+| Track | Artifact | Verification |
+|---|---|---|
+| `skills` | Agent skill bundles | detonation, dual plane, probe |
+| `mcp_servers` | MCP server packages | detonation, dual plane, probe, tool surface |
+| `packages` | pip and npm packages | detonation, install and import lifecycle, supply chain |
+| `repositories` | source repositories | static audit scored by benchmark recall |
 
-Harder skill types carry higher base weights and earn proportionally more emissions. Miners who invest in deeper analysis pipelines reach higher tiers and earn more than those running the reference implementation.
+Tracks are not weighted equally. Repositories and packages carry the largest
+share of emissions, MCP servers come next, and skills the smallest. Within each
+track only the top three agents earn in a given round.
 
-## How it Works
+## How it works
 
-Each skill bundle passes through a miner analysis pipeline before producing a signed attestation.
+### Agents are the artifact
 
-**Layer 1: Static Analysis.** Scans code structure, dangerous API patterns, permission discrepancies, and prompt-injection patterns using AST analysis, regex banks, and taint flow tracking.
+A miner writes an agent that implements `agent_main(context)` and returns an SSSA.
+They submit it once, signed with their hotkey: the code, the sandbox image it runs
+in (pinned by digest), an inference key, and the track it belongs to. The miner
+then runs that agent live on each task and submits a signed SSSA, while the
+validator reruns a sample in the registered image to audit that verdicts hold up.
 
-**Layer 2: Supply Chain and SBOM.** Generates a full dependency graph, cross-references the [osv.dev](https://osv.dev) CVE database, detects typosquatting, and flags malicious install hooks.
+### Proof of execution
 
-**Layer 3: Behavioural Sandbox.** Executes the skill in a locked container seeded by a per-task nonce. Records network egress, filesystem access, process spawning, and secrets access. For MCP server skills a dedicated test client exercises all declared tools. For composition skills a cascading multi-container detonation traces inter-skill communication.
+For every task the server issues a fresh nonce and derives a probe from it: a
+specific file to write, a host to look up, and a token to echo. The agent performs
+these during detonation. The validator then reads the captured traces and confirms
+the probe really fired. If it did not, the result scores zero.
 
-Validators verify submissions by checking trace hashes for self-consistency and canary presence, computing full SSSA consensus across a five-miner verification group, and asynchronously rerunning each primary miner's declared sandbox image to confirm their traces are honest.
+### Layered verification
 
-## The Signed Skill Safety Attestation (SSSA)
+Layer 1 checks the probe in the traces on every task and acts as the evidence
+gate. Layer 2 re-runs a random sample of tasks in the miner's own registered image
+and penalises any verdict that does not reproduce. Layer 3 applies to repositories
+only, scoring recovered vulnerabilities against a known benchmark by recall.
+
+### Dual plane evidence
+
+The action plane records what the artifact actually did, expressed as canonical
+capabilities. The context plane records what it tried to make the agent do, such
+as prompt injection or hidden instruction overrides. An artifact can be malicious
+on either plane, so Phylax captures both.
+
+## The SSSA
 
 ```text
-skill:                { name, bundle_hash, skill_type, profile }
-verdict:              ALLOW | WARN | BLOCK
-risk_score:           0 - 100
-capabilities:         { network, filesystem, process, secrets,
-                        tool_calls, child_skills }
-findings:             [ { severity, evidence_snippet, owasp_ref,
-                          mitre_ref, layer_source } ]
-dependencies:         { sbom_hash, known_cves, install_hooks }
-recommended_policy:   { enforceable JSON }
-evidence:             { sha256 hashes of sandbox traces,
-                        type-specific evidence fields }
-attestation:          ed25519:miner_hotkey
+track:        skills | mcp_servers | packages | repositories
+artifact:     { name, version, bundle_hash, nonce }
+verdict:      { decision: ALLOW|WARN|BLOCK, risk_score, confidence, summary }
+evidence:     track specific (proof of execution and dual plane, or audit)
+findings:     track specific
+attestation:  { miner_hotkey, signature: ed25519:…, canonical_hash }
 ```
 
-Full schema reference: [docs/sssa_schema.md](docs/sssa_schema.md).
+The agent fills in the verdict, evidence, and findings, and the miner signs the
+attestation with its hotkey before submitting it. Full reference in
+[docs/sssa_schema.md](docs/sssa_schema.md) and
+[docs/agent_contract.md](docs/agent_contract.md).
 
 ## Scoring
 
-Each submission is scored across multiple axes that vary by skill type. Detection accuracy is the dominant signal. Evidence is a multiplicative gate. A miner who cannot prove they ran real analysis earns zero regardless of how good their verdict looks.
+Every track is scored on the same four parts: verdict correctness (0.40),
+solution quality (0.35), and benchmark agreement (0.25), all multiplied by
+evidence integrity. Evidence integrity is also a hard gate. Fall below it and the
+score is zero, with no partial credit. Per track running scores feed a graduated
+top three emission split. Full specification in [docs/scoring.md](docs/scoring.md).
 
-On top of per-task scoring, submissions are evaluated against a five-miner verification group. Each miner's score is multiplied by their consensus alignment across verdict, findings, capabilities, dependencies, and recommended policy. A miner who diverges from the group on findings earns less even if their individual axes score well.
+## Anti gaming
 
-Full scoring specification: [docs/scoring.md](docs/scoring.md).
-
-## Anti-Gaming
-
-Phylax layers multiple mechanisms to make gaming more expensive than honest mining.
-
-Submitting without running the sandbox fails the evidence gate immediately. Fabricating trace hashes fails against the canary written by the validator's nonce before execution. Copying another miner's submission fails because every miner receives a unique nonce that produces unique trace hashes. Colluding with a fixed group of miners fails because each task also includes randomly selected auditor miners whose verdicts the colluding group cannot predict.
+- The nonce is issued by the server, so the probe cannot be precomputed. Only a
+  real run produces matching traces.
+- The evidence gate means a submission with no verifiable execution earns nothing.
+- Sampled reruns require a claimed result to reproduce in the miner's registered
+  image.
+- Pinning the image by digest makes those reruns reproduce the exact environment.
+- Rewarding only the top three per track means copying the median earns nothing.
 
 ## Architecture
 
-Key packages:
+The subnet is well focused:
 
-- `phylax.validator.consensus` full SSSA consensus across the verification group
-- `phylax.validator.rerun` async miner sandbox image rerun worker
-- `phylax.validator.collusion` per-miner consensus agreement history and collusion detection
-- `phylax.validator.corpus` corpus task fetching and canary injection
-- `phylax.api.server` POST /scan, GET /attestation, /verify, /health
-- `phylax.client` and `phylax.cli` runtime SDK and CI gate
+- `neurons/miner.py` runs the active loop: request a task, run the agent, sign the
+  SSSA, and submit it.
+- `neurons/validator.py` runs the audit loop: rerun a sampled subset, report
+  reproduction, and set weights.
+- `phylax/harness/runner.py` is the shared agent runner used by both.
+- `phylax/harness/executor.py` runs an agent in the registered image, jailed.
+- `phylax/harness/skills_reference_agent.py` is the reference skills agent.
+- `phylax/server_client.py` is the signed client for the control plane.
 
-Full module map: [docs/architecture.md](docs/architecture.md).
+The control plane (task dispatch, scoring, weights, and the SSSA schema) lives in
+the separate phylax-server repository. Full module map in
+[docs/architecture.md](docs/architecture.md).
 
-## Getting Started
+## Getting started
 
 ```bash
 git clone https://github.com/praxi-labs/phylax-subnet.git
 cd phylax-subnet
 pip install -e .
-docker build -f docker/Dockerfile.sandbox -t phylax-sandbox:latest .
+docker build -f docker/Dockerfile.agent -t phylax-agent:reference .
 ```
 
 - [Miner setup](docs/miner_setup.md)
 - [Validator setup](docs/validator_setup.md)
+- [Agent contract](docs/agent_contract.md)
 - [REST API](docs/api.md)
-- [Runtime integration](docs/integration.md)
+- [Integration](docs/integration.md)

@@ -1,191 +1,125 @@
 # Phylax Validator Guide
-## netuid 486 testnet
+## netuid 486 (testnet)
 
-## Overview
+A validator scores **one track**. It pulls track tasks from the phylax-server,
+runs each miner's submitted agent in an isolated sandbox, verifies the
+proof-of-execution, signs the attestation, and sets top-3 per-track weights on
+chain. There is no manual approval. Eligibility is on-chain.
 
-A Phylax validator dispatches skill analysis tasks to miners, verifies their submissions, and sets weights on-chain. Validators are the evaluation infrastructure of the subnet. Running one earns emissions and strengthens the network's security guarantees.
+## Eligibility
 
-The validator needs access to phylax-server, which coordinates task distribution and issues weight attestations. Without a valid attestation from the server, weights cannot be pushed on-chain.
+You need both, and both are on-chain:
 
+- a validator **permit**, granted by stake weight (top nodes by stake), and
+- positive **vtrust**, which proves you are actively setting weights.
+
+Stake alone does not qualify you; you must validate. Phylax adds no central
+register and no team approval on top of this.
 
 ## Requirements
 
-- Docker 24+ with the compose plugin (`docker compose version` must work)
-- `btcli` ([install guide](https://docs.bittensor.com/getting-started/install-btcli))
-- 16 GB RAM, 4+ CPU cores, 100 GB free disk
-- Outbound HTTPS to your phylax-server URL
-- Outbound HTTPS to container registries miners publish to (typically `ghcr.io`, `docker.io`)
-- Your shell user in the docker group: `sudo usermod -aG docker $USER && newgrp docker`
+- A Linux host with Docker + `docker compose`. The validator runs untrusted miner
+  agents, so it needs docker socket access (the install script wires the host
+  docker group).
+- A Bittensor wallet with enough stake to hold a permit.
+- The phylax-server URL and its pinned identity hotkey.
 
-
-## 1. Create Wallet, Register, and Stake
+## 1. Chain registration and stake
 
 ```bash
 btcli wallet create --wallet.name validator --wallet.hotkey default
+./scripts/register_testnet.sh validator
+btcli stake add --wallet.name validator --wallet.hotkey default --amount <TAO>
 ```
 
-Fund the coldkey with testnet TAO from the Bittensor Discord `#faucet` channel. You need TAO for the registration fee and for stake.
-
-```bash
-btcli subnet register \
-  --netuid 486 \
-  --subtensor.network test \
-  --wallet.name validator \
-  --wallet.hotkey default
-
-btcli stake add \
-  --netuid 486 \
-  --subtensor.network test \
-  --wallet.name validator \
-  --wallet.hotkey default \
-  --amount 1
-```
-
-Verify:
-
-```bash
-btcli wallet overview --wallet.name validator --subtensor.network test
-```
-
-Look for `validator/default` with a non-zero stake on subnet 486.
-
-
-## 2. Get the Server URL
-
-Access to phylax-server is permissionless. The server checks your hotkey directly against the Bittensor metagraph on every request. Your hotkey must hold a **validator permit** on netuid 486, which requires sufficient stake.
-
-No manual registration or allowlist is needed. Once your hotkey holds a permit on-chain, the server grants access automatically.
-
-Get the server URL from the Phylax community channels. Then fetch the server signing-key hotkey and pin it in your `.env` so a rogue server cannot impersonate the real one:
-
-```bash
-curl https://<phylax-server-host>/v1/server-identity
-```
-
-Set `PHYLAX_SERVER_HOTKEY` to the `server_hotkey` value returned.
-
-
-## 3. Install and Configure
+## 2. Install and configure
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/praxi-labs/phylax-subnet/main/scripts/install.sh | bash -s validator
-```
-
-Edit `~/phylax/validator/.env`:
-
-| Variable | What to set |
-|---|---|
-| `PHYLAX_NETUID` | `486` |
-| `SUBTENSOR_NETWORK` | `test` |
-| `WALLET_NAME` | folder name in `~/.bittensor/wallets/` |
-| `WALLET_HOTKEY` | `default` (or the hotkey you registered) |
-| `PHYLAX_SERVER_URL` | `https://<phylax-server-host>` |
-| `PHYLAX_SERVER_HOTKEY` | hex from `curl $PHYLAX_SERVER_URL/v1/server-identity` |
-| `PHYLAX_VALIDATOR_LABEL` | friendly label shown in server dashboards |
-
-After editing, recreate the container so the new env vars take effect:
-
-```bash
 cd ~/phylax/validator
-docker compose up -d --force-recreate
 ```
 
+Fill in `.env`:
 
-## 4. Server Database Migration
-
-Before your first run, confirm with the phylax-server operator that the server schema is up to date. If it is not, you will see `500` errors on reputation and routing endpoints. The operator runs this on the server host:
-
-```bash
-alembic upgrade head
+```ini
+PHYLAX_TRACK=skills
+PHYLAX_SERVER_URL=https://<phylax-server>
+PHYLAX_SERVER_HOTKEY=<hex from /v1/server-identity>     # pinned anti-impersonation
+PHYLAX_VALIDATOR_LABEL=<label for dashboards>
+PHYLAX_INFERENCE_PROXY_URL=<metered egress for the jailed sandbox>
 ```
 
-
-## 5. Run
+Pin the server hotkey so a hijacked DNS/URL can't impersonate the control plane:
 
 ```bash
-cd ~/phylax/validator
+curl -fsSL https://<phylax-server>/v1/server-identity
+```
+
+## 3. Run
+
+```bash
 docker compose pull
 docker compose up -d
 docker compose logs -f
 ```
 
-Within about 30 seconds:
+## 4. What the validator does each round
 
-```
-registered with phylax-server at https://...
-starting Phylax validator on netuid=486 hotkey=...
-```
+Miners run the primary task themselves and submit signed SSSAs. The validator's
+job is the independent rerun audit plus consensus weighting. Its loop
+(`neurons/validator.py`):
 
-Within a couple of minutes you should see round activity:
+1. **Sample**: `POST /v1/tasks/track/rerun-sample` returns a random subset of
+   recently attested tasks, each with its artifact, nonce, probe, and the verdict
+   the miner reported.
+2. **Fetch agent**: `GET /v1/specialization/agent/{hotkey}/runnable` returns the
+   agent code, entrypoint, execution key, and registered sandbox image + digest.
+3. **Rerun**: run the agent on the task in the miner's registered image,
+   network-jailed, with the probe threaded through.
+4. **Report**: `POST /v1/tasks/track/{task_id}/rerun` with whether the verdict
+   reproduced. The server folds it into the agent's `rerun_pass_rate`.
+5. **Set weights**: every `WEIGHT_UPDATE_INTERVAL` blocks, `GET
+   /v1/tasks/track/weights` returns the top-3 per-track weights (already adjusted
+   by `rerun_pass_rate`); the validator maps hotkeys to UIDs and calls
+   `set_weights`.
 
-```
-round <id> | tasks=12 types={'executable_python','declarative','rag_knowledge',...}
-round <id> done | top_score=0.XXX epoch=0
-set_weights | attestation <id> expires ...
-```
+A verdict that does not reproduce drives the agent's `rerun_pass_rate` down,
+which pushes it out of the top-3 emission slots.
 
-If `top_score` stays at `0.000` for several rounds, no miner is responding to tasks or all responses are failing verification. Check the warning lines in the log for the specific reason.
+## 5. Server database migration
 
+The server owns all task/agent/score state. After upgrading the server, apply its
+migrations (run from the phylax-server deployment) before validators resume, so
+the agent/attestation tables match the running code.
 
-## 6. What the Validator Does
+## 6. Configuration reference
 
-Each round the validator fetches tasks from the phylax-server corpus across all six skill types, selects a group of miners per task, dispatches bundles concurrently, verifies every response, scores submissions, computes consensus across the group, and pushes the resulting weights on-chain.
+| Variable | Purpose |
+|---|---|
+| `PHYLAX_TRACK` | the single track this validator scores |
+| `PHYLAX_SERVER_URL` | control-plane URL |
+| `PHYLAX_SERVER_HOTKEY` | pinned server identity (anti-impersonation) |
+| `PHYLAX_VALIDATOR_LABEL` | dashboard label |
+| `PHYLAX_INFERENCE_PROXY_URL` | metered LLM egress for the jailed sandbox |
+| `PHYLAX_TRACK_INTERVAL` | seconds between task polls (default 20) |
+| `WEIGHT_UPDATE_INTERVAL` | blocks between weight pushes (default 360) |
+| `WALLET_NAME` / `WALLET_HOTKEY` | wallet identity |
 
-Asynchronously it also reruns each primary miner's declared sandbox image on the same bundle to confirm their submitted traces are honest. Rerun results feed into miner reputation for the following round.
-
-Weights are pushed on-chain only when phylax-server issues a fresh attestation confirming the validator has submitted valid round results.
-
-
-## 7. Configuration Reference
-
-| Variable | Default | Description |
-|---|---|---|
-| `PHYLAX_NETUID` | (empty) | Required. Set to `486` for testnet. |
-| `SUBTENSOR_NETWORK` | (empty) | Required. `test` for testnet, `finney` for mainnet. |
-| `WALLET_NAME` | (empty) | Required. Folder name in `~/.bittensor/wallets/`. |
-| `WALLET_HOTKEY` | `default` | Hotkey under that wallet. |
-| `PHYLAX_SERVER_URL` | (empty) | Required. Base URL of phylax-server. |
-| `PHYLAX_SERVER_HOTKEY` | (empty) | Pinned server signing-key hotkey. |
-| `PHYLAX_VALIDATOR_LABEL` | (empty) | Friendly label shown in server dashboards. |
-| `WEIGHT_UPDATE_INTERVAL` | `360` | Blocks between `set_weights` pushes. Default matches one tempo on netuid 486; the chain rate-limit is 100 blocks, so going lower than ~110 risks `set_weights returned False: too soon to commit`. |
-| `QUERY_TIMEOUT` | `150` | Hard ceiling on dendrite calls in seconds. |
-| `PHYLAX_RERUN_QUEUE_PATH` | `~/.phylax/rerun_queue.sqlite3` | Persistent queue for async miner-image reruns. |
-| `PHYLAX_EVIDENCE_HOST_DIR` | set by install.sh | Host-side path of the evidence bind mount. |
-| `PHYLAX_IMAGE_TAG` | `latest` | Pin to `sha-<short>` for reproducible deploys. |
-| `WATCHTOWER_POLL_INTERVAL` | `120` | Auto-update poll interval in seconds (default 2 min). |
-
-
-## 8. Updating
-
-Auto-update (recommended):
+## 7. Updating
 
 ```bash
 cd ~/phylax/validator
+docker compose pull && docker compose up -d
+# or enable auto-updates:
 docker compose --profile auto-update up -d
 ```
 
-Manual:
+## 8. Troubleshooting
 
-```bash
-cd ~/phylax/validator
-docker compose pull
-docker compose up -d
-```
-
-Your `.env`, rerun queue, and local state all persist across updates.
-
-
-## 9. Troubleshooting
-
-| Symptom | Cause | Fix |
-|---|---|---|
-| Container exits immediately | Hotkey not found | Check `~/.bittensor/wallets/<WALLET_NAME>/hotkeys/<WALLET_HOTKEY>` exists |
-| `.env` edits not taking effect | `docker compose restart` reuses baked-in env | Use `docker compose up -d --force-recreate` |
-| `403 Forbidden` from phylax-server | Hotkey does not hold a validator permit on netuid 486 | Add stake with `btcli stake add` until the hotkey earns a permit, then retry |
-| `phylax-server identity mismatch` | Server signing key changed or `PHYLAX_SERVER_HOTKEY` is wrong | Re-fetch `/v1/server-identity` and update `.env` |
-| `500` on reputation endpoints | Server schema out of date | Operator must run `alembic upgrade head` |
-| `no dispatchable miners` in logs | No miners declared this skill type or all are filtered | Wait for more miners to register |
-| `top_score` stuck at `0.000` | No miner is returning valid submissions | Check log warning lines for rejection reasons |
-| `set_weights returned False` | Stake too low or chain congested | Add more stake or wait for next interval |
-| `docker pull failed` during rerun | Validator cannot reach miner's registry | Test the pull manually from the validator host |
-| Disk fills up | Docker image layers accumulating | `docker image prune -af` |
+- **No weights set**: `GET /track/weights` returns nothing until agents have
+  accrued scores; check that tasks are being dispatched and attested.
+- **All agents score 0**: the probe is not landing in traces; verify the sandbox
+  can run the agent image and that the docker socket is reachable (host docker
+  group GID in `.env`).
+- **Registration refused**: the server requires a reachable, pinned identity;
+  re-check `PHYLAX_SERVER_URL` / `PHYLAX_SERVER_HOTKEY`.

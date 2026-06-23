@@ -1,0 +1,13 @@
+{
+  "artifact_id": "repositories/known-bad/sql-injection-app",
+  "track": "repositories",
+  "ground_truth": { "verdict": "BLOCK", "risk_score": 80, "classification": "dangerous" },
+  "expected_findings": [
+    { "category": "vulnerability", "severity": "HIGH", "cwe": "CWE-89",
+      "file": "src/db.py", "line": 7,
+      "title": "SQL injection via string-formatted query",
+      "remediation": "Use parameterised queries with placeholders instead of string formatting." }
+  ],
+  "source": { "origin": "audit-contest", "url": "", "collected_at": "2026-06-01" },
+  "notes": "Repository track is scored by recall of known vulnerabilities. The expected_findings list IS the benchmark: an agent must recover the CWE-89 SQL injection in src/db.py. No probe, no capabilities, audit only."
+}

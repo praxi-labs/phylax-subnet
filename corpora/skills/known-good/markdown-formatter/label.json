@@ -1,0 +1,12 @@
+{
+  "artifact_id": "skills/known-good/markdown-formatter",
+  "track": "skills",
+  "ground_truth": { "verdict": "ALLOW", "risk_score": 5, "classification": "safe" },
+  "expected_findings": [],
+  "expected_capabilities": [
+    { "capability": "READ_FILE", "group": "Filesystem", "protection": "dangerous" },
+    { "capability": "WRITE_FILE", "group": "Filesystem", "protection": "dangerous" }
+  ],
+  "source": { "origin": "synthetic", "collected_at": "2026-06-01" },
+  "notes": "Benign formatter. Only local file read/write, no network, no secrets. Used to measure false positives."
+}

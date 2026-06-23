@@ -1,18 +1,3 @@
-# Canonical phylax-miner deployment. Operators run:
-#
-#   cd ~/phylax/miner
-#   docker compose pull
-#   docker compose up -d
-#
-# To opt into automatic image updates (Watchtower polls GHCR every 2 min,
-# pulls new versions, recreates the container, and prunes old layers):
-#
-#   docker compose --profile auto-update up -d
-#
-# Configuration lives in ./.env next to this file. The bootstrap script at
-# scripts/install.sh seeds .env with sensible defaults (including the host
-# UID/GID needed for the sandbox bind mount to be writable).
-
 services:
   phylax-miner:
     image: ghcr.io/praxi-labs/phylax-miner:${PHYLAX_IMAGE_TAG:-latest}
@@ -20,48 +5,15 @@ services:
     restart: unless-stopped
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     labels:
-      # Watchtower (in the auto-update profile below) only manages
-      # containers carrying this label. Keeps it from touching anything
-      # else the operator runs on the same host.
       - "com.centurylinklabs.watchtower.enable=true"
-    # Add the host's docker group so the container UID can open
-    # /var/run/docker.sock — without this, the miner sees
-    # "permission denied while trying to connect to the docker API at
-    # unix:///var/run/docker.sock" the moment it tries to launch a sandbox,
-    # and every miner silently scores 0 on the evidence axis. install.sh
-    # detects the GID from `getent group docker` and writes it to .env.
-    group_add:
-      - "${DOCKER_GID:-999}"
-    ports:
-      - "${AXON_PORT:-8091}:8091"
     volumes:
-      # Wallet hotkey — needed to sign SSSAs. Mounted read-write because
-      # bittensor's settings.py calls WALLETS_DIR.mkdir(exist_ok=True) at
-      # import time, and a :ro mount makes even the no-op mkdir on the
-      # existing dir raise PermissionError. Mounted under /opt/phylax so
-      # the non-root container user can traverse the parent dir
-      # (/root would be 700-root and unreachable).
       - ${BITTENSOR_DIR:-~/.bittensor}:/opt/phylax/.bittensor
-      # Docker socket — miner shells out to docker run to launch the sandbox
-      - /var/run/docker.sock:/var/run/docker.sock
-      # Per-scan evidence dir — also bind-mounted by the sandbox container,
-      # so it must be writable to the same UID the sandbox runs as
-      - ./evidence:/opt/phylax/evidence
-      - ./src/phylax:/opt/phylax/phylax
-      - ./src/neurons:/opt/phylax/neurons
     environment:
-      # Force HOME because the process runs as a UID with no /etc/passwd
-      # entry (--user 1000:1000), so ~ would otherwise resolve to /. We
-      # use /opt/phylax (already 755 in the image) instead of /root so
-      # the non-root container user can traverse it and reach the
-      # bind-mounted wallet under ~/.bittensor.
       HOME: /opt/phylax
-      # Host-side path of the evidence bind mount. The miner shells out to
-      # ``docker run -v`` through the host docker socket, so dockerd
-      # resolves -v sources against the HOST filesystem (NOT this
-      # container's view). Without this, the sandbox would mount empty
-      # root-owned dirs and the harness would fail with EACCES.
-      PHYLAX_EVIDENCE_HOST_DIR: "${PHYLAX_EVIDENCE_HOST_DIR:-${PWD}/evidence}"
+      PHYLAX_TRACK: "${PHYLAX_TRACK:-skills}"
+      PHYLAX_SERVER_URL: "${PHYLAX_SERVER_URL:-}"
+      PHYLAX_SERVER_HOTKEY: "${PHYLAX_SERVER_HOTKEY:-}"
+      PHYLAX_EXECUTOR: "${PHYLAX_EXECUTOR:-sandbox}"
     env_file:
       - .env
     command:
@@ -75,18 +27,8 @@ services:
       - "${WALLET_NAME:-miner}"
       - --wallet.hotkey
       - "${WALLET_HOTKEY:-default}"
-      - --axon.port
-      - "8091"
       - --logging.debug
 
-  # Opt-in auto-updater. Starts only with `docker compose --profile
-  # auto-update up -d`; absent from the default `docker compose up -d`
-  # so operators who want manual control aren't surprised. When enabled,
-  # polls GHCR every 10 minutes, pulls new images for labeled containers
-  # (just phylax-miner), recreates them, and prunes the old layers.
-  # Solves miner-image drift and accumulated-disk pressure in one stroke.
-  # Override the interval by setting WATCHTOWER_POLL_INTERVAL (seconds)
-  # in .env.
   watchtower:
     image: containrrr/watchtower:latest
     container_name: phylax-watchtower
@@ -100,8 +42,5 @@ services:
       WATCHTOWER_INCLUDE_RESTARTING: "false"
       WATCHTOWER_ROLLING_RESTART: "true"
       WATCHTOWER_POLL_INTERVAL: "${WATCHTOWER_POLL_INTERVAL:-120}"
-      # Docker 27+ refuses API versions below 1.40 on the daemon side.
-      # Pinning here keeps Watchtower compatible with both new and old
-      # daemons. Override if you need a specific value.
       DOCKER_API_VERSION: "${DOCKER_API_VERSION:-1.41}"
       TZ: "UTC"

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# register.sh — declare this miner's specialization with the coordinator.
+# register.sh — register this miner into its track and submit its agent
+# (code + sandbox image + inference key) to the phylax-server.
 #
 # Reads config from the miner .env file. Walks up two directories from this
 # script's path (src/scripts -> src -> miner install dir) to find the .env.
-# Can be overridden by passing a path: ./register.sh /path/to/.env
+# Override by passing a path: ./register.sh /path/to/.env
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"

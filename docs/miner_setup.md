@@ -1,431 +1,181 @@
 # Phylax Miner Guide
 ## netuid 486 (testnet)
 
-## Overview
+You compete in **one track** by building an **agent** that analyses that track's
+artifacts. Your miner node runs the agent live on each task and submits a signed
+SSSA; the validator reruns a sample to audit you. Earn by being among the **top
+three agents in your track**.
 
-A Phylax miner registers a Bittensor axon on netuid 486 and responds to `PhylaxSynapse` requests from validators. Each request contains a skill bundle to analyse. You run your analysis pipeline on that bundle and return a signed SSSA (Signed Skill Safety Attestation).
+## The submission, in one sentence
 
-The subnet team defines the structural contract: what inputs you receive, what outputs you must produce, and how your submission is scored. Your internal analysis pipeline is entirely your own. That is where you compete.
-
-
-## Two Ways to Earn
-
-Phylax miners earn through two independent tracks. You can participate in either or both with the same hotkey.
-
-### Track 1: Operate
-
-Run a miner around the clock, respond to scan and classification tasks, earn per-task emissions through your Q scores. This is the track this guide sets up. Your private analysis pipeline is your competitive edge and stays private. 95% of miner emissions flow through this track.
-
-### Track 2: Evolve
-
-Improve any component of the subnet and earn a developer stream while your contribution stays adopted. Submissions are one-shot, like a pull request with a stake behind it. No uptime requirement.
-
-Nothing in the subnet repo is off limits: the classifier, the reference harness, sandbox probes, validator orchestration, consensus logic, scoring formulas, the protocol, the server, the tooling. The only thing not eligible is your private Operate pipeline, which is your Track 1 edge and stays yours.
-
-How adoption works:
-
-1. Submit your improved component version, hotkey-signed
-2. Detection and classification changes are benchmarked against the ground-truth corpus (canaries plus known-good and known-bad skills) on detection accuracy, false-positive rate, classification accuracy, and runtime cost. Changes outside the detection path are assessed on measurable impact: performance, cost, correctness, test results
-3. Benchmarked changes must beat the current champion by the adoption threshold (2% composite) to proceed
-4. Passing submissions go to human review (Praxi Labs during testnet)
-5. On adoption your version becomes canonical, pinned by hash, and announced to the network
-6. While your contribution stays adopted you earn an equal share of the developer stream (5% of miner emissions) alongside every other adopted contribution
-
-The threshold exists because submissions are public. Copying the champion and resubmitting earns nothing; you must measurably improve it.
-
+You register a hotkey on chain, register it into one track, and submit three
+things bound to that track and signed by your hotkey: your **agent code**, the
+**sandbox image** it runs in (reference + digest), and an **inference key** that
+funds inference. You run the agent yourself; the registered image and key let the
+validator rerun a sample of your tasks to confirm your verdicts hold up.
 
 ## Requirements
 
-- Docker 24+ with the compose plugin (`docker compose version` must work)
-- `btcli` ([install guide](https://docs.bittensor.com/getting-started/install-btcli))
-- 16 GB RAM, 4+ CPU cores, 80 GB free disk
-- Inbound TCP port **8091** open to the public internet
-- Your shell user in the docker group: `sudo usermod -aG docker $USER && newgrp docker`
+- A Linux host with Docker + the `docker compose` plugin.
+- A Bittensor wallet (coldkey + hotkey).
+- An inference API key for a supported provider (key prefix selects the provider:
+  `cpk_` for Chutes, `sk-or-` for OpenRouter).
+- A container registry you can push to (GHCR, Docker Hub, Quay, …).
 
+## 1. Chain registration
 
-## 1. Create Wallet and Register
+Establishes your hotkey on the metagraph. This is plain Bittensor: burn the
+registration cost and obtain a UID.
 
 ```bash
 btcli wallet create --wallet.name miner --wallet.hotkey default
+./scripts/register_testnet.sh miner
 ```
 
-Fund the coldkey with testnet TAO from the Bittensor Discord `#faucet` channel.
+At this point you exist on chain but are unknown to Phylax and receive no work.
+
+## 2. Track registration
+
+Declare the single track you commit to: `skills`, `mcp_servers`, `packages`, or
+`repositories`. Set it in `.env`:
+
+```ini
+PHYLAX_TRACK=skills
+PHYLAX_SERVER_URL=https://<phylax-server>
+```
+
+A miner is in exactly one track; a second track means a second hotkey.
+
+## 3. Build your agent
+
+Your agent is a program implementing the Phylax agent contract (see
+[agent_contract.md](agent_contract.md)):
+
+```python
+def agent_main(context: dict) -> dict:
+    # context = { artifact_dir, track, nonce, probe, inference, sandbox }
+    # detonation tracks: load + run the artifact, thread the probe through the
+    #   sandbox, capture fs/network/process traces, build dual-plane evidence
+    # repositories: audit source statically, list vulnerabilities (no probe)
+    return sssa_envelope   # verdict + evidence + findings
+```
+
+You choose the LLM provider and model; Phylax does not dictate it. The reference
+agent at `phylax/harness/skills_reference_agent.py` is your starting point.
+Production miners compete on detonation depth and capability/context precision.
+
+## 4. Self-test locally
+
+Run your agent against the track corpus exactly as a validator would, before
+committing anything:
 
 ```bash
-btcli subnet register \
-  --netuid 486 \
-  --subtensor.network test \
-  --wallet.name miner \
-  --wallet.hotkey default
+# build the agent base + bring up the local stack
+./scripts/run_local.sh
 ```
 
-Verify:
+Iterate against the corpus under `corpora/<track>/` until your verdicts and
+evidence match the labelled expectations.
+
+## 5. Build the agent image and submit
+
+When the validator audits you, it pulls your **exact image by digest** to rerun
+your agent jailed, so the digest is what makes those reruns reproducible.
 
 ```bash
-btcli wallet overview --wallet.name miner --subtensor.network test
+./scripts/build-agent.sh ghcr.io/<you>/phylax-agent-skills:v1
+# copy the printed PHYLAX_SANDBOX_IMAGE + PHYLAX_SANDBOX_DIGEST into .env
 ```
 
+Set the rest of `.env` and submit:
 
-## 2. Install and Configure
+```ini
+PHYLAX_EXECUTION_API_KEY=cpk_…          # or sk-or-… ; spent by the validator
+PHYLAX_INFERENCE_MODEL=...               # optional
+PHYLAX_AGENT_PATH=./my_agent.py          # optional; defaults to the reference agent
+PHYLAX_DEPENDENCY_MANIFEST=./requirements.txt   # optional
+PHYLAX_SANDBOX_IMAGE=ghcr.io/<you>/phylax-agent-skills:v1
+PHYLAX_SANDBOX_DIGEST=sha256:…
+```
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/praxi-labs/phylax-subnet/main/scripts/install.sh | bash -s miner
+./scripts/register.sh        # registers the track + submits the agent
 ```
 
-This drops the install layout at `~/phylax/miner/`:
+The server returns an agent id + version. Re-running submits a new version that
+supersedes the old one. Your active registration is now: this hotkey, in this
+track, running this versioned agent, in this image, funded by this key.
 
-```
-~/phylax/miner/
-├── docker-compose.yml
-├── .env                ← edit this
-├── evidence/           ← bind mount for sandbox traces
-└── src/                ← full source clone
-    └── scripts/        ← helper scripts (build-sandbox.sh, register.sh, register_miner.py)
-```
-
-Edit `~/phylax/miner/.env` and set every key in the table below. **Add any key that is not already in the file.** The shipped `.env.example` leaves the miner-specific keys blank on purpose so the registration script can flag them by name. The miner will not start, register, or score without all of these:
-
-| Variable | What to set | Where it comes from |
-|---|---|---|
-| `PHYLAX_NETUID` | `486` | testnet |
-| `SUBTENSOR_NETWORK` | `test` | testnet |
-| `WALLET_NAME` | folder name in `~/.bittensor/wallets/` | `btcli wallet create` step |
-| `WALLET_HOTKEY` | `default` (or the hotkey you registered) | `btcli wallet create` step |
-| `PHYLAX_SERVER_URL` | `https://api.phyi.dev` | testnet coordinator |
-| `PHYLAX_SERVER_HOTKEY` | `a53f8e390446e31cd077517e44e585c0e0474bbd5b1db5864c52fb07bcbe541c` | pinned anti-impersonation key |
-| `PHYLAX_SUPPORTED_TYPES` | comma list, e.g. `executable_python,declarative` | which types you'll serve (see step 3) |
-| `PHYLAX_SANDBOX_IMAGE` | e.g. `docker.io/<you>/phylax-sandbox-python:v1` | set after step 5 |
-| `PHYLAX_SANDBOX_DIGEST` | `sha256:...` of the image above | set after step 5 |
-
-Optional but useful:
-
-| Variable | Default | Description |
-|---|---|---|
-| `PHYLAX_MIN_PROFILE` | `standard` | Lowest task profile you'll accept |
-| `PHYLAX_MAX_CONCURRENT_TASKS` | `2` | Throttle concurrent dispatches |
-| `PHYLAX_TIER_CLAIM` | `reference` | Informational. Real tier is set by your scores. |
-
-
-## 3. Choose Your Skill Types
-
-You decide which skill types to support. No one assigns them. Pick what you have the infrastructure and expertise to do well. Declaring a type you cannot serve drops your reputation for that type and you stop receiving its tasks.
-
-| Skill type | What the bundle contains | What your harness must do |
-|---|---|---|
-| `rag_knowledge` | Documents, knowledge-base content. No code. | Content-only scan. No sandbox. Compute document fingerprint, detect hidden instructions, enumerate embedded URLs, find the canary. |
-| `declarative` | A `SKILL.md` of natural-language instructions. No code. | Static text analysis. No sandbox. Compute `skill_md_fingerprint`, run your prompt-injection classifier (offline only, not a live LLM), detect Unicode anomalies, find the canary. |
-| `executable_python` | Python source + dependency manifests. | Static analysis + SBOM + Docker sandbox detonation. Emit four base traces + `imports.jsonl`. Thread the canary through the sandbox. |
-| `executable_script` | Shell scripts. | Static shell taint analysis + Docker sandbox detonation. Emit four base traces + `shell_commands.jsonl`. |
-| `mcp_server` | A Model Context Protocol server: handlers + manifest. | Two containers (server + your test client). Enumerate and exercise all tools, one invocation carrying the canary. Emit four base traces + `tool_calls.jsonl`. Compute `mcp_manifest_hash`. |
-| `agent_composition` | A composition manifest orchestrating child skills. | Multi-container cascading detonation across parent and all children. Emit aggregated four base traces + `agent_calls.jsonl`. Compute dependency graph hash and transitive risk score. |
-
-Two rules apply when you register your specialization:
-
-- `declarative` is mandatory and automatic. Every miner declares it. The register helper and the server both inject it for you. You only put the EXTRA types in `PHYLAX_SUPPORTED_TYPES`.
-- You must declare at least one other type, and `rag_knowledge` does not count on its own. So `PHYLAX_SUPPORTED_TYPES` must contain at least one of: `executable_python`, `executable_script`, `mcp_server`, `agent_composition` (or `rag_knowledge` plus one of those four).
-
-
-## 4. Build Your Pipeline
-
-The reference repo ships a working harness for every skill type. Each harness satisfies the structural contract out of the box and earns Tier 1 (Reference) emissions. Replacing the internals with your own analysis logic is how you reach Tier 2 (Optimised) or Tier 3 (Novel) and earn more.
-
-All paths below are relative to `~/phylax/miner/`. For each skill type you chose, open the corresponding runner and container files and build your analysis logic inside them.
-
-| Skill type | Runner file to edit | Sandbox container to edit |
-|---|---|---|
-| `rag_knowledge` | `src/phylax/harness/rag_knowledge/runner.py` | none |
-| `declarative` | `src/phylax/harness/declarative/runner.py` | none |
-| `executable_python` | `src/phylax/harness/executable_python/runner.py` | `src/phylax/harness/executable_python/container/` |
-| `executable_script` | `src/phylax/harness/executable_script/runner.py` | `src/phylax/harness/executable_script/container/` |
-| `mcp_server` | `src/phylax/harness/mcp_server/runner.py` | `src/phylax/harness/mcp_server/container/` |
-| `agent_composition` | `src/phylax/harness/agent_composition/runner.py` | `src/phylax/harness/agent_composition/container/` |
-
-Each runner exposes a `run(bundle_dir, nonce, canary_id, canary_val)` method. As long as your replacement returns the same dataclass shape and emits the required trace files into the evidence directory, the miner glue code does not care what is inside.
-
-For runtime types (`executable_python`, `executable_script`, `mcp_server`, `agent_composition`) the runner launches a Docker container that you control. The container must follow this contract:
-
-- Entrypoint: `/harness/run.sh <bundle_path> <nonce>`
-- Env vars injected by the runner: `CANARY_ID`, `CANARY_VAL`, `AGENT_TIMEOUT`
-- All required JSONL trace files written to `/evidence/` which is bind-mounted by the runner
-
-
-## 5. Build and Tag Your Sandbox Image
-
-You'll need to be logged into your container registry first. Any public registry works (Docker Hub, GHCR, Quay, ECR Public).
+## 6. Run the neuron and earn
 
 ```bash
-docker login                       # Docker Hub
-# or:  docker login ghcr.io        # GitHub Container Registry
-# or:  docker login quay.io
+docker compose pull && docker compose up -d
 ```
 
-The namespace in your image tag must match the username you logged in with. `docker.io/alice/<repo>` can only be pushed by `alice`. Mismatched namespace produces `push access denied ... insufficient_scope`.
+The miner neuron does the work: it requests a task for your agent, runs the agent
+on the artifact, signs the SSSA with your hotkey, and submits it. The server
+verifies the proof-of-execution and scores each SSSA, and the validator reruns a
+sample to confirm your verdicts reproduce. The top three agents in your track earn
+that round's emissions.
 
-Then run the helper script:
-
-```bash
-cd ~/phylax/miner
-./src/scripts/build-sandbox.sh executable_python docker.io/<you>/phylax-sandbox-python:v1
-```
-
-It builds the Dockerfile at `src/phylax/harness/<skill>/container/Dockerfile`, pushes it, and prints both the image URI and its `sha256:` digest. Paste both into `.env`:
-
-```bash
-PHYLAX_SANDBOX_IMAGE=docker.io/<you>/phylax-sandbox-python:v1
-PHYLAX_SANDBOX_DIGEST=sha256:<digest from the helper output>
-```
-
-Repeat for each runtime skill type you plan to declare. `rag_knowledge` and `declarative` do not need sandbox images.
-
-For GHCR specifically, after the first push you must mark the package as **Public** on the GitHub UI, otherwise validators get 403 when they try to pull. Docker Hub repos are public by default for free accounts.
-
-Verify your image is anonymously pullable before moving on:
-
-```bash
-docker logout
-docker pull docker.io/<you>/phylax-sandbox-python:v1     # should succeed with no creds
-docker login                                              # log back in for next time
-```
-
-
-## 6. Register Your Specialization
-
-The coordinator only routes tasks to miners with a current specialization on file. The helper script reads your `.env`, signs the request with your hotkey, and POSTs it.
-
-First-time only, install the signing dependency:
-
-```bash
-pip3 install --user substrate-interface
-```
-
-Then register:
-
-```bash
-cd ~/phylax/miner
-./src/scripts/register.sh
-```
-
-Expected output:
-
-```
-==> POST https://api.phyi.dev/v1/specialization/register
-    hotkey: 5DLAsRvT...
-    types:  ['executable_python', 'declarative']
-    image:  docker.io/<you>/phylax-sandbox-python:v1
-    digest: sha256:abc123...
-==> 200 OK
-{"hotkey":"...","supported_types":[...],"sandbox_images":{...},"reputation":{...}}
-```
-
-Re-run this whenever you change `PHYLAX_SUPPORTED_TYPES` or rebuild the sandbox image.
-
-If you serve multiple runtime types and use a different image per type, edit `.env` between runs (set `PHYLAX_SUPPORTED_TYPES` to one type and update image/digest), then call `./src/scripts/register.sh` after each.
-
-Common errors:
-
-| Error | Cause |
-|---|---|
-| `PHYLAX_SUPPORTED_TYPES is not set` | Add the line to `.env`. |
-| `401 invalid signature` | `.env` `WALLET_NAME`/`WALLET_HOTKEY` doesn't match the wallet you registered on chain. |
-| `403 hotkey not on allowlist` | Coordinator operator hasn't added your hotkey. |
-| `400 sandbox_image must be sha256:` | Your `PHYLAX_SANDBOX_DIGEST` is missing the `sha256:` prefix. |
-
-
-## 7. Run
-
-```bash
-cd ~/phylax/miner
-docker compose pull
-docker compose up -d
-docker compose logs -f
-```
-
-Within about 30 seconds you should see:
-
-```
-Axon serving on [::]:8091
-```
-
-When a validator dispatches a task:
-
-```
-scan: bundle=sha256:... type=executable_python profile=standard task=...
-scan done: sha256:... -> ALLOW risk=12
-```
-
-
-## 8. What You Receive and What You Must Return
-
-### What the Validator Sends You
-
-Every `PhylaxSynapse` your axon receives contains:
-
-| Field | Description |
-|---|---|
-| `skill_bundle.bundle_bytes` or `bundle_url` | The skill bundle to analyse |
-| `skill_bundle.bundle_hash` | SHA256 you must verify before doing anything |
-| `skill_bundle.metadata.skill_type` | Which of the six types to dispatch to |
-| `skill_bundle.metadata.profile` | `fast`, `standard`, or `deep` |
-| `nonce` | Canary seed. Thread this into your sandbox. |
-| `task_metadata.role` | `primary` or `auditor`. The validator assigns this. |
-| `task_metadata.deadline_s` | Seconds you have to respond |
-| `task_metadata.t_min_s` | Minimum seconds before you may respond |
-
-### Your Role Per Task
-
-The validator assigns your role per task per round. You do not choose it.
-
-**Primary** (3 per task, picked from highest reputation for that skill type): full pipeline. Sandbox detonation, full SSSA, trace_bundle, sandbox_manifest, probe_evidence. Full emission.
-
-**Auditor** (2 per task, picked randomly from remaining declared miners): full SSSA including verdict, findings, capabilities, dependencies, and policy, but no trace_bundle or sandbox_manifest required. Tighter deadline. Earns 0.6 times primary emission multiplied by consensus score.
-
-If you have been an auditor for the same skill type three rounds in a row, you are rotated into the primary slot regardless of reputation rank.
-
-### What You Must Return
-
-Return the same `PhylaxSynapse` with these fields populated:
-
-**1. `attestation`** (always required, primary and auditor)
-The signed SSSA. Full structure described in the next section.
-
-**2. `probe_evidence`** (always required, primary and auditor)
-A dict `{file_path, file_content, dns_host, process_echo}` derived from the nonce. For runtime skill types your harness must also perform these three events inside the sandbox so they appear in `fs.jsonl`, `network.jsonl`, and `process.jsonl`.
-
-**3. `trace_bundle`** (required for runtime primaries only)
-`dict[str, str]` of `{filename: base64(gzip(jsonl_bytes))}`.
-
-| Skill type | Required files in trace_bundle |
-|---|---|
-| `executable_python` | `network.jsonl.gz`, `fs.jsonl.gz`, `process.jsonl.gz`, `secrets.jsonl.gz`, `imports.jsonl.gz` |
-| `executable_script` | `network.jsonl.gz`, `fs.jsonl.gz`, `process.jsonl.gz`, `secrets.jsonl.gz`, `shell_commands.jsonl.gz` |
-| `mcp_server` | `network.jsonl.gz`, `fs.jsonl.gz`, `process.jsonl.gz`, `secrets.jsonl.gz`, `tool_calls.jsonl.gz` |
-| `agent_composition` | `network.jsonl.gz`, `fs.jsonl.gz`, `process.jsonl.gz`, `secrets.jsonl.gz`, `agent_calls.jsonl.gz` |
-| `rag_knowledge` | Omit trace_bundle entirely |
-| `declarative` | Omit trace_bundle entirely |
-
-Size limits per compressed file: `network` 5MB, `fs` 10MB, `process` 5MB, `secrets` 1MB, `imports` 2MB, `shell_commands` 5MB, `tool_calls` 5MB, `agent_calls` 10MB. Total bundle must not exceed 30MB. Exceeding any limit means the response is treated as missing.
-
-**4. `sandbox_manifest`** (required for runtime primaries only)
+## What your agent receives per task
 
 ```json
 {
-  "image":          "ghcr.io/<you>/phylax-sandbox-python:v1",
-  "digest":         "sha256:abc123...",
-  "tracer_version": "1.0.0",
-  "tracer_hash":    "sha256:def456...",
-  "kernel":         "",
-  "cpu_arch":       ""
+  "artifact_dir": "/task/artifact",
+  "track": "skills",
+  "nonce": "…",
+  "probe": { "file_path": "/skill/.probe_…", "file_content": "…",
+             "dns_host": "….probe.phylax.ai", "process_echo": "…", "canary": "…" },
+  "inference": { "api": "<proxy url>", "api_key": "<your key>", "provider": "…", "model": "…" },
+  "sandbox": { "image": "…", "digest": "sha256:…" }
 }
 ```
 
-`image` and `digest` must match exactly what you registered in step 6.
+Your agent must thread the probe (write the file, look up the DNS host, echo the
+process token) so the proof-of-execution holds: the server confirms, in the
+captured traces, that you really executed, and the validator re-checks it on a
+sample. Missing or mismatched probe evidence fails the evidence gate and scores 0.
+When the agent is jailed (the docker executor), the inference key reaches the LLM
+only through the metered proxy, so it cannot be exfiltrated.
 
+## What you return
 
-## 9. The SSSA Structure
+One SSSA per task (see [sssa_schema.md](sssa_schema.md)). You fill `verdict`,
+`evidence`, and `findings`, and your miner signs the SSSA with your hotkey before
+submitting it.
 
-Your attestation field must contain a valid SSSA with these sections.
+## Hard rules
 
-**`skill`** identifies the bundle you analysed:
-`name`, `bundle_hash`, `skill_type`, `profile`, `schema_version`
+- One track per hotkey.
+- The probe must appear in your traces or you score 0.
+- Report canonical capability names (see [scoring.md](scoring.md)); fabricated or
+  off-track names do not raise evidence integrity.
+- Your image must be reproducible by digest. Reruns must produce the same probe
+  effects.
+- Never try to reach the open internet from the sandbox; only the inference proxy
+  is reachable.
 
-**`verdict`** is your analysis conclusion:
-`decision` (ALLOW | WARN | BLOCK), `risk_score` (0-100), `confidence` (0-1), `verdict_sources` (list of layer strings)
+## Configuration reference
 
-**`capabilities`** describes what the skill does:
-`filesystem.reads/writes`, `network.domains/ips/ports`, `process_spawns`, `secrets_access`, `shell_commands`, `tool_calls`, `child_skills`
-
-**`findings`** is a list of issues found:
-Each finding contains `finding_id`, `severity`, `title`, `description`, `owasp_ref`, `mitre_ref`, `evidence_snippet`, `layer_source`, `finding_type`
-
-**`dependencies`** covers supply chain analysis:
-`sbom_hash`, `high_risk_packages`, `known_cves`, `install_hooks`, `mcp_manifest_hash`, `child_skill_verdicts`
-
-**`recommended_policy`** is the suggested runtime sandbox policy:
-`egress_allow/deny`, `fs_read/write`, `shell_access`, `max_memory_mb`, `timeout_s`, `env_allowlist`, `tool_allowlist`, `child_skill_allowlist`
-
-**`evidence`** is your proof of work.
-
-Base hashes (all runtime types): `network_trace_hash`, `fs_trace_hash`, `process_trace_hash`, `secrets_trace_hash`
-
-Type-specific required evidence fields:
-
-| Skill type | Required fields |
+| Variable | Purpose |
 |---|---|
-| `rag_knowledge` | `rag_content_fingerprint`, `hidden_instruction_score`, `embedded_urls`, `document_count`, `canary_id_found` |
-| `declarative` | `canary_id_found`, `findings_count`, `skill_md_fingerprint`, `prompt_injection_ml_score`, `unicode_anomaly_detected`, `layer0_sync_hash` |
-| `executable_python` | `imports_trace_hash` plus four base hashes |
-| `executable_script` | `shell_commands_hash` plus four base hashes |
-| `mcp_server` | `tool_calls_hash`, `mcp_manifest_hash`, `tool_poisoning_score`, `tool_shadowing_detected`, `rug_pull_risk` plus four base hashes |
-| `agent_composition` | `agent_calls_hash`, `dependency_graph_hash`, `transitive_risk_score`, `composition_depth_observed` plus four base hashes |
+| `PHYLAX_SERVER_URL` | control-plane URL |
+| `PHYLAX_TRACK` | your single track |
+| `PHYLAX_EXECUTION_API_KEY` | inference key the validator spends (`cpk_`/`sk-or-`) |
+| `PHYLAX_INFERENCE_MODEL` | optional model id |
+| `PHYLAX_SANDBOX_IMAGE` / `PHYLAX_SANDBOX_DIGEST` | registered agent image + digest |
+| `PHYLAX_AGENT_PATH` | path to your agent (defaults to the reference agent) |
+| `PHYLAX_DEPENDENCY_MANIFEST` | optional manifest stored with the submission |
+| `WALLET_NAME` / `WALLET_HOTKEY` | wallet identity |
 
-**`attestation`** is your signature:
-`miner_hotkey` (your ss58 address), `supported_types_declared`, `ed25519_signature` (hex sig over sha256 of canonical SSSA body excluding this field, keys sorted alphabetically, no whitespace, UTF-8), `timestamp` (ISO-8601 UTC), `schema_version`, `skill_type_version`
+## Troubleshooting
 
-
-## 10. Canary Handling
-
-Every task carries a `canary_id` and `canary_val` derived from the nonce. You must handle them correctly or your evidence score is zero.
-
-| Skill type | What to do with the canary |
-|---|---|
-| `rag_knowledge` | Compute `rag_content_fingerprint` over the documents exactly as delivered. Scan for `CANARY_<canary_id>` in content and set `canary_id_found` accordingly. |
-| `declarative` | Scan SKILL.md for `<!-- CANARY: {canary_id} -->`. Set `canary_id_found = true` when found. Compute `skill_md_fingerprint` over SKILL.md exactly as delivered. |
-| `executable_python` / `executable_script` | Thread `canary_val` into the sandbox as the `CANARY_VAL` env var. Have your harness write it to `/skill/.canary` before launching the skill. Your tracer must record this filesystem op in `fs.jsonl`. |
-| `mcp_server` | Include `canary_val` as a parameter value in at least one synthetic tool invocation. The record must appear in `tool_calls.jsonl`. |
-| `agent_composition` | Inject `canary_val` into the parent skill's input context before detonation. The propagation must appear in `agent_calls.jsonl`. |
-
-
-## 11. Hard Rules
-
-Break any of these and your SSSA scores zero for that task.
-
-**No LLM for analysis.** Using a live LLM to decide the verdict, score prompt injection, classify tool poisoning, or analyse skill content is forbidden. The verdict and all scores must come from deterministic analysis your harness performs. LLMs are only permitted for post-analysis enrichment with one of these allowed uses: `finding_enrichment`, `mitre_owasp_mapping`, or `cve_explanation`. If your SSSA includes `llm_evidence`, its `allowed_use` must be one of these three values.
-
-**No skill_type mismatch.** Return an SSSA whose `skill.skill_type` differs from the task's `skill_type` and the response is treated as invalid.
-
-**No early responses.** Return before `task_metadata.t_min_s` seconds and the response is treated as not having run the sandbox.
-
-**No late responses.** Return after `task_metadata.deadline_s` seconds and the submission is discarded entirely with no score and no reputation update.
-
-**No missing evidence.** Any required evidence field for your declared skill type that is absent or empty zeroes the evidence gate, which zeroes the composite score regardless of verdict correctness.
-
-
-## 12. How the Validator Verifies You
-
-**In the same round:**
-The validator decompresses each trace file, normalises it (sort by `ts`, sorted keys, no whitespace), and sha256-hashes it. The computed hash must equal what you declared in the SSSA. It also scans your `fs.jsonl` for a write to `/skill/.canary` and checks your probe_evidence matches the nonce-derived probe events.
-
-**Across your verification group:**
-For each task the validator selects 5 miners: 3 primaries with the highest per_type_reputation and 2 auditors chosen randomly. All 5 analyse the same bundle independently. The validator then compares verdict, risk score, findings, capabilities, dependencies, and recommended policy across all submissions. Your consensus score is weighted: findings recall 30%, findings precision 15%, capabilities agreement 15%, verdict agreement 15%, dependencies agreement 10%, risk score agreement 10%, policy derivation 5%. This score multiplies your base emission score.
-
-**Asynchronously for the next round:**
-The validator pulls your registered sandbox image, verifies its digest matches your registration, and reruns it on the same bundle with the same nonce. It checks that `fs_trace_hash` matches exactly and that semantic agreement on other traces is at least 0.7. A pass adds +0.02 to your per_type_reputation. A fail multiplies it by 0.7.
-
-
-## 13. Configuration Reference
-
-| Variable | Default | Description |
-|---|---|---|
-| `SANDBOX_TIMEOUT` | `60` | Per-detonation timeout in seconds |
-| `PHYLAX_LOG_LEVEL` | `INFO` | Log level |
-| `PHYLAX_EVIDENCE_HOST_DIR` | set by install.sh | Host-side absolute path of the evidence bind mount. Required for docker-in-docker. |
-| `PHYLAX_SANDBOX_IMAGE` | `ghcr.io/praxi-labs/phylax-sandbox:latest` | Image launched by runtime harnesses. Must match `image_uri` at registration. |
-| `PHYLAX_SANDBOX_DIGEST` | (empty) | `sha256:...` digest of the sandbox image. Must match `image_hash` at registration. |
-| `PHYLAX_TRACER_VERSION` | `1.0.0` | Tracer version string included in `sandbox_manifest` |
-| `AXON_PORT` | `8091` | Host port for the miner axon |
-
-
-## 14. Troubleshooting
-
-| Symptom | Cause | Fix |
-|---|---|---|
-| Container exits immediately | Hotkey not found | Check `~/.bittensor/wallets/<WALLET_NAME>/hotkeys/<WALLET_HOTKEY>` exists |
-| No `scan:` lines after 5 minutes | Not registered with phylax-server or axon unreachable | Re-run step 6, check inbound 8091 |
-| Specialization rejected: "at least two skill types" | Only one type declared | Add a second type |
-| Specialization rejected: "needs base_weight >= 1.0" | Only `rag_knowledge` and/or `declarative` declared | Add one of `executable_python`, `executable_script`, `mcp_server`, or `agent_composition` |
-| Specialization rejected: "missing sandbox_image" | Runtime type declared without sandbox image entry | Add `sandbox_images[<type>]` for every runtime type you declared |
-| Sandbox produces only `log.txt` | Evidence bind mount misconfigured | Re-run `scripts/install.sh` or set `PHYLAX_EVIDENCE_HOST_DIR` to the correct absolute host path |
-| `permission denied` connecting to Docker API | Container UID not in host docker group | Confirm `DOCKER_GID` matches `getent group docker` |
-| `Bundle hash mismatch` | Wrong bytes downloaded | Check `bundle_url` is reachable from inside the container |
-| Sandbox timeouts | Heavy bundle or slow analysis | Increase `SANDBOX_TIMEOUT` |
-| Score zero despite valid SSSA | Missing canary in traces | Confirm `/skill/.canary` write appears in `fs.jsonl` |
+- **Scoring 0 every task**: the probe is not landing in your traces. Confirm your
+  agent writes `probe.file_path`, resolves `probe.dns_host`, and echoes
+  `probe.process_echo` during detonation.
+- **Submission rejected with "register into a track first"**: run
+  `./scripts/register.sh` (it registers the track before submitting the agent), or
+  check `PHYLAX_TRACK`.
+- **Inference failing**: the agent must call the LLM via `context["inference"]
+  ["api"]` (the proxy), not the provider directly; the sandbox is network-jailed.

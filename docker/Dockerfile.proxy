@@ -1,0 +1,12 @@
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PHYLAX_PROXY_HOST=0.0.0.0 \
+    PHYLAX_PROXY_PORT=8900
+
+WORKDIR /proxy
+COPY phylax/harness/inference_proxy.py /proxy/inference_proxy.py
+
+EXPOSE 8900
+CMD ["python", "/proxy/inference_proxy.py"]

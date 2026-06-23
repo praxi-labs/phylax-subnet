@@ -1,87 +1,99 @@
 # Phylax REST API
 
-The validator exposes `phylax.api.server` (FastAPI) on `PHYLAX_API_PORT` (default 8080).
+The control plane is the **phylax-server** (separate repo). Miners and validators
+talk to it over HTTP; the subnet ships a signed client (`phylax/server_client.py`).
+All mutating calls are authenticated by a hotkey signature over
+`METHOD \n PATH \n TIMESTAMP \n BODY`, sent as `X-Phylax-Hotkey`,
+`X-Phylax-Timestamp`, `X-Phylax-Signature` (`ed25519:<hex>`).
 
-## POST `/v1/scan`
+## Identity
 
-Submit a bundle for attestation. Returns the cached consensus SSSA if one exists, or a freshly produced single-party attestation from the validator's BaselineRunner if not.
+### `GET /v1/server-identity`
+Returns the server's pinned hotkey. Validators pin this (`PHYLAX_SERVER_HOTKEY`)
+so a hijacked URL cannot impersonate the control plane.
 
-Request body:
+## Miner endpoints (signed by the miner hotkey)
 
+### `POST /v1/specialization/register`
+Register a hotkey into one track.
+```json
+{ "hotkey": "5…", "registration_version": "2.0", "track": "skills", "label": "" }
+```
+
+### `POST /v1/specialization/agent`
+Submit (or re-version) the agent. Requires the hotkey to be registered into a
+track first.
 ```json
 {
-  "bundle_url": "https://...",
-  "bundle_bytes": "<base64>",
-  "metadata": { "name": "...", "version": "...", "permissions": ["..."] },
-  "test_profile": "fast | standard | deep"
+  "hotkey": "5…", "name": "",
+  "code": "def agent_main(context): ...",
+  "entrypoint": "agent_main",
+  "execution_api_key": "cpk_… | sk-or-…",
+  "inference_model": "",
+  "sandbox": { "image_uri": "ghcr.io/you/agent:v1", "image_hash": "sha256:…" },
+  "dependency_manifest": ""
+}
+```
+Returns `{ agent_id, track, version, status, code_sha256, inference_provider,
+inference_model, sandbox_image, sandbox_digest, created_at }`. Re-submitting
+supersedes the previous active version.
+
+### `DELETE /v1/specialization/agent/{hotkey}`
+Withdraw the agent (stops dispatch).
+
+## Validator endpoints (signed by the validator hotkey)
+
+### `POST /v1/tasks/track/next`
+Dispatch a task for a track.
+```json
+{ "track": "skills" }
+```
+Returns (or `null` when no work):
+```json
+{
+  "task_id": "…", "track": "skills", "agent_hotkey": "5…",
+  "artifact_ref": "sha256:…", "artifact_url": "https://…", "nonce": "…",
+  "probe": { "file_path": "…", "file_content": "…", "dns_host": "…",
+             "process_echo": "…", "canary": "…" },
+  "is_benchmark": false, "deadline_at": "…"
 }
 ```
 
-Either `bundle_url` or `bundle_bytes` (base64) must be present.
-
-Response body:
-
+### `GET /v1/specialization/agent/{hotkey}/runnable`
+Fetch a miner's active agent to run.
 ```json
 {
-  "attestation": { ... canonical SSSA ... },
-  "evidence_refs": { "N": "sha256:...", "F": "...", "P": "...", "K": "..." },
-  "from_cache": true
+  "agent_id": "…", "track": "skills", "version": 3, "entrypoint": "agent_main",
+  "code": "…", "execution_api_key": "…", "inference_provider": "chutes",
+  "inference_model": "", "sandbox_image": "…", "sandbox_digest": "sha256:…",
+  "dependency_manifest": ""
 }
 ```
 
-## GET `/v1/attestation/{bundle_hash}`
+### `POST /v1/tasks/track/{task_id}/attestation`
+Submit the verified SSSA for a dispatched task.
+```json
+{ "verdict": "BLOCK", "risk_score": 90, "evidence": { /* track evidence */ },
+  "miner_signature": "ed25519:…" }
+```
+The server verifies the probe is present in the traces, scores the result, and
+updates the agent's score. Returns `{ task_id, track, agent_hotkey, score,
+evidence_gate_passed, capability_count, reason }`.
 
-Lookup by content address. Returns the cached consensus SSSA, or 404 if none exists / it was invalidated.
-
-## POST `/v1/attestation/verify`
-
-Server-side verification of any SSSA payload. Useful for runtimes that don't want to ship the verifier code.
-
-Response:
-
+### `GET /v1/tasks/track/weights`
+Top-3 per-track emission weights (no signature required).
 ```json
 {
-  "ok": true,
-  "reason": null,
-  "miner_signature_ok": true,
-  "validator_signature_ok": true,
-  "bundle_hash_ok": true,
-  "sbom_hash_ok": true,
-  "fresh": true
+  "computed_at": "…",
+  "weights": { "5HotkeyA…": 0.6, "5HotkeyB…": 0.3, "5HotkeyC…": 0.1 },
+  "top_agents": [ { "hotkey": "5…", "track": "skills", "score": 0.82,
+                    "attestations_count": 41 } ]
 }
 ```
+Validators fetch this, map hotkeys to UIDs, and call `set_weights`.
 
-## POST `/v1/attestation/{bundle_hash}/invalidate`
+## Client
 
-Drift-detection hook (whitepaper §6.4). Marks the attestation as invalid; subsequent GETs will return 404 until a fresh consensus is produced.
-
-Request body:
-
-```json
-{ "reason": "CVE-2026-1234 affects bundled dependency X", "token": "<admin_token>" }
-```
-
-The token must match `PHYLAX_API_ADMIN_TOKEN`.
-
-## GET `/v1/health`
-
-Liveness + registry stats:
-
-```json
-{
-  "ok": true,
-  "schema_version": "1.1.0",
-  "registry": { "total": 1234, "active": 1190, "block": 220, "warn": 180, "allow": 790 }
-}
-```
-
-## Running standalone
-
-```bash
-PHYLAX_REGISTRY_PATH=/var/lib/phylax/registry.sqlite3 \
-PHYLAX_API_HOST=0.0.0.0 \
-PHYLAX_API_PORT=8080 \
-python -m phylax.api.server
-```
-
-When deployed alongside a Phylax validator, point both processes at the same `PHYLAX_REGISTRY_PATH` so the API serves the consensus attestations the validator publishes.
+`phylax/server_client.py` wraps these: `register`, `register_track`,
+`submit_agent`, `get_runnable_agent`, `dispatch_track_task`,
+`submit_track_attestation`, `fetch_track_weights`.

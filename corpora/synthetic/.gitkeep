@@ -1,5 +1,0 @@
-# Synthetic tasks are generated at validator runtime by
-# phylax.validator.synth.SyntheticGenerator and rotated per round. They
-# are not part of the static corpus, but the directory must exist so the
-# CorpusLoader doesn't skip it when validators want to dump generated
-# tasks for offline replay.
