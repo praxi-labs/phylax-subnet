@@ -1,19 +1,26 @@
 <p align="center">
-  <img src="assets/logo.svg" alt="Phylax" width="80" height="80" />
+  <img src="assets/logo.svg" alt="Phylax" width="128" height="128" />
 </p>
 
-# Phylax: Decentralized Trust Layer for the AI Supply Chain
+<h1 align="center">Phylax</h1>
 
-*φύλαξ, Ancient Greek for guardian, sentinel, watchman.*
+<p align="center">
+  <a href="https://app.phyi.dev/"><img src="https://img.shields.io/badge/homepage-phyi.dev-0E3B1E?style=flat-square&labelColor=14122B"></a>
+  <a href="https://docs.phyi.dev"><img src="https://img.shields.io/badge/docs-docs.phyi.dev-0E3B1E?style=flat-square&labelColor=14122B"></a>
+  <a href="https://discord.gg/bittensor"><img src="https://img.shields.io/badge/chat-Discord-5865F2?style=flat-square&labelColor=14122B"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-D4FF3A?style=flat-square&labelColor=14122B"></a>
+</p>
 
-[![Bittensor](https://img.shields.io/badge/Bittensor-Subnet-blue)](https://bittensor.com)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/Python-3.10+-green)](https://python.org)
-[![Status: Pre-launch](https://img.shields.io/badge/Status-Pre--launch-orange)]()
+<p align="center">
+  <a href="https://app.phyi.dev/">Homepage</a> &bull;
+  <a href="https://docs.phyi.dev">Docs</a> &bull;
+  <a href="https://discord.gg/bittensor">Discord</a> &bull;
+  <a href="https://github.com/praxi-labs/phylax-subnet">GitHub</a>
+</p>
 
-Phylax is a Bittensor subnet that vets the AI supply chain. It takes untrusted
-artifacts (agent skills, MCP servers, packages, and source repositories) and
-produces a Signed Skill and Supply chain Safety Attestation (SSSA): a portable,
+Phylax is a decentralized trust layer for the AI software supply chain. It takes
+untrusted artifacts (agent skills, MCP servers, packages, and source repositories)
+and produces a Signed Skill and Supply chain Safety Attestation (SSSA): a portable,
 cryptographically signed verdict backed by proof that the analysis actually ran.
 
 ## The problem
