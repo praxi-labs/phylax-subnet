@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.svg" alt="Phylax" width="80" height="80" />
+</p>
+
 # Phylax: Decentralized Trust Layer for the AI Supply Chain
 
 *φύλαξ, Ancient Greek for guardian, sentinel, watchman.*
