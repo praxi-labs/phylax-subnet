@@ -45,6 +45,10 @@ filterwarnings = [
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+# corpora/ holds deliberately malicious and vulnerable fixtures (install-hook
+# packages, SQL injection apps, credential stealers). They must never be linted
+# or auto-fixed; "fixing" them would destroy the known-bad samples agents score.
+extend-exclude = ["corpora"]
 
 [tool.ruff.lint]
 # Bandit-style "S" rules guard the subnet against regressions on the
