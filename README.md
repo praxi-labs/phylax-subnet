@@ -1,21 +1,20 @@
-<p align="center">
-  <img src="assets/logo.svg" alt="Phylax" width="128" height="128" />
-</p>
-
 <h1 align="center">Phylax</h1>
 
-<p align="center">
-  <a href="https://app.phyi.dev/"><img src="https://img.shields.io/badge/homepage-phyi.dev-0E3B1E?style=flat-square&labelColor=14122B"></a>
-  <a href="https://docs.phyi.dev"><img src="https://img.shields.io/badge/docs-docs.phyi.dev-0E3B1E?style=flat-square&labelColor=14122B"></a>
-  <a href="https://discord.gg/bittensor"><img src="https://img.shields.io/badge/chat-Discord-5865F2?style=flat-square&labelColor=14122B"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-D4FF3A?style=flat-square&labelColor=14122B"></a>
-</p>
+<p align="center"><em>φύλαξ, Ancient Greek for guardian, sentinel, watchman.</em></p>
+
+<div align="center">
+
+[![Bittensor](https://img.shields.io/badge/Bittensor-Subnet-blue)](https://bittensor.com)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10+-green)](https://python.org)
+[![Status: Pre-launch](https://img.shields.io/badge/Status-Pre--launch-orange)]()
+
+</div>
 
 <p align="center">
   <a href="https://app.phyi.dev/">Homepage</a> &bull;
   <a href="https://docs.phyi.dev">Docs</a> &bull;
-  <a href="https://discord.gg/bittensor">Discord</a> &bull;
-  <a href="https://github.com/praxi-labs/phylax-subnet">GitHub</a>
+  <a href="https://phyi.dev/research">Research</a>
 </p>
 
 Phylax is a decentralized trust layer for the AI software supply chain. It takes
