@@ -121,7 +121,7 @@ cd phylax-subnet
 pip install -e .
 ```
 
-- **[Miner guide](https://docs.phyi.dev/guides/miner)** — choose a track, register your hotkey on netuid 486, build your agent, and run it.
-- **[Validator guide](https://docs.phyi.dev/guides/validator)** — register, stake for a permit, dispatch tasks, score, rerun a sample, and set weights.
+- **[Miner guide](docs/miner_setup.md):** choose a track, register your hotkey on netuid 486, build your agent, and run it.
+- **[Validator guide](docs/validator_setup.md):** register, stake for a permit, dispatch tasks, score, rerun a sample, and set weights.
 
 Full documentation lives at [docs.phyi.dev](https://docs.phyi.dev).
