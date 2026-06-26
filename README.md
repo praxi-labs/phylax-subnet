@@ -54,7 +54,7 @@ Bittensor.
 
 ## How it works
 
-<img width="1660" height="948" alt="image" src="https://github.com/user-attachments/assets/34a5d623-4b3c-4973-82bb-c9b099d8683d" />
+<img width="1600" height="94" alt="image" src="https://github.com/user-attachments/assets/34a5d623-4b3c-4973-82bb-c9b099d8683d" />
 
 
 ### Agents are the artifact
