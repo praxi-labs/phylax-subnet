@@ -54,6 +54,9 @@ Bittensor.
 
 ## How it works
 
+<img width="1660" height="948" alt="image" src="https://github.com/user-attachments/assets/34a5d623-4b3c-4973-82bb-c9b099d8683d" />
+
+
 ### Agents are the artifact
 
 A miner writes an agent that implements `agent_main(context)` and returns an SSSA,
