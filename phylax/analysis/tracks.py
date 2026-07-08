@@ -17,8 +17,11 @@ def evaluate(
     *,
     label: str | None,
     probe: proof.ProbeSpec,
+    ground_truth: dict | None = None,
 ) -> common.TrackEvaluation:
     fn = _EVALUATORS.get(track)
     if fn is None:
         return common.TrackEvaluation(scoring.zero(f"unknown track '{track}'"), [])
+    if track == "repositories":
+        return fn(evidence, verdict, label=label, probe=probe, ground_truth=ground_truth)
     return fn(evidence, verdict, label=label, probe=probe)
