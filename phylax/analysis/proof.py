@@ -4,6 +4,8 @@ import hashlib
 import secrets
 from dataclasses import dataclass
 
+from phylax.utils.hashing import trace_hash
+
 _PROBE_DOMAIN = "probe.phylax.ai"
 
 
@@ -108,6 +110,12 @@ def verify_proof_of_execution(
         return ProofResult(True, "")
 
     traces = poe.get("traces") or {}
+    for plane in ("filesystem", "network", "process"):
+        trace = traces.get(plane) or {}
+        declared = str(trace.get("hash", "") or "")
+        if trace_hash(trace.get("events") or []) != declared:
+            return ProofResult(False, f"{plane} trace hash mismatch")
+
     fs = (traces.get("filesystem") or {}).get("events") or []
     network = (traces.get("network") or {}).get("events") or []
     process = (traces.get("process") or {}).get("events") or []

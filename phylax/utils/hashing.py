@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import unicodedata
 from pathlib import Path
 
 PathLike = str | Path
@@ -29,6 +30,34 @@ def content_address(obj) -> str:
     """
     canon = json.dumps(obj, sort_keys=True, separators=(",", ":"), default=str)
     return sha256_bytes(canon.encode())
+
+
+def canonical_json(obj) -> str:
+    canon = json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
+    return unicodedata.normalize("NFC", canon)
+
+
+def trace_hash(events: list) -> str:
+    return "sha256:" + hashlib.sha256(canonical_json(events).encode("utf-8")).hexdigest()
+
+
+def sssa_digest(
+    track: str,
+    bundle_hash: str,
+    nonce: str,
+    verdict: dict,
+    evidence: dict,
+    findings: list,
+) -> bytes:
+    body = {
+        "track": track,
+        "bundle_hash": bundle_hash,
+        "nonce": nonce,
+        "verdict": verdict,
+        "evidence": evidence,
+        "findings": findings,
+    }
+    return hashlib.sha256(canonical_json(body).encode("utf-8")).digest()
 
 
 def is_valid_sha256_ref(s: str) -> bool:

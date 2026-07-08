@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
+import json
 import re
 import socket
 import subprocess
+import unicodedata
 from pathlib import Path
 
 _SCAN_BYTE_CAP = 1_000_000
@@ -129,6 +132,12 @@ def _decide(capabilities: list[dict], injection_score: float) -> tuple[str, int]
     return "ALLOW", 5
 
 
+def _trace_hash(events: list) -> str:
+    canon = json.dumps(events, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
+    canon = unicodedata.normalize("NFC", canon)
+    return "sha256:" + hashlib.sha256(canon.encode("utf-8")).hexdigest()
+
+
 def _probe_evidence(probe: dict) -> dict:
     return {
         "file_write": probe.get("file_path", ""),
@@ -153,9 +162,9 @@ def agent_main(context: dict | None = None) -> dict:
         "proof_of_execution": {
             "probe_evidence": _probe_evidence(probe),
             "traces": {
-                "filesystem": {"hash": "", "events": traces["fs"]},
-                "network": {"hash": "", "events": traces["network"]},
-                "process": {"hash": "", "events": traces["process"]},
+                "filesystem": {"hash": _trace_hash(traces["fs"]), "events": traces["fs"]},
+                "network": {"hash": _trace_hash(traces["network"]), "events": traces["network"]},
+                "process": {"hash": _trace_hash(traces["process"]), "events": traces["process"]},
             },
         },
         "action_plane": {"capabilities": capabilities},

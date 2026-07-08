@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
-import json
 import os
 import time
 from pathlib import Path
@@ -12,8 +10,10 @@ import bittensor as bt
 from phylax.harness.runner import run_task
 from phylax.protocol import AgentSynapse, TaskSynapse
 from phylax.server_client import PhylaxServerClient
+from phylax.utils.hashing import sssa_digest
 
 MINER_INTERVAL_S: int = int(os.getenv("PHYLAX_MINER_INTERVAL", "20"))
+MIN_VALIDATOR_STAKE: float = float(os.getenv("PHYLAX_MIN_VALIDATOR_STAKE", "0"))
 
 
 def _reference_agent_path() -> str:
@@ -110,19 +110,11 @@ class PhylaxMiner:
         except Exception as e:  # noqa: BLE001
             bt.logging.warning(f"marketplace registration skipped: {e}")
 
-    def _sign(self, track: str, bundle_hash: str, nonce: str, verdict: dict, evidence: dict):
-        body = json.dumps(
-            {
-                "track": track,
-                "bundle_hash": bundle_hash,
-                "nonce": nonce,
-                "verdict": verdict,
-                "evidence": evidence,
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-        digest = hashlib.sha256(body).digest()
+    def _sign(
+        self, track: str, bundle_hash: str, nonce: str,
+        verdict: dict, evidence: dict, findings: list,
+    ):
+        digest = sssa_digest(track, bundle_hash, nonce, verdict, evidence, findings)
         return "sha256:" + digest.hex(), "ed25519:" + self.wallet.hotkey.sign(digest).hex()
 
     def handle_task(self, synapse: TaskSynapse) -> TaskSynapse:
@@ -140,15 +132,16 @@ class PhylaxMiner:
             return synapse
         verdict = result["verdict"]
         evidence = result["evidence"]
+        findings = result.get("findings") or []
         canonical_hash, signature = self._sign(
-            self.track, synapse.artifact_ref, synapse.nonce, verdict, evidence
+            self.track, synapse.artifact_ref, synapse.nonce, verdict, evidence, findings
         )
         synapse.sssa = {
             "track": self.track,
             "artifact": {"bundle_hash": synapse.artifact_ref, "nonce": synapse.nonce},
             "verdict": verdict,
             "evidence": evidence,
-            "findings": result.get("findings") or [],
+            "findings": findings,
             "attestation": {
                 "miner_hotkey": self.wallet.hotkey.ss58_address,
                 "signature": signature,
@@ -177,6 +170,15 @@ class PhylaxMiner:
         hotkey = getattr(synapse.dendrite, "hotkey", None)
         if hotkey is None or hotkey not in self.metagraph.hotkeys:
             return True, "unrecognised hotkey"
+        uid = self.metagraph.hotkeys.index(hotkey)
+        try:
+            permit = bool(self.metagraph.validator_permit[uid])
+        except (IndexError, TypeError, AttributeError):
+            permit = False
+        if not permit:
+            return True, "caller lacks a validator permit"
+        if float(self.metagraph.S[uid]) < MIN_VALIDATOR_STAKE:
+            return True, "caller stake below validator minimum"
         return False, ""
 
     def priority(self, synapse) -> float:

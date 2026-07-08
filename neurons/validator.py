@@ -14,6 +14,7 @@ from phylax.analysis import scoring, tracks
 from phylax.harness.corpus import load_corpus
 from phylax.harness.runner import run_task
 from phylax.protocol import AgentSynapse, TaskSynapse
+from phylax.utils.hashing import sssa_digest
 
 ROUND_INTERVAL_S: int = int(os.getenv("PHYLAX_TRACK_INTERVAL", "20"))
 QUERY_TIMEOUT_S: float = float(os.getenv("PHYLAX_QUERY_TIMEOUT", "150"))
@@ -93,7 +94,6 @@ class PhylaxValidator:
         self.dendrite = bt.dendrite(wallet=self.wallet)
         self.track = os.getenv("PHYLAX_TRACK", "skills")
         self.rerun_limit = int(os.getenv("PHYLAX_RERUN_LIMIT", "3"))
-        self.detonation = self.track != "repositories"
         self.corpus = load_corpus(self.track)
         self.scores: dict[str, float] = {}
         self.rerun_pass: dict[str, float] = {}
@@ -128,30 +128,40 @@ class PhylaxValidator:
                 uids.append(uid)
         return uids
 
-    def _verify_sig(self, hotkey: str, sssa: dict) -> bool:
+    def _verify_sig(self, hotkey: str, sssa: dict, ref: str, nonce: str) -> bool:
         att = sssa.get("attestation") or {}
         if str(att.get("miner_hotkey", "")) != hotkey:
             return False
-        canonical_hash = str(att.get("canonical_hash", "")).removeprefix("sha256:")
+        claimed = str(att.get("canonical_hash", "")).removeprefix("sha256:")
         sig = str(att.get("signature", "")).removeprefix("ed25519:")
-        if not canonical_hash or not sig:
+        if not claimed or not sig:
+            return False
+        digest = sssa_digest(
+            self.track,
+            ref,
+            nonce,
+            sssa.get("verdict") or {},
+            sssa.get("evidence") or {},
+            sssa.get("findings") or [],
+        )
+        if digest.hex() != claimed:
             return False
         keypair = _keypair_for(hotkey)
         if keypair is None:
-            return True
+            return False
         try:
-            return bool(keypair.verify(bytes.fromhex(canonical_hash), bytes.fromhex(sig)))
+            return bool(keypair.verify(digest, bytes.fromhex(sig)))
         except Exception:  # noqa: BLE001
-            return True
+            return False
 
-    def _score_response(self, hotkey: str, sssa: dict, label: str, probe) -> str | None:
-        if not sssa or not self._verify_sig(hotkey, sssa):
+    def _score_response(self, hotkey: str, sssa: dict, item: dict, probe) -> str | None:
+        if not sssa or not self._verify_sig(hotkey, sssa, item["ref"], probe.nonce):
             self._update_score(hotkey, 0.0)
             return None
         verdict = sssa.get("verdict") or {}
         decision = verdict.get("decision", "") if isinstance(verdict, dict) else str(verdict)
         evidence = sssa.get("evidence") or {}
-        ev = tracks.evaluate(self.track, evidence, decision, label=label, probe=probe)
+        ev = tracks.evaluate(self.track, evidence, decision, label=item["label"], probe=probe)
         self._update_score(hotkey, ev.result.score)
         return decision
 
@@ -189,7 +199,7 @@ class PhylaxValidator:
         for uid, resp in zip(uids, responses, strict=False):
             hotkey = self.metagraph.hotkeys[uid]
             sssa = getattr(resp, "sssa", None) or {}
-            decision = self._score_response(hotkey, sssa, item["label"], probe)
+            decision = self._score_response(hotkey, sssa, item, probe)
             if decision is not None:
                 answered.append((hotkey, decision))
 
@@ -202,11 +212,20 @@ class PhylaxValidator:
     def _run_reruns(self, answered: list[tuple[str, str]], item: dict, probe) -> None:
         if not answered:
             return
+        if os.getenv("PHYLAX_EXECUTOR", "sandbox") != "docker":
+            bt.logging.warning(
+                "rerun audit requires PHYLAX_EXECUTOR=docker; refusing to run miner code unjailed"
+            )
+            return
         sample = random.sample(answered, min(self.rerun_limit, len(answered)))  # noqa: S311
         for hotkey, miner_decision in sample:
             uid = self.metagraph.hotkeys.index(hotkey)
             runnable = self._fetch_agent(self.metagraph.axons[uid])
             if runnable is None:
+                continue
+            if not runnable["sandbox_image"]:
+                self._update_rerun(hotkey, False)
+                bt.logging.warning(f"L2 rerun agent={hotkey[:10]} has no sandbox image; failed")
                 continue
             dispatch = {
                 "track": self.track,
@@ -302,7 +321,7 @@ class PhylaxValidator:
         last_weight_block = 0
         while not self.should_exit:
             try:
-                self.metagraph.sync(subtensor=self.subtensor, lite=False)
+                self.metagraph.sync(subtensor=self.subtensor, lite=True)
                 self.run_round()
 
                 current_block = self.subtensor.get_current_block()
