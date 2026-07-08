@@ -75,3 +75,6 @@ validators/
 
 # Docker
 *.tar
+
+# Local verification only; never publish
+tests/
