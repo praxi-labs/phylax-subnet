@@ -78,8 +78,10 @@ def compute_emission_weights(
         for (hotkey, _score), frac in zip(top, split, strict=True):
             weights[hotkey] = weights.get(hotkey, 0.0) + track_share * (frac / denom)
 
-    for hotkey in list(weights):
-        weights[hotkey] *= PERFORMANCE_SHARE
+    perf_total = sum(weights.values())
+    if perf_total > 0.0:
+        for hotkey in list(weights):
+            weights[hotkey] = weights[hotkey] / perf_total * PERFORMANCE_SHARE
 
     eligible = sorted(active & (contributor_hotkeys or set()))
     if eligible:
