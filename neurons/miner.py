@@ -10,7 +10,7 @@ import bittensor as bt
 from phylax.harness.runner import run_task
 from phylax.protocol import AgentSynapse, TaskSynapse
 from phylax.server_client import PhylaxServerClient
-from phylax.utils.hashing import sssa_digest
+from phylax.utils.hashing import sha256_bytes, sssa_digest
 
 MINER_INTERVAL_S: int = int(os.getenv("PHYLAX_MINER_INTERVAL", "20"))
 MIN_VALIDATOR_STAKE: float = float(os.getenv("PHYLAX_MIN_VALIDATOR_STAKE", "0"))
@@ -112,9 +112,9 @@ class PhylaxMiner:
 
     def _sign(
         self, track: str, bundle_hash: str, nonce: str,
-        verdict: dict, evidence: dict, findings: list,
+        verdict: dict, evidence: dict, findings: list, agent_hash: str,
     ):
-        digest = sssa_digest(track, bundle_hash, nonce, verdict, evidence, findings)
+        digest = sssa_digest(track, bundle_hash, nonce, verdict, evidence, findings, agent_hash)
         return "sha256:" + digest.hex(), "ed25519:" + self.wallet.hotkey.sign(digest).hex()
 
     def handle_task(self, synapse: TaskSynapse) -> TaskSynapse:
@@ -127,14 +127,17 @@ class PhylaxMiner:
             "artifact_ref": synapse.artifact_ref,
             "artifact_b64": synapse.artifact_b64,
         }
-        result = run_task(dispatch, self._local_runnable(), log=bt.logging.warning)
+        runnable = self._local_runnable()
+        agent_hash = sha256_bytes(runnable["code"].encode("utf-8"))
+        result = run_task(dispatch, runnable, log=bt.logging.warning)
         if result is None:
             return synapse
         verdict = result["verdict"]
         evidence = result["evidence"]
         findings = result.get("findings") or []
         canonical_hash, signature = self._sign(
-            self.track, synapse.artifact_ref, synapse.nonce, verdict, evidence, findings
+            self.track, synapse.artifact_ref, synapse.nonce,
+            verdict, evidence, findings, agent_hash,
         )
         synapse.sssa = {
             "track": self.track,
@@ -146,6 +149,7 @@ class PhylaxMiner:
                 "miner_hotkey": self.wallet.hotkey.ss58_address,
                 "signature": signature,
                 "canonical_hash": canonical_hash,
+                "agent_hash": agent_hash,
             },
         }
         return synapse

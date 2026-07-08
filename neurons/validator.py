@@ -14,7 +14,7 @@ from phylax.analysis import scoring, tracks
 from phylax.harness.corpus import load_corpus
 from phylax.harness.runner import run_task
 from phylax.protocol import AgentSynapse, TaskSynapse
-from phylax.utils.hashing import sssa_digest
+from phylax.utils.hashing import sha256_bytes, sssa_digest
 
 ROUND_INTERVAL_S: int = int(os.getenv("PHYLAX_TRACK_INTERVAL", "20"))
 QUERY_TIMEOUT_S: float = float(os.getenv("PHYLAX_QUERY_TIMEOUT", "150"))
@@ -143,6 +143,7 @@ class PhylaxValidator:
             sssa.get("verdict") or {},
             sssa.get("evidence") or {},
             sssa.get("findings") or [],
+            str(att.get("agent_hash", "") or ""),
         )
         if digest.hex() != claimed:
             return False
@@ -161,7 +162,10 @@ class PhylaxValidator:
         verdict = sssa.get("verdict") or {}
         decision = verdict.get("decision", "") if isinstance(verdict, dict) else str(verdict)
         evidence = sssa.get("evidence") or {}
-        ev = tracks.evaluate(self.track, evidence, decision, label=item["label"], probe=probe)
+        ev = tracks.evaluate(
+            self.track, evidence, decision,
+            label=item["label"], probe=probe, ground_truth=item.get("ground_truth"),
+        )
         self._update_score(hotkey, ev.result.score)
         return decision
 
@@ -195,13 +199,14 @@ class PhylaxValidator:
             axons=axons, synapse=synapse, timeout=QUERY_TIMEOUT_S, deserialize=False
         )
 
-        answered: list[tuple[str, str]] = []
+        answered: list[tuple[str, str, str]] = []
         for uid, resp in zip(uids, responses, strict=False):
             hotkey = self.metagraph.hotkeys[uid]
             sssa = getattr(resp, "sssa", None) or {}
             decision = self._score_response(hotkey, sssa, item, probe)
             if decision is not None:
-                answered.append((hotkey, decision))
+                att = sssa.get("attestation") or {}
+                answered.append((hotkey, decision, str(att.get("agent_hash", "") or "")))
 
         bt.logging.info(
             f"round track={self.track} artifact={item['ref']} queried={len(uids)} "
@@ -209,7 +214,7 @@ class PhylaxValidator:
         )
         self._run_reruns(answered, item, probe)
 
-    def _run_reruns(self, answered: list[tuple[str, str]], item: dict, probe) -> None:
+    def _run_reruns(self, answered: list[tuple[str, str, str]], item: dict, probe) -> None:
         if not answered:
             return
         if os.getenv("PHYLAX_EXECUTOR", "sandbox") != "docker":
@@ -218,7 +223,7 @@ class PhylaxValidator:
             )
             return
         sample = random.sample(answered, min(self.rerun_limit, len(answered)))  # noqa: S311
-        for hotkey, miner_decision in sample:
+        for hotkey, miner_decision, agent_hash in sample:
             uid = self.metagraph.hotkeys.index(hotkey)
             runnable = self._fetch_agent(self.metagraph.axons[uid])
             if runnable is None:
@@ -226,6 +231,13 @@ class PhylaxValidator:
             if not runnable["sandbox_image"]:
                 self._update_rerun(hotkey, False)
                 bt.logging.warning(f"L2 rerun agent={hotkey[:10]} has no sandbox image; failed")
+                continue
+            fetched_hash = sha256_bytes(runnable["code"].encode("utf-8"))
+            if not agent_hash or fetched_hash != agent_hash:
+                self._update_rerun(hotkey, False)
+                bt.logging.warning(
+                    f"L2 rerun agent={hotkey[:10]} code does not match the attested agent; failed"
+                )
                 continue
             dispatch = {
                 "track": self.track,

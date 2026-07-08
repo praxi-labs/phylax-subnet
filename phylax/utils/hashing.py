@@ -48,6 +48,7 @@ def sssa_digest(
     verdict: dict,
     evidence: dict,
     findings: list,
+    agent_hash: str = "",
 ) -> bytes:
     body = {
         "track": track,
@@ -56,6 +57,7 @@ def sssa_digest(
         "verdict": verdict,
         "evidence": evidence,
         "findings": findings,
+        "agent_hash": agent_hash,
     }
     return hashlib.sha256(canonical_json(body).encode("utf-8")).digest()
 
