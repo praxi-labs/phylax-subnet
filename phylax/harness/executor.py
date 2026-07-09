@@ -39,6 +39,21 @@ def _pin(image: str, digest: str) -> str:
     return f"{base}@{digest}"
 
 
+def _observed_probe(cid: str, context: dict, work: Path) -> bool | None:
+    probe = context.get("probe") or {}
+    path = str(probe.get("file_path", "") or "")
+    if not path.startswith("/task/"):
+        return None
+    target = work / "probe_file"
+    cp = _docker("cp", f"{cid}:{path}", str(target), timeout=15)
+    if cp.returncode != 0 or not target.exists():
+        return False
+    try:
+        return target.read_text(encoding="utf-8") == str(probe.get("file_content", ""))
+    except OSError:
+        return False
+
+
 def run_agent_in_docker(
     agent_code: str,
     context: dict,
@@ -66,6 +81,7 @@ def run_agent_in_docker(
         if artifact_dir and Path(artifact_dir).exists():
             shutil.copytree(artifact_dir, task_dir / "artifact", dirs_exist_ok=True)
             ctx["artifact_dir"] = "/task/artifact"
+        (task_dir / "workspace").mkdir()
         (task_dir / "agent.py").write_text(agent_code, encoding="utf-8")
         (task_dir / "context.json").write_text(json.dumps(ctx), encoding="utf-8")
 
@@ -104,7 +120,9 @@ def run_agent_in_docker(
                 "error": f"no result.json (rc={run.returncode})",
                 "stderr": run.stderr[-1500:],
             }
-        return json.loads(out.read_text(encoding="utf-8"))
+        report = json.loads(out.read_text(encoding="utf-8"))
+        report["observed_probe_file"] = _observed_probe(cid, context, work)
+        return report
     except subprocess.TimeoutExpired:
         return {"success": False, "error": "agent execution timed out"}
     finally:

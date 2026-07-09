@@ -51,7 +51,7 @@ def derive_probe(nonce: str) -> ProbeSpec:
     return ProbeSpec(
         nonce=nonce,
         canary=seed[24:56],
-        file_path=f"/skill/.probe_{seed[:16]}",
+        file_path=f"/task/workspace/.probe_{seed[:16]}",
         file_content=seed[16:48],
         dns_host=f"{seed[:8]}.{_PROBE_DOMAIN}",
         process_echo=seed[8:24],

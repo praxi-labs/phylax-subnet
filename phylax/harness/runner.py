@@ -78,6 +78,7 @@ def run_task(
     runnable: dict,
     *,
     log: Callable[[str], None] | None = None,
+    timeout: int | None = None,
 ) -> dict | None:
     work_dir = Path(tempfile.mkdtemp(prefix="phylax-run-"))
     try:
@@ -112,7 +113,8 @@ def run_task(
 
         entrypoint = runnable.get("entrypoint", "agent_main")
         image = context["sandbox"]["image"]
-        timeout = int(os.getenv("PHYLAX_AGENT_TIMEOUT", "120"))
+        if timeout is None:
+            timeout = int(os.getenv("PHYLAX_AGENT_TIMEOUT", "120"))
         if os.getenv("PHYLAX_EXECUTOR", "sandbox") == "docker" and image:
             report = run_agent_in_docker(
                 runnable.get("code", ""),
@@ -139,6 +141,7 @@ def run_task(
             "verdict": verdict,
             "evidence": body.get("evidence") or {},
             "findings": body.get("findings") or [],
+            "observed_probe_file": report.get("observed_probe_file"),
         }
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
