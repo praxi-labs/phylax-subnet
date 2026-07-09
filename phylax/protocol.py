@@ -3,15 +3,6 @@ from __future__ import annotations
 import bittensor as bt
 
 
-class TaskSynapse(bt.Synapse):
-    track: str = ""
-    artifact_ref: str = ""
-    artifact_b64: str = ""
-    nonce: str = ""
-    probe: dict = {}
-    sssa: dict = {}
-
-
 class AgentSynapse(bt.Synapse):
     track: str = ""
     code: str = ""
@@ -20,3 +11,5 @@ class AgentSynapse(bt.Synapse):
     inference_model: str = ""
     sandbox_image: str = ""
     sandbox_digest: str = ""
+    agent_hash: str = ""
+    signature: str = ""

@@ -7,10 +7,9 @@ from pathlib import Path
 
 import bittensor as bt
 
-from phylax.harness.runner import run_task
-from phylax.protocol import AgentSynapse, TaskSynapse
+from phylax.protocol import AgentSynapse
 from phylax.server_client import PhylaxServerClient
-from phylax.utils.hashing import sha256_bytes, sssa_digest
+from phylax.utils.hashing import sha256_bytes, submission_digest
 
 MINER_INTERVAL_S: int = int(os.getenv("PHYLAX_MINER_INTERVAL", "20"))
 MIN_VALIDATOR_STAKE: float = float(os.getenv("PHYLAX_MIN_VALIDATOR_STAKE", "0"))
@@ -54,10 +53,6 @@ class PhylaxMiner:
             axon_kwargs["external_ip"] = axon_external_ip
         self.axon = bt.axon(**axon_kwargs)
         self.axon.attach(
-            forward_fn=self.handle_task,
-            blacklist_fn=self.blacklist_task,
-            priority_fn=self.priority,
-        ).attach(
             forward_fn=self.handle_agent,
             blacklist_fn=self.blacklist_agent,
             priority_fn=self.priority,
@@ -65,23 +60,8 @@ class PhylaxMiner:
 
         self._register_agent_for_marketplace()
 
-    def _provider(self) -> str:
-        if self.execution_api_key.startswith("cpk_"):
-            return "chutes"
-        if self.execution_api_key.startswith("sk-or-"):
-            return "openrouter"
-        return ""
-
-    def _local_runnable(self) -> dict:
-        return {
-            "code": Path(self.agent_path).read_text(encoding="utf-8"),
-            "entrypoint": self.entrypoint,
-            "execution_api_key": self.execution_api_key,
-            "inference_provider": self._provider(),
-            "inference_model": self.inference_model,
-            "sandbox_image": self.sandbox_image,
-            "sandbox_digest": self.sandbox_digest,
-        }
+    def _agent_code(self) -> str:
+        return Path(self.agent_path).read_text(encoding="utf-8")
 
     def _register_agent_for_marketplace(self) -> None:
         server_url = os.getenv("PHYLAX_SERVER_URL", "")
@@ -98,7 +78,7 @@ class PhylaxMiner:
             )
             client.submit_agent(
                 hotkey=self.wallet.hotkey.ss58_address,
-                code=Path(self.agent_path).read_text(encoding="utf-8"),
+                code=self._agent_code(),
                 execution_api_key=self.execution_api_key,
                 sandbox_image=self.sandbox_image,
                 sandbox_digest=self.sandbox_digest,
@@ -110,67 +90,23 @@ class PhylaxMiner:
         except Exception as e:  # noqa: BLE001
             bt.logging.warning(f"marketplace registration skipped: {e}")
 
-    def _sign(
-        self, track: str, bundle_hash: str, nonce: str,
-        verdict: dict, evidence: dict, findings: list, agent_hash: str,
-    ):
-        digest = sssa_digest(track, bundle_hash, nonce, verdict, evidence, findings, agent_hash)
-        return "sha256:" + digest.hex(), "ed25519:" + self.wallet.hotkey.sign(digest).hex()
-
-    def handle_task(self, synapse: TaskSynapse) -> TaskSynapse:
-        if synapse.track and synapse.track != self.track:
-            return synapse
-        dispatch = {
-            "track": self.track,
-            "nonce": synapse.nonce,
-            "probe": synapse.probe or {},
-            "artifact_ref": synapse.artifact_ref,
-            "artifact_b64": synapse.artifact_b64,
-        }
-        runnable = self._local_runnable()
-        agent_hash = sha256_bytes(runnable["code"].encode("utf-8"))
-        result = run_task(dispatch, runnable, log=bt.logging.warning)
-        if result is None:
-            return synapse
-        verdict = result["verdict"]
-        evidence = result["evidence"]
-        findings = result.get("findings") or []
-        canonical_hash, signature = self._sign(
-            self.track, synapse.artifact_ref, synapse.nonce,
-            verdict, evidence, findings, agent_hash,
-        )
-        synapse.sssa = {
-            "track": self.track,
-            "artifact": {"bundle_hash": synapse.artifact_ref, "nonce": synapse.nonce},
-            "verdict": verdict,
-            "evidence": evidence,
-            "findings": findings,
-            "attestation": {
-                "miner_hotkey": self.wallet.hotkey.ss58_address,
-                "signature": signature,
-                "canonical_hash": canonical_hash,
-                "agent_hash": agent_hash,
-            },
-        }
-        return synapse
-
     def handle_agent(self, synapse: AgentSynapse) -> AgentSynapse:
+        code = self._agent_code()
         synapse.track = self.track
-        synapse.code = Path(self.agent_path).read_text(encoding="utf-8")
+        synapse.code = code
         synapse.entrypoint = self.entrypoint
         synapse.execution_api_key = self.execution_api_key
         synapse.inference_model = self.inference_model
         synapse.sandbox_image = self.sandbox_image
         synapse.sandbox_digest = self.sandbox_digest
+        synapse.agent_hash = sha256_bytes(code.encode("utf-8"))
+        digest = submission_digest(
+            self.track, code, self.entrypoint, self.sandbox_image, self.sandbox_digest
+        )
+        synapse.signature = "ed25519:" + self.wallet.hotkey.sign(digest).hex()
         return synapse
 
-    def blacklist_task(self, synapse: TaskSynapse) -> tuple[bool, str]:
-        return self._blacklist(synapse)
-
     def blacklist_agent(self, synapse: AgentSynapse) -> tuple[bool, str]:
-        return self._blacklist(synapse)
-
-    def _blacklist(self, synapse) -> tuple[bool, str]:
         hotkey = getattr(synapse.dendrite, "hotkey", None)
         if hotkey is None or hotkey not in self.metagraph.hotkeys:
             return True, "unrecognised hotkey"

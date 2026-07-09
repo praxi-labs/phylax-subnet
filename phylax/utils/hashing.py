@@ -48,16 +48,30 @@ def sssa_digest(
     verdict: dict,
     evidence: dict,
     findings: list,
-    agent_hash: str = "",
 ) -> bytes:
     body = {
         "track": track,
-        "bundle_hash": bundle_hash,
-        "nonce": nonce,
+        "artifact": {"bundle_hash": bundle_hash, "nonce": nonce},
         "verdict": verdict,
         "evidence": evidence,
         "findings": findings,
-        "agent_hash": agent_hash,
+    }
+    return hashlib.sha256(canonical_json(body).encode("utf-8")).digest()
+
+
+def submission_digest(
+    track: str,
+    code: str,
+    entrypoint: str,
+    sandbox_image: str,
+    sandbox_digest: str,
+) -> bytes:
+    body = {
+        "track": track,
+        "code_sha256": sha256_bytes(code.encode("utf-8")),
+        "entrypoint": entrypoint,
+        "sandbox_image": sandbox_image,
+        "sandbox_digest": sandbox_digest,
     }
     return hashlib.sha256(canonical_json(body).encode("utf-8")).digest()
 
