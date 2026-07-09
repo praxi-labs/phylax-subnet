@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import os
 import time
 import traceback
+from pathlib import Path
 
 import bittensor as bt
 import torch
 
-from phylax import rounds
+from phylax import rounds, screening
 from phylax.analysis import common, scoring, tracks
 from phylax.analysis import proof as proofmod
 from phylax.harness.corpus import load_corpus
@@ -22,6 +24,7 @@ POLL_INTERVAL_S: int = int(os.getenv("PHYLAX_POLL_INTERVAL", "30"))
 MAX_AGENT_BYTES: int = int(os.getenv("PHYLAX_MAX_AGENT_BYTES", str(512 * 1024)))
 SCORE_THRESHOLD: float = float(os.getenv("PHYLAX_SCORE_THRESHOLD", "0.6"))
 RELIABILITY_FRACTION: float = float(os.getenv("PHYLAX_RELIABILITY_FRACTION", "0.5"))
+DEADLINE_MARGIN_BLOCKS: int = int(os.getenv("PHYLAX_DEADLINE_MARGIN_BLOCKS", "20"))
 
 
 def _parse_contributors(raw: str) -> set[str]:
@@ -171,6 +174,7 @@ class PhylaxValidator:
             axons=axons, synapse=AgentSynapse(), timeout=QUERY_TIMEOUT_S, deserialize=False
         )
         agents: dict[str, dict] = {}
+        uid_by_hotkey: dict[str, int] = {}
         for uid, resp in zip(uids, responses, strict=False):
             hotkey = self.metagraph.hotkeys[uid]
             if not getattr(resp, "code", "") or not self._verify_submission(hotkey, resp):
@@ -179,6 +183,7 @@ class PhylaxValidator:
             if reason:
                 bt.logging.info(f"screened out agent={hotkey[:10]}: {reason}")
                 continue
+            uid_by_hotkey[hotkey] = uid
             agents[hotkey] = {
                 "code": resp.code,
                 "entrypoint": resp.entrypoint or "agent_main",
@@ -189,6 +194,12 @@ class PhylaxValidator:
                 "sandbox_digest": resp.sandbox_digest,
                 "agent_hash": resp.agent_hash,
             }
+        copied = screening.duplicate_hotkeys(
+            {hk: (agents[hk]["code"], uid_by_hotkey[hk]) for hk in agents}
+        )
+        for hotkey in copied:
+            bt.logging.warning(f"screened out agent={hotkey[:10]}: copied agent code")
+            agents.pop(hotkey, None)
         return agents
 
     def run_round(self, start_block: int) -> dict[str, float]:
@@ -201,15 +212,56 @@ class PhylaxValidator:
         seed = rounds.round_seed(block_hash, self.track)
         task_set = rounds.select_tasks(self.corpus, seed, self.tasks_per_round)
         agents = self._fetch_agents()
+        end_block = start_block + self.round_blocks
         bt.logging.info(
-            f"round start={start_block} track={self.track} tasks={len(task_set)} "
-            f"agents={len(agents)}"
+            f"round start={start_block} end={end_block} track={self.track} "
+            f"tasks={len(task_set)} agents={len(agents)}"
         )
         scores: dict[str, float] = {}
         for hotkey, runnable in agents.items():
+            if self._out_of_window(end_block):
+                bt.logging.warning(
+                    f"round window closing at block {end_block}; "
+                    f"{len(agents) - len(scores)} agents left unevaluated"
+                )
+                break
             scores[hotkey] = self._score_agent(hotkey, runnable, task_set, seed)
             bt.logging.info(f"round score agent={hotkey[:10]} S={scores[hotkey]:.3f}")
+        self._write_round_record(start_block, seed, task_set, agents, scores)
         return scores
+
+    def _out_of_window(self, end_block: int) -> bool:
+        try:
+            block = self.subtensor.get_current_block()
+        except Exception:  # noqa: BLE001
+            return False
+        return block >= end_block - DEADLINE_MARGIN_BLOCKS
+
+    def _write_round_record(
+        self, start_block: int, seed: str,
+        task_set: list[dict], agents: dict[str, dict], scores: dict[str, float],
+    ) -> None:
+        state_dir = Path(os.getenv("PHYLAX_STATE_DIR", "state"))
+        try:
+            state_dir.mkdir(parents=True, exist_ok=True)
+            record = {
+                "track": self.track,
+                "start_block": start_block,
+                "seed": seed,
+                "tasks": [item["ref"] for item in task_set],
+                "agents": {
+                    hk: {
+                        "agent_hash": agents[hk]["agent_hash"],
+                        "score": round(scores.get(hk, 0.0), 6),
+                        "evaluated": hk in scores,
+                    }
+                    for hk in agents
+                },
+            }
+            path = state_dir / f"round_{self.track}_{start_block}.json"
+            path.write_text(json.dumps(record, indent=2), encoding="utf-8")
+        except OSError as e:
+            bt.logging.warning(f"could not write round record: {e}")
 
     def _score_agent(self, hotkey: str, runnable: dict, task_set: list[dict], seed: str) -> float:
         if not task_set:
@@ -276,7 +328,8 @@ class PhylaxValidator:
         verdict = result["verdict"]
         evidence = result["evidence"]
         findings = result.get("findings") or []
-        digest = sssa_digest(self.track, item["ref"], nonce, verdict, evidence, findings)
+        policy = result.get("policy") or {}
+        digest = sssa_digest(self.track, item["ref"], nonce, verdict, evidence, findings, policy)
         signature = "ed25519:" + self.wallet.hotkey.sign(digest).hex()
         sssa = {
             "track": self.track,
@@ -284,6 +337,7 @@ class PhylaxValidator:
             "verdict": verdict,
             "evidence": evidence,
             "findings": findings,
+            "policy": policy,
             "attestation": {
                 "agent_hash": runnable["agent_hash"],
                 "miner_hotkey": hotkey,

@@ -78,3 +78,6 @@ validators/
 
 # Local verification only; never publish
 tests/
+
+# Validator round records
+state/

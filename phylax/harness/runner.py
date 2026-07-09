@@ -141,6 +141,7 @@ def run_task(
             "verdict": verdict,
             "evidence": body.get("evidence") or {},
             "findings": body.get("findings") or [],
+            "policy": body.get("policy") or {},
             "observed_probe_file": report.get("observed_probe_file"),
         }
     finally:
