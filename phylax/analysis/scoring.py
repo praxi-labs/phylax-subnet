@@ -52,15 +52,19 @@ TRACK_EMISSION_WEIGHTS: dict[str, float] = {
 }
 
 TOP_K = 3
-TOP_K_SPLIT: tuple[float, ...] = (0.60, 0.30, 0.10)
+TOP_K_SPLIT: tuple[float, ...] = (0.50, 0.30, 0.20)
 
 PERFORMANCE_SHARE = 0.95
 CONTRIBUTION_SHARE = 0.05
+
+RUN_W_CORRECTNESS = 0.7
+RUN_W_QUALITY = 0.3
 
 
 def compute_emission_weights(
     scores_by_track: dict[str, list[tuple[str, float]]],
     contributor_hotkeys: set[str] | None = None,
+    threshold: float = 0.0,
 ) -> dict[str, float]:
     weights: dict[str, float] = {}
     active: set[str] = set()
@@ -68,7 +72,11 @@ def compute_emission_weights(
         track_share = TRACK_EMISSION_WEIGHTS.get(track, 0.0)
         if track_share <= 0.0:
             continue
-        positive = [(hk, s) for hk, s in sorted(ranked, key=lambda r: r[1], reverse=True) if s > 0.0]
+        positive = [
+            (hk, s)
+            for hk, s in sorted(ranked, key=lambda r: r[1], reverse=True)
+            if s > 0.0 and s > threshold
+        ]
         active.update(hk for hk, _ in positive)
         top = positive[:TOP_K]
         if not top:

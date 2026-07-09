@@ -25,6 +25,28 @@ def verdict_correctness(verdict: str, label: str | None) -> float:
     return 0.5
 
 
+def label_risk(label: str | None) -> float | None:
+    if label is None:
+        return None
+    low = label.lower()
+    if low in _MALICIOUS_LABELS:
+        return 1.0
+    if low in _SAFE_LABELS:
+        return 0.0
+    return None
+
+
+def risk_correctness(verdict: dict, label: str | None) -> float | None:
+    target = label_risk(label)
+    if target is None:
+        return None
+    try:
+        risk = float(verdict.get("risk_score", 0)) / 100.0
+    except (TypeError, ValueError):
+        risk = 0.0
+    return 1.0 - abs(scoring.clip01(risk) - target)
+
+
 def build_manifest(track: str, capabilities: list) -> tuple[list[dict], float]:
     manifest: list[dict] = []
     canonical = 0

@@ -1,33 +1,27 @@
 from __future__ import annotations
 
 import argparse
+import math
 import os
-import random
 import time
 import traceback
 
 import bittensor as bt
 import torch
 
+from phylax import rounds
+from phylax.analysis import common, scoring, tracks
 from phylax.analysis import proof as proofmod
-from phylax.analysis import scoring, tracks
 from phylax.harness.corpus import load_corpus
 from phylax.harness.runner import run_task
-from phylax.protocol import AgentSynapse, TaskSynapse
-from phylax.utils.hashing import sha256_bytes, sssa_digest
+from phylax.protocol import AgentSynapse
+from phylax.utils.hashing import sha256_bytes, sssa_digest, submission_digest
 
-ROUND_INTERVAL_S: int = int(os.getenv("PHYLAX_TRACK_INTERVAL", "20"))
-QUERY_TIMEOUT_S: float = float(os.getenv("PHYLAX_QUERY_TIMEOUT", "150"))
-SCORE_ALPHA = 0.2
-RERUN_ALPHA = 0.3
-
-
-def _provider(api_key: str) -> str:
-    if api_key.startswith("cpk_"):
-        return "chutes"
-    if api_key.startswith("sk-or-"):
-        return "openrouter"
-    return ""
+QUERY_TIMEOUT_S: float = float(os.getenv("PHYLAX_QUERY_TIMEOUT", "60"))
+POLL_INTERVAL_S: int = int(os.getenv("PHYLAX_POLL_INTERVAL", "30"))
+MAX_AGENT_BYTES: int = int(os.getenv("PHYLAX_MAX_AGENT_BYTES", str(512 * 1024)))
+SCORE_THRESHOLD: float = float(os.getenv("PHYLAX_SCORE_THRESHOLD", "0.6"))
+RELIABILITY_FRACTION: float = float(os.getenv("PHYLAX_RELIABILITY_FRACTION", "0.5"))
 
 
 def _parse_contributors(raw: str) -> set[str]:
@@ -80,8 +74,6 @@ def _metagraph_size(metagraph) -> int:
 class PhylaxValidator:
     neuron_type: str = "ValidatorNeuron"
 
-    WEIGHT_UPDATE_INTERVAL: int = int(os.getenv("WEIGHT_UPDATE_INTERVAL", "360"))
-
     def __init__(self, config=None, wallet=None, subtensor=None):
         self.config = config
         if callable(bt.logging):
@@ -93,12 +85,18 @@ class PhylaxValidator:
         self.metagraph = self.subtensor.metagraph(netuid=config.netuid)
         self.dendrite = bt.dendrite(wallet=self.wallet)
         self.track = os.getenv("PHYLAX_TRACK", "skills")
-        self.rerun_limit = int(os.getenv("PHYLAX_RERUN_LIMIT", "3"))
+        params = rounds.params_for(self.track)
+        self.round_blocks = params["blocks"]
+        self.tasks_per_round = params["tasks"]
+        self.repetitions = params["repetitions"]
+        self.task_timeout = params["timeout_s"]
         self.corpus = load_corpus(self.track)
-        self.scores: dict[str, float] = {}
-        self.rerun_pass: dict[str, float] = {}
+        self.last_round_start = -1
         self.should_exit = False
-        self.step = 0
+        if os.getenv("PHYLAX_EXECUTOR", "sandbox") != "docker":
+            bt.logging.warning(
+                "PHYLAX_EXECUTOR is not docker; agents will not be evaluated until the jail is enabled"
+            )
         if not self.corpus:
             bt.logging.warning(f"no local corpus found for track={self.track}")
 
@@ -128,25 +126,21 @@ class PhylaxValidator:
                 uids.append(uid)
         return uids
 
-    def _verify_sig(self, hotkey: str, sssa: dict, ref: str, nonce: str) -> bool:
-        att = sssa.get("attestation") or {}
-        if str(att.get("miner_hotkey", "")) != hotkey:
+    def _verify_submission(self, hotkey: str, synapse) -> bool:
+        code = getattr(synapse, "code", "") or ""
+        claimed = str(getattr(synapse, "agent_hash", "") or "")
+        sig = str(getattr(synapse, "signature", "") or "").removeprefix("ed25519:")
+        if not code or not claimed or not sig:
             return False
-        claimed = str(att.get("canonical_hash", "")).removeprefix("sha256:")
-        sig = str(att.get("signature", "")).removeprefix("ed25519:")
-        if not claimed or not sig:
+        if sha256_bytes(code.encode("utf-8")) != claimed:
             return False
-        digest = sssa_digest(
-            self.track,
-            ref,
-            nonce,
-            sssa.get("verdict") or {},
-            sssa.get("evidence") or {},
-            sssa.get("findings") or [],
-            str(att.get("agent_hash", "") or ""),
+        digest = submission_digest(
+            str(getattr(synapse, "track", "") or ""),
+            code,
+            str(getattr(synapse, "entrypoint", "") or "agent_main"),
+            str(getattr(synapse, "sandbox_image", "") or ""),
+            str(getattr(synapse, "sandbox_digest", "") or ""),
         )
-        if digest.hex() != claimed:
-            return False
         keypair = _keypair_for(hotkey)
         if keypair is None:
             return False
@@ -155,141 +149,163 @@ class PhylaxValidator:
         except Exception:  # noqa: BLE001
             return False
 
-    def _score_response(self, hotkey: str, sssa: dict, item: dict, probe) -> str | None:
-        if not sssa or not self._verify_sig(hotkey, sssa, item["ref"], probe.nonce):
-            self._update_score(hotkey, 0.0)
-            return None
-        verdict = sssa.get("verdict") or {}
-        decision = verdict.get("decision", "") if isinstance(verdict, dict) else str(verdict)
-        evidence = sssa.get("evidence") or {}
-        ev = tracks.evaluate(
-            self.track, evidence, decision,
-            label=item["label"], probe=probe, ground_truth=item.get("ground_truth"),
-        )
-        self._update_score(hotkey, ev.result.score)
-        return decision
+    def _screen(self, synapse) -> str:
+        code = getattr(synapse, "code", "") or ""
+        if str(getattr(synapse, "track", "")) != self.track:
+            return "wrong track"
+        if len(code.encode("utf-8")) > MAX_AGENT_BYTES:
+            return "agent exceeds size limit"
+        entrypoint = str(getattr(synapse, "entrypoint", "") or "agent_main")
+        if f"def {entrypoint}" not in code:
+            return "missing entrypoint"
+        if not getattr(synapse, "sandbox_image", "") or not getattr(synapse, "sandbox_digest", ""):
+            return "missing sandbox image pin"
+        return ""
 
-    def _update_score(self, hotkey: str, task_score: float) -> None:
-        prev = self.scores.get(hotkey, 0.0)
-        self.scores[hotkey] = SCORE_ALPHA * task_score + (1.0 - SCORE_ALPHA) * prev
-
-    def _update_rerun(self, hotkey: str, reproduced: bool) -> None:
-        prev = self.rerun_pass.get(hotkey, 1.0)
-        self.rerun_pass[hotkey] = RERUN_ALPHA * (1.0 if reproduced else 0.0) + (1.0 - RERUN_ALPHA) * prev
-
-    def run_round(self) -> None:
-        if not self.corpus:
-            return
+    def _fetch_agents(self) -> dict[str, dict]:
         uids = self._serving_uids()
         if not uids:
-            bt.logging.info("no serving miners to query")
-            return
-        item = random.choice(self.corpus)  # noqa: S311
-        nonce = proofmod.new_nonce()
-        probe = proofmod.derive_probe(nonce)
-        synapse = TaskSynapse(
-            track=self.track,
-            artifact_ref=item["ref"],
-            artifact_b64=item["artifact_b64"],
-            nonce=nonce,
-            probe=probe.as_inputs(),
-        )
+            return {}
         axons = [self.metagraph.axons[uid] for uid in uids]
         responses = self.dendrite.query(
-            axons=axons, synapse=synapse, timeout=QUERY_TIMEOUT_S, deserialize=False
+            axons=axons, synapse=AgentSynapse(), timeout=QUERY_TIMEOUT_S, deserialize=False
         )
-
-        answered: list[tuple[str, str, str]] = []
+        agents: dict[str, dict] = {}
         for uid, resp in zip(uids, responses, strict=False):
             hotkey = self.metagraph.hotkeys[uid]
-            sssa = getattr(resp, "sssa", None) or {}
-            decision = self._score_response(hotkey, sssa, item, probe)
-            if decision is not None:
-                att = sssa.get("attestation") or {}
-                answered.append((hotkey, decision, str(att.get("agent_hash", "") or "")))
-
-        bt.logging.info(
-            f"round track={self.track} artifact={item['ref']} queried={len(uids)} "
-            f"answered={len(answered)}"
-        )
-        self._run_reruns(answered, item, probe)
-
-    def _run_reruns(self, answered: list[tuple[str, str, str]], item: dict, probe) -> None:
-        if not answered:
-            return
-        if os.getenv("PHYLAX_EXECUTOR", "sandbox") != "docker":
-            bt.logging.warning(
-                "rerun audit requires PHYLAX_EXECUTOR=docker; refusing to run miner code unjailed"
-            )
-            return
-        sample = random.sample(answered, min(self.rerun_limit, len(answered)))  # noqa: S311
-        for hotkey, miner_decision, agent_hash in sample:
-            uid = self.metagraph.hotkeys.index(hotkey)
-            runnable = self._fetch_agent(self.metagraph.axons[uid])
-            if runnable is None:
+            if not getattr(resp, "code", "") or not self._verify_submission(hotkey, resp):
                 continue
-            if not runnable["sandbox_image"]:
-                self._update_rerun(hotkey, False)
-                bt.logging.warning(f"L2 rerun agent={hotkey[:10]} has no sandbox image; failed")
+            reason = self._screen(resp)
+            if reason:
+                bt.logging.info(f"screened out agent={hotkey[:10]}: {reason}")
                 continue
-            fetched_hash = sha256_bytes(runnable["code"].encode("utf-8"))
-            if not agent_hash or fetched_hash != agent_hash:
-                self._update_rerun(hotkey, False)
-                bt.logging.warning(
-                    f"L2 rerun agent={hotkey[:10]} code does not match the attested agent; failed"
-                )
-                continue
-            dispatch = {
-                "track": self.track,
-                "nonce": probe.nonce,
-                "probe": probe.as_inputs(),
-                "artifact_ref": item["ref"],
-                "artifact_b64": item["artifact_b64"],
+            agents[hotkey] = {
+                "code": resp.code,
+                "entrypoint": resp.entrypoint or "agent_main",
+                "execution_api_key": resp.execution_api_key or "",
+                "inference_provider": _provider(resp.execution_api_key or ""),
+                "inference_model": resp.inference_model or "",
+                "sandbox_image": resp.sandbox_image,
+                "sandbox_digest": resp.sandbox_digest,
+                "agent_hash": resp.agent_hash,
             }
-            result = run_task(dispatch, runnable, log=bt.logging.warning)
-            reproduced = result is not None and (
-                result["verdict"].get("decision", "") == miner_decision
-            )
-            self._update_rerun(hotkey, reproduced)
-            bt.logging.success(
-                f"L2 rerun agent={hotkey[:10]} reproduced={reproduced} "
-                f"pass_rate={self.rerun_pass.get(hotkey):.3f}"
-            )
+        return agents
 
-    def _fetch_agent(self, axon) -> dict | None:
-        try:
-            resp = self.dendrite.query(
-                axons=[axon], synapse=AgentSynapse(), timeout=QUERY_TIMEOUT_S, deserialize=False
+    def run_round(self, start_block: int) -> dict[str, float]:
+        if os.getenv("PHYLAX_EXECUTOR", "sandbox") != "docker":
+            bt.logging.error(
+                "refusing to evaluate: PHYLAX_EXECUTOR must be docker so agents never run unjailed"
             )
-        except Exception as e:  # noqa: BLE001
-            bt.logging.warning(f"agent fetch failed: {e}")
-            return None
-        if not resp:
-            return None
-        agent = resp[0]
-        code = getattr(agent, "code", "") or ""
-        if not code:
-            return None
-        return {
-            "code": code,
-            "entrypoint": getattr(agent, "entrypoint", "") or "agent_main",
-            "execution_api_key": getattr(agent, "execution_api_key", "") or "",
-            "inference_provider": _provider(getattr(agent, "execution_api_key", "") or ""),
-            "inference_model": getattr(agent, "inference_model", "") or "",
-            "sandbox_image": getattr(agent, "sandbox_image", "") or "",
-            "sandbox_digest": getattr(agent, "sandbox_digest", "") or "",
+            return {}
+        block_hash = str(self.subtensor.get_block_hash(start_block))
+        seed = rounds.round_seed(block_hash, self.track)
+        task_set = rounds.select_tasks(self.corpus, seed, self.tasks_per_round)
+        agents = self._fetch_agents()
+        bt.logging.info(
+            f"round start={start_block} track={self.track} tasks={len(task_set)} "
+            f"agents={len(agents)}"
+        )
+        scores: dict[str, float] = {}
+        for hotkey, runnable in agents.items():
+            scores[hotkey] = self._score_agent(hotkey, runnable, task_set, seed)
+            bt.logging.info(f"round score agent={hotkey[:10]} S={scores[hotkey]:.3f}")
+        return scores
+
+    def _score_agent(self, hotkey: str, runnable: dict, task_set: list[dict], seed: str) -> float:
+        if not task_set:
+            return 0.0
+        total = 0.0
+        for item in task_set:
+            total += self._score_task(hotkey, runnable, item, seed)
+        return total / len(task_set)
+
+    def _score_task(self, hotkey: str, runnable: dict, item: dict, seed: str) -> float:
+        nonce = rounds.task_nonce(seed, item["ref"])
+        probe = proofmod.derive_probe(nonce)
+        run_scores: list[float] = []
+        last_result = None
+        for _ in range(self.repetitions):
+            score, result = self._score_run(runnable, item, nonce, probe)
+            run_scores.append(score)
+            if result is not None:
+                last_result = result
+        passing = sum(1 for s in run_scores if s > 0.0)
+        needed = math.ceil(RELIABILITY_FRACTION * self.repetitions)
+        task_score = sum(run_scores) / len(run_scores) if passing >= needed else 0.0
+        if last_result is not None and task_score > 0.0:
+            self._attest(hotkey, runnable, item, nonce, last_result)
+        return task_score
+
+    def _score_run(self, runnable: dict, item: dict, nonce: str, probe) -> tuple[float, dict | None]:
+        dispatch = {
+            "track": self.track,
+            "nonce": nonce,
+            "probe": probe.as_inputs(),
+            "artifact_ref": item["ref"],
+            "artifact_b64": item["artifact_b64"],
         }
+        result = run_task(
+            dispatch, runnable, log=bt.logging.warning, timeout=self.task_timeout
+        )
+        if result is None:
+            return 0.0, None
+        if self.track != "repositories" and result.get("observed_probe_file") is not True:
+            return 0.0, result
+        verdict = result["verdict"] if isinstance(result["verdict"], dict) else {}
+        decision = str(verdict.get("decision", ""))
+        ev = tracks.evaluate(
+            self.track,
+            result["evidence"],
+            decision,
+            label=item["label"],
+            probe=probe,
+            ground_truth=item.get("ground_truth"),
+        )
+        if not ev.result.gate_passed:
+            return 0.0, result
+        if self.track == "repositories":
+            return scoring.clip01(ev.result.score), result
+        correctness = common.risk_correctness(verdict, item["label"])
+        if correctness is None:
+            correctness = ev.result.components.verdict_correctness
+        quality = ev.result.components.solution_quality
+        base = scoring.RUN_W_CORRECTNESS * correctness + scoring.RUN_W_QUALITY * quality
+        return scoring.clip01(base), result
 
-    def set_weights(self) -> None:
-        ranked = [
-            (hk, self.scores.get(hk, 0.0) * self.rerun_pass.get(hk, 1.0))
-            for hk in self.scores
-        ]
+    def _attest(self, hotkey: str, runnable: dict, item: dict, nonce: str, result: dict) -> None:
+        verdict = result["verdict"]
+        evidence = result["evidence"]
+        findings = result.get("findings") or []
+        digest = sssa_digest(self.track, item["ref"], nonce, verdict, evidence, findings)
+        signature = "ed25519:" + self.wallet.hotkey.sign(digest).hex()
+        sssa = {
+            "track": self.track,
+            "artifact": {"bundle_hash": item["ref"], "nonce": nonce},
+            "verdict": verdict,
+            "evidence": evidence,
+            "findings": findings,
+            "attestation": {
+                "agent_hash": runnable["agent_hash"],
+                "miner_hotkey": hotkey,
+                "validator_hotkey": self.wallet.hotkey.ss58_address,
+                "signature": signature,
+                "canonical_hash": "sha256:" + digest.hex(),
+            },
+        }
+        self.last_sssa = sssa
+        bt.logging.debug(
+            f"attested agent={hotkey[:10]} artifact={item['ref']} hash={digest.hex()[:16]}"
+        )
+
+    def set_weights(self, scores: dict[str, float]) -> None:
+        ranked = list(scores.items())
         weight_map = scoring.compute_emission_weights(
-            {self.track: ranked}, contributor_hotkeys=self._load_contributors()
+            {self.track: ranked},
+            contributor_hotkeys=self._load_contributors(),
+            threshold=SCORE_THRESHOLD,
         )
         if not weight_map:
-            bt.logging.info("set_weights: no miner weights computed yet; skipping")
+            bt.logging.info("set_weights: no agent cleared the quality threshold; skipping")
             return
 
         n = _metagraph_size(self.metagraph)
@@ -307,7 +323,7 @@ class PhylaxValidator:
             bt.logging.warning("set_weights: no miner hotkeys matched metagraph; skipping")
             return
         weights = weights / total
-        bt.logging.info(f"set_weights | matched {matched} miners")
+        bt.logging.info(f"set_weights | matched {matched} agents")
 
         try:
             result, msg = self.subtensor.set_weights(
@@ -328,28 +344,34 @@ class PhylaxValidator:
     def run(self) -> None:
         bt.logging.info(
             f"starting Phylax validator on netuid={self.config.netuid} track={self.track} "
-            f"hotkey={self.wallet.hotkey.ss58_address} corpus={len(self.corpus)}"
+            f"hotkey={self.wallet.hotkey.ss58_address} corpus={len(self.corpus)} "
+            f"round_blocks={self.round_blocks}"
         )
-        last_weight_block = 0
         while not self.should_exit:
             try:
-                self.metagraph.sync(subtensor=self.subtensor, lite=True)
-                self.run_round()
-
-                current_block = self.subtensor.get_current_block()
-                if current_block - last_weight_block >= self.WEIGHT_UPDATE_INTERVAL:
-                    self.set_weights()
-                    last_weight_block = current_block
-
-                self.step += 1
-                time.sleep(ROUND_INTERVAL_S)
+                block = self.subtensor.get_current_block()
+                start = rounds.round_start(block, self.round_blocks)
+                if start > self.last_round_start and self.corpus:
+                    self.metagraph.sync(subtensor=self.subtensor, lite=True)
+                    scores = self.run_round(start)
+                    self.set_weights(scores)
+                    self.last_round_start = start
+                time.sleep(POLL_INTERVAL_S)
             except KeyboardInterrupt:
                 bt.logging.info("validator stopped by KeyboardInterrupt")
                 break
             except Exception as e:  # noqa: BLE001
                 bt.logging.error(f"run loop error: {e}")
                 bt.logging.debug(traceback.format_exc())
-                time.sleep(ROUND_INTERVAL_S)
+                time.sleep(POLL_INTERVAL_S)
+
+
+def _provider(api_key: str) -> str:
+    if api_key.startswith("cpk_"):
+        return "chutes"
+    if api_key.startswith("sk-or-"):
+        return "openrouter"
+    return ""
 
 
 _NETWORK_ENDPOINTS = {
