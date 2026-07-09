@@ -1,102 +1,65 @@
-# Agent Contract & Artifact Reference
+# Agent contract
 
-A Phylax agent is the artifact a miner submits. The miner runs it live on each
-dispatched task, signs the resulting SSSA with its hotkey, and submits it. The
-validator independently reruns a sampled subset in the miner's registered image
-to audit that verdicts hold up. This document defines the entrypoint, the context
-it receives, what it must do per track, and the artifact layout it will see.
+An agent is the artifact a miner builds and submits. Validators execute it inside
+the miner's registered sandbox image, so every run is reproducible everywhere.
 
 ## Entrypoint
 
 ```python
 def agent_main(context: dict) -> dict:
-    ...
-    return sssa   # the SSSA envelope (see sssa_schema.md)
+    return {
+        "verdict": {"decision": "ALLOW | WARN | BLOCK", "risk_score": 0, "confidence": 0.0},
+        "evidence": {},
+        "findings": [],
+    }
 ```
 
 - The function name defaults to `agent_main`; override via the `entrypoint`
-  field at submission.
-- It receives one `context` dict and returns the SSSA envelope as a plain dict
-  (`verdict`, `evidence`, `findings`; leave `attestation.signature` empty).
-- It runs inside the registered sandbox image, network-jailed: the only reachable
-  endpoint is the inference proxy.
+  field of the submission.
+- It runs network jailed. The only reachable endpoint is the inference proxy in
+  `context["inference"]["api"]`.
+- A crash, timeout, or malformed return is a failed run and scores zero for that
+  task.
 
-## Context
+## The context
 
 ```json
 {
   "artifact_dir": "/task/artifact",
   "track": "skills | mcp_servers | packages | repositories",
   "nonce": "…",
-  "probe": { "file_path": "/skill/.probe_…", "file_content": "…",
+  "probe": { "file_path": "/task/workspace/.probe_…", "file_content": "…",
              "dns_host": "….probe.phylax.ai", "process_echo": "…", "canary": "…" },
   "inference": { "api": "<proxy url>", "api_key": "…", "provider": "…", "model": "…" },
   "sandbox": { "image": "…", "digest": "sha256:…" }
 }
 ```
 
-- `artifact_dir`: the extracted artifact, mounted read-only.
-- `probe`: the nonce-derived effects your sandbox must perform (detonation
-  tracks). You must write `file_path`, resolve `dns_host`, and echo
-  `process_echo`, then report them under `evidence.proof_of_execution`.
-- `inference`: call the LLM only via `inference.api` (the metered proxy). Direct
-  egress is blocked.
+The nonce and probe are derived from the round seed, so they are unknowable
+before the round starts. On the detonation tracks the agent must thread the probe
+(write the file, resolve the host, echo the token); the probe file is checked by
+the validator's executor after the run, from outside the container, so skipping
+it zeroes the run. The `repositories` track has no probe.
 
-## Proof-of-execution (detonation tracks)
+## Scoring interface
 
-The validator confirms, independently and in the captured traces, that the probe
-fired. If the probe is absent or mismatched, the evidence gate fails and the
-score is 0. Report:
+The verdict's `risk_score` (0 to 100) is what correctness is measured on: the
+validator scores `1 - |risk/100 - label|` against ground truth. Evidence must
+follow the track's schema ([sssa_schema.md](sssa_schema.md)); capabilities must
+use canonical taxonomy names or they are dropped. Each task is run several times
+and must be correct consistently, so keep the agent deterministic.
 
-```json
-"proof_of_execution": {
-  "probe_evidence": { "file_write": "<probe.file_path>", "dns_lookup": "<probe.dns_host>",
-                      "process_echo": "<probe.process_echo>", "canary": "<probe.canary>" },
-  "traces": { "filesystem": {"hash":"","events":[…]},
-              "network":    {"hash":"","events":[…]},
-              "process":    {"hash":"","events":[…]} }
-}
-```
+## Limits
 
-## Per-track responsibilities
-
-### skills
-Detonate the skill, thread the probe, and produce dual-plane evidence:
-`action_plane.capabilities` (canonical names) and
-`context_plane.injected_instructions` (prompt-injection / hidden overrides /
-unicode anomalies). Decide `ALLOW`/`WARN`/`BLOCK`.
-
-### mcp_servers
-Same as skills, plus an `mcp_surface` block: enumerate exposed tools, compare
-declared schema vs observed behaviour, and flag tool poisoning / manifest tamper.
-
-### packages
-Detonate across the lifecycle: capture `install_time` and `import_time`
-behaviour, plus a `supply_chain` block (SBOM, dependency CVEs, typosquat,
-dependency confusion).
-
-### repositories
-No probe, no detonation. Audit the source statically and return
-`evidence.audit` + `evidence.vulnerabilities` (CWE, file, line, severity,
-remediation). Scored by recall against the benchmark's known vulnerabilities.
-
-## Artifact layout the agent will see
-
-These mirror the corpus under `corpora/<track>/`:
-
-| Track | Typical contents of `artifact_dir` |
+| Limit | Value |
 |---|---|
-| `skills`        | `SKILL.md` + helper scripts (e.g. `scripts/*.py`) |
-| `mcp_servers`   | `manifest.json` + `server.py` |
-| `packages`      | `setup.py` / `pyproject.toml` + `src/<pkg>/…` |
-| `repositories`  | a source tree (`src/…`, `requirements.txt`, …) |
+| Wall clock | the per track timeout: 8 s skills, 15 s mcp_servers, 30 s packages, 120 s repositories |
+| Size | 512 KB of agent code by default |
+| Network | none, except the metered inference proxy |
+| Resources | memory, CPU, and PID caps in the jail |
 
-Do not assume a fixed entry filename. Discover the surface from the manifest
-(`manifest.json`, `pyproject.toml`, `SKILL.md`) or by scanning.
+## Reference agent
 
-## Output
-
-Return the SSSA envelope documented in [sssa_schema.md](sssa_schema.md). Report
-**canonical capability names** (see [scoring.md](scoring.md)); fabricated or
-off-track names do not raise evidence integrity. The reference implementation is
-`phylax/harness/skills_reference_agent.py`.
+`phylax/harness/skills_reference_agent.py` threads the probe, scans both
+evidence planes, and returns a valid attestation body. Copy it and improve on
+detonation depth and context plane precision.

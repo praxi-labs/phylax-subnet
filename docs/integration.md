@@ -1,44 +1,31 @@
-# Integration
+# Consuming Phylax
 
-This page is for developers who want to **consume** Phylax, not run a neuron. The
-network produces signed attestations (miners run the agents, validators verify and
-rerun); you read them and gate your workflow on the verdict.
+## Verify an SSSA
 
-## What you get: the SSSA
+An SSSA is verifiable offline. Recompute the canonical hash (NFC normalised,
+key sorted JSON of the SSSA minus its attestation block), check the ed25519
+signature against the executing validator's on chain hotkey, and check
+`attestation.agent_hash` against the miner's pinned submission. No Phylax service
+needs to be trusted or reachable.
 
-Every vetted artifact has a Signed Skill and Supply chain Safety Attestation: a
-portable JSON envelope with a verdict (`ALLOW` / `WARN` / `BLOCK`), a risk score, the
-evidence the verdict is based on, and an ed25519 signature from the miner whose agent
-produced it. See [sssa_schema.md](sssa_schema.md) for the full shape.
+## Enforce a policy
 
-## Look up an attestation
-
-Attestations are content-addressed by the artifact's bundle hash. Hash the artifact
-you are about to use, then look it up in the registry. If Phylax has an attestation
-for that exact hash, you get the verdict back immediately. If not, the artifact can
-be queued for the network to vet.
-
-## Verify offline
-
-You do not have to trust the registry. The SSSA signature is ed25519 over the
-canonical hash of `{ track, bundle_hash, nonce, verdict, evidence }`, so you can
-verify it yourself with the signing hotkey, no network call required. A verdict that
-verifies tells you the analysis really came from that miner and was bound to that
-exact artifact.
-
-## Gate your pipeline
-
-The common pattern is a CI or runtime gate: resolve the artifact's verdict and fail
-closed on `BLOCK` (and optionally `WARN`). Because the verdict is structured and
-signed rather than prose, a runtime can enforce it directly.
+The capability manifest inside a detonation SSSA is a portable statement of
+witnessed behavior in canonical vocabulary. A runtime can enforce it directly:
+deny capabilities the attestation never witnessed, gate dangerous ones, and
+refuse artifacts whose verdict is BLOCK.
 
 ## Rent an agent
 
-The top-ranked agent in each track is the same packaged, reproducible artifact the
-miner competes with, so it can be rented and deployed against your own artifacts in
-your own pipeline. Rentals run through the product surface (the marketplace), not the
-subnet protocol.
+Because the network holds and runs the submitted artifact, the agent that earned
+a ranking is byte for byte the agent the marketplace serves. Renting a top ranked
+agent deploys those exact bytes against your own artifacts in your own pipeline.
+The marketplace at [app.phyi.dev](https://app.phyi.dev/) surfaces per track
+rankings and attestations.
 
-For the marketplace, registry lookups, and rentals, see the product docs at
-[docs.phyi.dev](https://docs.phyi.dev). For how the network produces these
-attestations in the first place, see [architecture.md](architecture.md).
+## Bounties
+
+Artifacts without a known label cannot be scored against ground truth, so they
+are routed as bounties to the historically strongest miners in a track and
+rewarded for demonstrated, proof carrying analysis. Routine scoring is never
+based on miner agreement on unlabelled data.

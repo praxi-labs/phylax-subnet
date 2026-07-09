@@ -35,20 +35,21 @@ is prose rather than something a runtime can enforce.
 
 ## How Phylax is different
 
-Phylax runs the analysis as a decentralized competition. A miner builds an agent
-(its code, the sandbox image it runs in, and an inference key) for a single track
-and runs it on the tasks validators dispatch. Validators confirm it actually
-executed by checking a probe they issued, score the result, rerun a sample to keep
-it honest, and set weights on chain. A claim with no matching evidence earns
-nothing. There is no central server in this loop; it is validator to miner over
-Bittensor.
+Phylax runs the analysis as a decentralized competition. A miner builds a
+security agent for a single track and submits it as a hash pinned artifact: the
+agent code, the sandbox image it runs in, and a metered inference key, signed by
+its hotkey. Validators execute the submitted agents in network isolated sandboxes
+against task sets derived from the chain, generate the proof of execution
+themselves, score against curated ground truth, and set graduated weights that
+stake weighted consensus reconciles. A claim with no matching evidence earns
+nothing, and there is no central server anywhere in the loop.
 
 | | Traditional scanners | Phylax |
 |---|---|---|
 | Analysis method | LLM text analysis | Real detonation and static audit |
 | Evasion resistance | Low, the model is prompt injectable | High, behaviour is observed |
 | Output | Text report | Signed, gated attestation (SSSA) |
-| Verification | None | Proof of execution, sampled rerun, benchmark |
+| Verification | None | Validator generated proof of execution, repetitions, benchmark |
 | Scale | Centralized | Decentralized competition |
 | Incentive | None | Bittensor TAO emissions |
 
@@ -59,24 +60,32 @@ Bittensor.
 
 ### Agents are the artifact
 
-A miner writes an agent that implements `agent_main(context)` and returns an SSSA,
-pinned to a sandbox image by digest. The miner runs it on each task a validator
-dispatches and returns a signed SSSA over Bittensor, while the validator reruns a
-sample in the miner's registered image to audit that verdicts hold up.
+A miner writes an agent that implements `agent_main(context)`, pins it to a
+sandbox image by digest, and submits it. The network holds and runs the exact
+submitted bytes, so the agent that earns a ranking is byte for byte the agent the
+marketplace serves. During a round the participating version is frozen by hash.
+
+### Block timed rounds
+
+A round is a window of blocks per track. At the start block, agents are frozen
+and every validator derives the identical task set from the start block hash, so
+nothing can be precomputed and anyone can audit the selection. Validators race
+the same block deadline independently.
 
 ### Proof of execution
 
-For every task the validator issues a fresh nonce and derives a probe from it: a
-specific file to write, a host to look up, and a token to echo. The agent performs
-these during detonation. The validator then reads the captured traces and confirms
-the probe really fired. If it did not, the result scores zero.
+Every task carries a probe derived from the round seed: a file to write, a host
+to look up, a token to echo. Because the validator runs the agent itself, it
+observes the probe fire directly; there is no self reported trace to trust. A run
+that fails the gate scores zero regardless of its verdict.
 
-### Layered verification
+### Reliability and scoring
 
-Layer 1 checks the probe in the traces on every task and acts as the evidence
-gate. Layer 2 re-runs a random sample of tasks in the miner's own registered image
-and penalises any verdict that does not reproduce. Layer 3 applies to repositories
-only, scoring recovered vulnerabilities against a known benchmark by recall.
+Each task is run several times on the same pinned artifact and must be correct
+consistently. Verdicts are scored by risk distance against ground truth labels,
+repositories by recall against known vulnerabilities, and a quality threshold
+plus a graduated top three split concentrate emissions on the strongest agents a
+stake majority independently endorses.
 
 ### Dual plane evidence
 
@@ -93,13 +102,14 @@ artifacts, evidence, and scoring never cross between them.
 | Track | Artifact | Verification |
 |---|---|---|
 | `skills` | Agent skill bundles | detonation, dual plane, probe |
-| `mcp_servers` | MCP server packages | detonation, dual plane, probe, tool surface |
+| `mcp_servers` | MCP server packages | detonation, dual plane, probe, component analysis |
 | `packages` | pip and npm packages | detonation, install and import lifecycle, supply chain |
 | `repositories` | source repositories | static audit scored by benchmark recall |
 
 Tracks are not weighted equally. Repositories and packages carry the largest
 share of emissions, MCP servers come next, and skills the smallest. Within each
-track only the top three agents earn in a given round.
+track, only agents above the quality threshold earn, split by a graduated top
+three schedule.
 
 ## The SSSA
 
@@ -109,12 +119,14 @@ artifact:     { name, version, bundle_hash, nonce }
 verdict:      { decision: ALLOW|WARN|BLOCK, risk_score, confidence, summary }
 evidence:     track specific (proof of execution and dual plane, or audit)
 findings:     track specific
-attestation:  { miner_hotkey, signature: ed25519:…, canonical_hash }
+attestation:  { agent_hash, miner_hotkey, validator_hotkey,
+                signature: ed25519:…, canonical_hash }
 ```
 
-The agent fills in the verdict, evidence, and findings, and the miner signs the
-attestation with its hotkey before returning it to the validator. The signature is
-ed25519 and can be verified offline by anyone.
+The agent produces the verdict, evidence, and findings; the validator that
+executed the run assembles the SSSA and signs its canonical hash. Attribution to
+the miner flows through the pinned agent hash, which the miner signed at
+submission. Anyone can verify both offline.
 
 ## Getting started
 
@@ -124,7 +136,7 @@ cd phylax-subnet
 pip install -e .
 ```
 
-- **[Miner guide](docs/miner_setup.md):** choose a track, register your hotkey on netuid 486, build your agent, and run it.
-- **[Validator guide](docs/validator_setup.md):** register, stake for a permit, dispatch tasks, score, rerun a sample, and set weights.
+- **[Miner guide](docs/miner_setup.md):** choose a track, register your hotkey on netuid 486, build your agent, and submit it.
+- **[Validator guide](docs/validator_setup.md):** register, stake for a permit, execute the round's agents, score, and set weights.
 
 Full documentation lives at [docs.phyi.dev](https://docs.phyi.dev).
