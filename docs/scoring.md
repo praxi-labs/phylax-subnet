@@ -60,6 +60,8 @@ never ships to the agent.
 - **Consensus:** Yuma computes the stake weighted median per agent and clips
   weights above it, so only agents a stake majority endorses earn materially.
 
+![Stake weighted median and clipping](images/consensus.webp)
+
 ## The capability taxonomy
 
 Detonation evidence is expressed in canonical capabilities across ten groups

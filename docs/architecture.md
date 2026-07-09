@@ -1,5 +1,7 @@
 # Architecture
 
+![Phylax architecture](images/architecture.webp)
+
 Phylax spans two codebases. `phylax-subnet` is the decentralized part: the miner
 and validator neurons, the round model, the sandbox, and the scoring code.
 `phylax-server` is the product layer (marketplace, rentals) and is off the
@@ -22,6 +24,7 @@ come from the chain, no central party is trusted for any of it.
 | `neurons/validator.py` | round loop: fetch agents, derive tasks, execute, score, set weights |
 | `phylax/protocol.py` | `AgentSynapse`: the submission a validator fetches |
 | `phylax/rounds.py` | round boundaries, the round seed, deterministic task selection |
+| `phylax/screening.py` | agent similarity detection against copied submissions |
 | `phylax/analysis/` | scoring spine, proof verification, capability taxonomy, per track evaluators |
 | `phylax/harness/runner.py` | runs one agent on one task (docker for validators) |
 | `phylax/harness/executor.py` | the network isolated jail, plus the probe file observation |

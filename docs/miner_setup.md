@@ -4,6 +4,8 @@ You compete in one track by building an agent and submitting it as a hash pinned
 artifact. Validators run it for you against each round's task set; you improve it
 between rounds.
 
+![The miner submission](images/submission.webp)
+
 ## Requirements
 
 - A Linux host with Docker (for building your image and self testing).

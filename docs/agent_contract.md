@@ -11,6 +11,7 @@ def agent_main(context: dict) -> dict:
         "verdict": {"decision": "ALLOW | WARN | BLOCK", "risk_score": 0, "confidence": 0.0},
         "evidence": {},
         "findings": [],
+        "policy": {},
     }
 ```
 

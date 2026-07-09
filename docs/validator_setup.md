@@ -4,6 +4,8 @@ A validator evaluates one track. Each round it fetches the participating agents,
 derives the task set from the chain, executes every agent in the docker jail,
 scores against ground truth, and sets graduated weights.
 
+![The validator evaluation pipeline](images/validator-pipeline.webp)
+
 ## Requirements
 
 - A Linux host with Docker and `docker compose`. The jail is mandatory: the
@@ -61,7 +63,8 @@ DOCKER_GID=<host docker group gid>
 
 Optional tuning: `PHYLAX_ROUND_BLOCKS`, `PHYLAX_TASKS_PER_ROUND`,
 `PHYLAX_REPETITIONS`, `PHYLAX_TASK_TIMEOUT`, `PHYLAX_SCORE_THRESHOLD`,
-`PHYLAX_RELIABILITY_FRACTION`.
+`PHYLAX_RELIABILITY_FRACTION`, `PHYLAX_DEADLINE_MARGIN_BLOCKS`,
+`PHYLAX_STATE_DIR`.
 
 ## 5. Run
 
@@ -76,7 +79,8 @@ docker compose logs -f
    window; every validator agrees on the boundary from block height alone.
 2. **Fetch and screen.** Fetch each serving miner's submission over
    `AgentSynapse`; verify the hotkey signature over the submission digest and the
-   agent hash; screen for size, entrypoint, and image pin.
+   agent hash; screen for size, entrypoint, image pin, and copied code
+   (token level similarity across submissions).
 3. **Derive tasks.** `round_seed = sha256(start_block_hash : track)` seeds
    deterministic selection from the bundled corpus, identical for every
    validator.
@@ -88,5 +92,8 @@ docker compose logs -f
    whole task set.
 6. **Weights.** Apply the quality threshold, set graduated weights
    (0.50/0.30/0.20) on your top eligible agents, and submit before the window
-   closes. Yuma consensus reconciles all validators by stake weighted median with
-   clipping.
+   closes: the validator watches the block height and stops evaluating when the
+   deadline margin is reached, so a partial round still submits in time. Yuma
+   consensus reconciles all validators by stake weighted median with clipping.
+   Each round leaves an auditable record (seed, tasks, agent hashes, scores)
+   under `PHYLAX_STATE_DIR`.

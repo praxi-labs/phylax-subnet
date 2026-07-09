@@ -12,6 +12,7 @@ evidence behind it, and the parties who produced it.
   "verdict":  { "decision": "ALLOW | WARN | BLOCK", "risk_score": 0, "confidence": 0.0, "summary": "" },
   "evidence": { },
   "findings": [ ],
+  "policy": { },
   "attestation": {
     "agent_hash": "sha256:…",
     "miner_hotkey": "…",
@@ -32,8 +33,9 @@ flows through the validator's signature.
 
 ## Canonicalisation
 
-The signed content is the SSSA minus the attestation block: NFC normalised,
-key sorted, whitespace free JSON, hashed with SHA-256
+The signed content is the SSSA minus the attestation block, including the
+recommended policy: NFC normalised, key sorted, whitespace free JSON, hashed
+with SHA-256
 (`phylax/utils/hashing.py`). Anyone recomputes the hash and verifies the
 signature against the validator's on chain hotkey, offline.
 

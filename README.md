@@ -55,7 +55,7 @@ nothing, and there is no central server anywhere in the loop.
 
 ## How it works
 
-<img width="1743" height="902" alt="image" src="https://github.com/user-attachments/assets/1884c54c-6b90-45d8-9a89-68e69cfe90f0" />
+![Phylax architecture](docs/images/architecture.webp)
 
 
 ### Agents are the artifact
@@ -71,6 +71,8 @@ A round is a window of blocks per track. At the start block, agents are frozen
 and every validator derives the identical task set from the start block hash, so
 nothing can be precomputed and anyone can audit the selection. Validators race
 the same block deadline independently.
+
+![The round model](docs/images/round.webp)
 
 ### Proof of execution
 
