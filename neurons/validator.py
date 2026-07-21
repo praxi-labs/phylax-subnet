@@ -218,7 +218,7 @@ class PhylaxValidator:
             agents.pop(hotkey, None)
         return agents
 
-    def run_round(self, start_block: int) -> dict[str, float]:
+    def run_round(self, start_block: int, seed: str | None = None) -> dict[str, float]:
         if os.getenv("PHYLAX_EXECUTOR", "sandbox") != "docker":
             bt.logging.error(
                 "refusing to evaluate: PHYLAX_EXECUTOR must be docker so agents never run unjailed"
@@ -226,8 +226,11 @@ class PhylaxValidator:
             return {}
         self._round_attestations = []
         self._round_scores = {}
-        block_hash = str(self.subtensor.get_block_hash(start_block))
-        seed = rounds.round_seed(block_hash, self.track)
+        # A server-scheduled round carries the seed so every validator derives the
+        # identical task set; the block-timed fallback derives it from the chain.
+        if not seed:
+            block_hash = str(self.subtensor.get_block_hash(start_block))
+            seed = rounds.round_seed(block_hash, self.track)
         task_set = rounds.select_tasks(self.corpus, seed, self.tasks_per_round)
         agents = self._fetch_agents()
         end_block = start_block + self.round_blocks
@@ -472,10 +475,11 @@ class PhylaxValidator:
         except Exception as e:  # noqa: BLE001
             bt.logging.warning(f"round result submission failed: {e}")
 
-    def _execute_round(self, round_id: str, start_block: int) -> None:
+    def _execute_round(self, round_id: str, start_block: int, seed: str | None = None) -> None:
         self.metagraph.sync(subtensor=self.subtensor, lite=True)
-        scores = self.run_round(start_block)
-        seed = rounds.round_seed(str(self.subtensor.get_block_hash(start_block)), self.track)
+        if not seed:
+            seed = rounds.round_seed(str(self.subtensor.get_block_hash(start_block)), self.track)
+        scores = self.run_round(start_block, seed=seed)
         self._submit_results(round_id, start_block, seed)
         self.set_weights(scores)
 
@@ -486,8 +490,9 @@ class PhylaxValidator:
                 if spec and self.corpus:
                     start_block = int(spec.get("start_block") or self.subtensor.get_current_block())
                     round_id = str(spec["round_id"])
+                    seed = str(spec.get("seed") or "") or None
                     bt.logging.info(f"server scheduled round {round_id} track={self.track}")
-                    self._execute_round(round_id, start_block)
+                    self._execute_round(round_id, start_block, seed=seed)
                 time.sleep(POLL_INTERVAL_S)
             except KeyboardInterrupt:
                 bt.logging.info("validator stopped by KeyboardInterrupt")
