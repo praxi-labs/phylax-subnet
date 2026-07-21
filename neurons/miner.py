@@ -18,7 +18,7 @@ MIN_VALIDATOR_STAKE: float = float(os.getenv("PHYLAX_MIN_VALIDATOR_STAKE", "0"))
 def _reference_agent_path() -> str:
     return str(
         Path(__file__).resolve().parent.parent
-        / "phylax" / "harness" / "skills_reference_agent.py"
+        / "phylax" / "harness" / "reference_agent.py"
     )
 
 
