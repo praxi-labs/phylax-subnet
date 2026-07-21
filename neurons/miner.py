@@ -37,12 +37,18 @@ class PhylaxMiner:
         self.track = os.getenv("PHYLAX_TRACK", "skills")
         self.should_exit = False
 
-        self.agent_path = os.getenv("PHYLAX_AGENT_PATH", "") or _reference_agent_path()
+        self.agent_path = (
+            os.getenv("PHYLAX_AGENT_CODE_PATH", "")
+            or os.getenv("PHYLAX_AGENT_PATH", "")
+            or _reference_agent_path()
+        )
         self.entrypoint = os.getenv("PHYLAX_AGENT_ENTRYPOINT", "agent_main")
         self.execution_api_key = os.getenv("PHYLAX_EXECUTION_API_KEY", "")
         self.inference_model = os.getenv("PHYLAX_INFERENCE_MODEL", "")
-        self.sandbox_image = os.getenv("PHYLAX_SANDBOX_IMAGE", "")
-        self.sandbox_digest = os.getenv("PHYLAX_SANDBOX_DIGEST", "")
+        # Miners submit code only; the validator owns the sandbox runtime. These
+        # stay empty and are kept for wire/signature compatibility.
+        self.sandbox_image = ""
+        self.sandbox_digest = ""
 
         axon_kwargs: dict = {"wallet": self.wallet, "config": config}
         axon_port = os.getenv("PHYLAX_AXON_PORT", "").strip()

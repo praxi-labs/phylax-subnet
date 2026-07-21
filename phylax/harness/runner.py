@@ -94,6 +94,10 @@ def run_task(
         agent_path = work_dir / "agent.py"
         agent_path.write_text(runnable.get("code", ""), encoding="utf-8")
 
+        # The runtime is the validator's own image, not miner-supplied. This is
+        # what lets untrusted code run inside a trusted, hardened sandbox.
+        image = os.getenv("PHYLAX_SANDBOX_IMAGE", "")
+        digest = os.getenv("PHYLAX_SANDBOX_DIGEST", "")
         context = {
             "artifact_dir": str(artifact_dir),
             "track": dispatch.get("track", ""),
@@ -105,14 +109,10 @@ def run_task(
                 "provider": runnable.get("inference_provider", ""),
                 "model": runnable.get("inference_model", ""),
             },
-            "sandbox": {
-                "image": runnable.get("sandbox_image", ""),
-                "digest": runnable.get("sandbox_digest", ""),
-            },
+            "sandbox": {"image": image, "digest": digest},
         }
 
         entrypoint = runnable.get("entrypoint", "agent_main")
-        image = context["sandbox"]["image"]
         if timeout is None:
             timeout = int(os.getenv("PHYLAX_AGENT_TIMEOUT", "120"))
         if os.getenv("PHYLAX_EXECUTOR", "sandbox") == "docker" and image:
@@ -120,7 +120,7 @@ def run_task(
                 runnable.get("code", ""),
                 context,
                 image=image,
-                digest=context["sandbox"]["digest"],
+                digest=digest,
                 entrypoint=entrypoint,
                 timeout=timeout,
                 artifact_dir=str(artifact_dir),

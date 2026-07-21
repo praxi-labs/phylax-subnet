@@ -9,12 +9,16 @@ RUN useradd --no-create-home --shell /usr/sbin/nologin agent
 
 RUN mkdir -p /task && chmod 777 /task
 
+# This is the validator-owned sandbox image. It ships the runner and the
+# common runtime; the miner's code is mounted at /task/agent.py at run time and
+# loaded via PHYLAX_AGENT_PATH. No miner code is baked in.
 WORKDIR /agent
 COPY docker/agent/requirements.txt ./
 RUN pip install --upgrade pip && pip install -r requirements.txt
 
 COPY phylax /agent/phylax
 COPY docker/agent/entrypoint.py /agent/entrypoint.py
+# Kept only as a reference/fallback for local runs; the runner loads /task/agent.py.
 COPY phylax/harness/skills_reference_agent.py /agent/agent.py
 
 USER agent

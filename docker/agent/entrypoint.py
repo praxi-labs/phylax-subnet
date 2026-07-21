@@ -21,7 +21,7 @@ def _load_entrypoint(agent_path: str, entrypoint: str):
 
 def main() -> int:
     context = json.loads((TASK_DIR / "context.json").read_text(encoding="utf-8"))
-    agent_path = os.getenv("PHYLAX_AGENT_PATH", "/agent/agent.py")
+    agent_path = os.getenv("PHYLAX_AGENT_PATH", "/task/agent.py")
     entrypoint = context.get("entrypoint", "agent_main")
     try:
         fn = _load_entrypoint(agent_path, entrypoint)

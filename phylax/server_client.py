@@ -104,6 +104,56 @@ class PhylaxServerClient:
             },
         )
 
+    def next_round(self, track: str, hotkey: str) -> dict | None:
+        """Ask the server whether a round should run for this track now.
+
+        The server is the scheduler: rounds are not block-timed. Returns the
+        round spec ({round_id, track, corpus_version, ...}) when a round is due,
+        or None when there is nothing to run.
+        """
+        if self._server_hotkey is None:
+            self.fetch_server_identity()
+        data = self._request(
+            "GET",
+            "/v1/rounds/next",
+            params={"track": track, "hotkey": hotkey},
+        )
+        if not data or not data.get("round_id"):
+            return None
+        return data
+
+    def submit_round_results(
+        self,
+        *,
+        round_id: str,
+        track: str,
+        validator_hotkey: str,
+        start_block: int,
+        seed: str,
+        results: list[dict],
+        attestations: list[dict] | None = None,
+    ) -> dict:
+        """Persist this validator's signed per-agent results for the round.
+
+        The server records each validator's opinion; it does not decide the
+        winner. Champion-per-track is read from on-chain consensus.
+        """
+        if self._server_hotkey is None:
+            self.fetch_server_identity()
+        return self._request(
+            "POST",
+            "/v1/rounds/results",
+            json_body={
+                "round_id": round_id,
+                "track": track,
+                "validator_hotkey": validator_hotkey,
+                "start_block": start_block,
+                "seed": seed,
+                "results": results,
+                "attestations": attestations or [],
+            },
+        )
+
     def submit_agent(
         self,
         *,

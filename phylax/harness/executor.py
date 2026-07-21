@@ -85,6 +85,7 @@ def run_agent_in_docker(
         (task_dir / "agent.py").write_text(agent_code, encoding="utf-8")
         (task_dir / "context.json").write_text(json.dumps(ctx), encoding="utf-8")
 
+        proxy_url = os.getenv("PHYLAX_INFERENCE_PROXY_URL", "")
         create = _docker(
             "create",
             "--network", JAIL_NETWORK,
@@ -96,6 +97,9 @@ def run_agent_in_docker(
             "--cpus", _CPUS,
             "--pids-limit", _PIDS,
             "-e", "PHYLAX_TASK_DIR=/task",
+            # Load the miner's mounted code, not the image-baked reference agent.
+            "-e", "PHYLAX_AGENT_PATH=/task/agent.py",
+            "-e", f"PHYLAX_INFERENCE_PROXY_URL={proxy_url}",
             ref,
             timeout=30,
         )

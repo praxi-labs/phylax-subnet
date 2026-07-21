@@ -1,23 +1,70 @@
 from __future__ import annotations
 
+import re
+
 from phylax.analysis import common, proof, scoring
 
 _TRACK = "repositories"
 
+_TITLE_OVERLAP_MIN = 0.34
+_LINE_WINDOW = 10
 
-def _vuln_key(vuln: dict) -> tuple[str, str]:
-    return (
-        str(vuln.get("file", "")).strip().lower(),
-        str(vuln.get("cwe", "")).strip().upper(),
-    )
+
+def _norm_file(vuln: dict) -> str:
+    return str(vuln.get("file", "")).strip().lower()
+
+
+def _tokens(text: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9]+", str(text).lower()))
+
+
+def _title_overlap(a: dict, b: dict) -> float:
+    ta = _tokens(a.get("title", "")) | _tokens(a.get("description", ""))
+    tb = _tokens(b.get("title", "")) | _tokens(b.get("description", ""))
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / len(ta | tb)
+
+
+def _line_ok(a: dict, b: dict) -> bool:
+    try:
+        la, lb = int(a.get("line")), int(b.get("line"))
+    except (TypeError, ValueError):
+        return True  # missing line info does not disqualify a match
+    return abs(la - lb) <= _LINE_WINDOW
+
+
+def _matches(expected: dict, reported: dict) -> bool:
+    if _norm_file(expected) != _norm_file(reported):
+        return False
+    cwe_e = str(expected.get("cwe", "")).strip().upper()
+    cwe_r = str(reported.get("cwe", "")).strip().upper()
+    cwe_match = bool(cwe_e) and cwe_e == cwe_r
+    title_match = _title_overlap(expected, reported) >= _TITLE_OVERLAP_MIN
+    if not (cwe_match or title_match):
+        return False
+    return _line_ok(expected, reported)
 
 
 def _recall(reported: list, expected: list) -> float:
-    expected_keys = {_vuln_key(v) for v in expected if isinstance(v, dict)}
-    if not expected_keys:
+    # Semantic, greedy one-to-one matching: same file, plus CWE or fuzzy
+    # title/description overlap, within a line window. Each reported finding can
+    # satisfy at most one expected finding.
+    exp = [v for v in expected if isinstance(v, dict)]
+    rep = [v for v in reported if isinstance(v, dict)]
+    if not exp:
         return 0.0
-    reported_keys = {_vuln_key(v) for v in reported if isinstance(v, dict)}
-    return len(expected_keys & reported_keys) / len(expected_keys)
+    used: set[int] = set()
+    hits = 0
+    for e in exp:
+        for i, r in enumerate(rep):
+            if i in used:
+                continue
+            if _matches(e, r):
+                used.add(i)
+                hits += 1
+                break
+    return hits / len(exp)
 
 
 def _clean_precision(reported: list) -> float:

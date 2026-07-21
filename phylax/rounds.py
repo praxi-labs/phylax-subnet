@@ -43,5 +43,7 @@ def select_tasks(corpus: list[dict], seed: str, count: int) -> list[dict]:
     return random.Random(seed).sample(items, count)  # noqa: S311
 
 
-def task_nonce(seed: str, ref: str) -> str:
-    return hashlib.sha256(f"{seed}:{ref}".encode()).hexdigest()
+def task_nonce(seed: str, ref: str, agent: str = "") -> str:
+    # Per-(agent, task) so each agent's probe and inference-liveness are keyed to
+    # it alone — one agent's activity can never vouch for another's on the same task.
+    return hashlib.sha256(f"{seed}:{ref}:{agent}".encode()).hexdigest()

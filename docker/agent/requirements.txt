@@ -1,0 +1,3 @@
+# Runtime available to every agent inside the validator-owned sandbox.
+# Agents reach the metered inference proxy over HTTP through this client.
+httpx>=0.27
