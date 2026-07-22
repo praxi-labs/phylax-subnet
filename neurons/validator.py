@@ -488,11 +488,19 @@ class PhylaxValidator:
             try:
                 spec = self.server.next_round(self.track, self.wallet.hotkey.ss58_address)
                 if spec and self.corpus:
-                    start_block = int(spec.get("start_block") or self.subtensor.get_current_block())
-                    round_id = str(spec["round_id"])
-                    seed = str(spec.get("seed") or "") or None
-                    bt.logging.info(f"server scheduled round {round_id} track={self.track}")
-                    self._execute_round(round_id, start_block, seed=seed)
+                    if spec.get("phase") == "submission":
+                        # Submission window open: miners are still submitting.
+                        # Hold off; the participant set is not frozen yet.
+                        bt.logging.info(
+                            f"round {spec.get('round_id')} submission window open "
+                            f"until {spec.get('submission_closes_at', '?')}; waiting"
+                        )
+                    else:
+                        start_block = int(spec.get("start_block") or self.subtensor.get_current_block())
+                        round_id = str(spec["round_id"])
+                        seed = str(spec.get("seed") or "") or None
+                        bt.logging.info(f"server scheduled round {round_id} track={self.track}")
+                        self._execute_round(round_id, start_block, seed=seed)
                 time.sleep(POLL_INTERVAL_S)
             except KeyboardInterrupt:
                 bt.logging.info("validator stopped by KeyboardInterrupt")

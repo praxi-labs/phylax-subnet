@@ -108,10 +108,13 @@ want a frozen, reproducible sandbox — that disables the per-run refresh.
 
 ## What happens each round
 
-1. **Round trigger.** The validator polls the server (`/v1/rounds/next`); when a
-   round is due the server returns its id and a shared seed. Every validator
-   working the same round gets the same seed, so all evaluate the identical task
-   set. (Without a server, a block-timed fallback derives the seed from the chain.)
+1. **Round trigger.** The validator polls the server (`/v1/rounds/next`). While the
+   round's **submission window** is open the server reports a `submission` phase and
+   the validator waits — miners are still submitting. When the window closes the
+   server returns the round id, the shared seed, and the frozen participant set, and
+   evaluation begins. Every validator working the round gets the same seed and set,
+   so all evaluate the identical task set. (Without a server, a block-derived
+   fallback seeds the round for local dev.)
 2. **Fetch and screen.** Fetch each serving miner's submission over
    `AgentSynapse`; verify the hotkey signature and the agent hash; screen for
    size, entrypoint, and copied code (token-level similarity across submissions).

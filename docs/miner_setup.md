@@ -88,11 +88,24 @@ matching curated ground truth — a fabricated or empty report earns nothing.
 docker compose pull && docker compose up -d
 ```
 
-Your neuron serves your submission over an `AgentSynapse`: the agent code, the
-entrypoint, your inference key, the agent hash, and your hotkey's signature over
-the submission. Validators fetch it when a round opens, screen it, freeze it by
-hash, and run it inside their own sandbox against the round's tasks. You do
-nothing per round.
+This starts the **miner neuron** — the stock `phylax-miner` image pulled from
+GHCR, not a container you build. You are not shipping a container; your agent is
+the Python file, and the neuron's only job is to hold it and hand it to validators.
+
+Your agent reaches the network from the running neuron two ways:
+
+- **To validators (the protocol path):** the neuron answers an `AgentSynapse` with
+  your agent code, entrypoint, inference key, agent hash, and your hotkey's
+  signature. When a round's submission window closes, validators fetch it, freeze
+  it by hash, and run it in their own sandbox against the round's tasks.
+- **To the marketplace (product only):** on startup the neuron registers the same
+  agent with the server (or run `./scripts/register.sh`) so it lists in the
+  marketplace.
+
+Each round opens with a **submission window**. Submit or update your agent before
+it closes and keep the neuron serving your latest code; once the window closes the
+participant set freezes for that round, and a version submitted afterward competes
+in the next one. You do nothing else per round.
 
 ## 7. Improve between rounds
 

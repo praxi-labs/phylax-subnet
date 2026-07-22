@@ -96,6 +96,32 @@ _REPO_PATTERNS: tuple[tuple[re.Pattern[str], str, str, str], ...] = (
      "CWE-798", "hardcoded credential", "high"),
 )
 
+# Supply-chain layer for the repositories track (the Socket half): the repo's own
+# dependency manifests, leaked secrets, and licence posture, scanned alongside the
+# first-party code vulnerabilities above (the Bitsec half). Detection patterns
+# only — matched values are reported redacted, never echoed.
+_DEP_FILE_NAMES = (
+    "requirements.txt", "pyproject.toml", "setup.py", "setup.cfg", "pipfile",
+    "package.json", "package-lock.json", "yarn.lock", "go.mod", "cargo.toml", "gemfile",
+)
+
+_SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("aws_access_key_id", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
+    ("aws_secret_access_key", re.compile(r"(?i)aws.{0,20}secret.{0,24}[\"'][A-Za-z0-9/+=]{40}[\"']")),
+    ("private_key", re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----")),
+    ("github_token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{36}\b")),
+    ("slack_token", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,48}\b")),
+    ("google_api_key", re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b")),
+    ("stripe_secret_key", re.compile(r"\bsk_live_[0-9A-Za-z]{24,}\b")),
+    ("generic_token", re.compile(
+        r"(?i)(?:api[_-]?key|auth[_-]?token|access[_-]?token|client[_-]?secret)"
+        r"\s*[=:]\s*[\"'][A-Za-z0-9_\-]{20,}[\"']")),
+)
+
+_SPDX_LICENCE = re.compile(
+    r"(?i)\b(MIT|Apache-2\.0|BSD-3-Clause|BSD-2-Clause|GPL-3\.0|GPL-2\.0|AGPL-3\.0|"
+    r"LGPL-3\.0|MPL-2\.0|Unlicense|ISC)\b")
+
 
 # --------------------------------------------------------------------------- #
 # proof of execution (behavioural tracks)
@@ -363,6 +389,125 @@ def _analyse_packages(files: list[tuple[str, str]], probe: dict) -> dict:
     }
 
 
+# --------------------------------------------------------------------------- #
+# repositories: supply-chain layer (dependencies, secrets, licence)
+# --------------------------------------------------------------------------- #
+def _basename(rel: str) -> str:
+    return rel.replace("\\", "/").rsplit("/", 1)[-1].lower()
+
+
+def _top_dir(rel: str) -> str:
+    return rel.replace("\\", "/").split("/", 1)[0].lower()
+
+
+def _parse_dependencies(files: list[tuple[str, str]]) -> list[dict]:
+    deps: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(name: str, version: str, ecosystem: str) -> None:
+        name = (name or "").strip()
+        key = (ecosystem, name.lower())
+        if not name or key in seen:
+            return
+        seen.add(key)
+        deps.append({"name": name, "version": (version or "").strip(), "ecosystem": ecosystem, "cve": []})
+
+    for rel, text in files:
+        base = _basename(rel)
+        if base == "requirements.txt":
+            for line in text.splitlines():
+                line = line.strip()
+                if not line or line[0] in "#-":
+                    continue
+                m = re.match(r"([A-Za-z0-9_.\-]+)\s*(?:[=<>!~]=?\s*([0-9][\w.\-]*))?", line)
+                if m:
+                    add(m.group(1), m.group(2) or "", "pypi")
+        elif base == "package.json":
+            data = None
+            with contextlib.suppress(ValueError, TypeError):
+                data = json.loads(text)
+            if isinstance(data, dict):
+                for section in ("dependencies", "devDependencies", "optionalDependencies"):
+                    block = data.get(section)
+                    if isinstance(block, dict):
+                        for name, ver in block.items():
+                            add(str(name), str(ver), "npm")
+            else:
+                for name, ver in re.findall(r'"([A-Za-z0-9_.@/\-]+)"\s*:\s*"([\^~>=<0-9][^"]*)"', text):
+                    add(name, ver, "npm")
+        elif base in ("pyproject.toml", "setup.py", "setup.cfg", "pipfile"):
+            for name, ver in re.findall(r'["\']?([A-Za-z0-9_.\-]+)["\']?\s*(?:[=<>~!]=)\s*["\']?([0-9][\w.\-]*)', text):
+                add(name, ver, "pypi")
+        elif base == "go.mod":
+            for name, ver in re.findall(r'(?m)^\s*([\w.\-]+(?:/[\w.\-]+)+)\s+v([\d][\w.\-]*)', text):
+                add(name, "v" + ver, "go")
+        elif base == "cargo.toml":
+            for name, ver in re.findall(r'(?m)^\s*([A-Za-z0-9_\-]+)\s*=\s*["\']([\d][\w.\-]*)', text):
+                add(name, ver, "crates")
+    return deps
+
+
+def _scan_secrets(files: list[tuple[str, str]]) -> list[dict]:
+    out: list[dict] = []
+    for rel, text in files:
+        lines = text.splitlines()
+        for stype, pat in _SECRET_PATTERNS:
+            for i, ln in enumerate(lines):
+                if pat.search(ln):
+                    out.append({"file": rel, "line": i + 1, "type": stype, "redacted": True})
+                    break
+    return out
+
+
+def _repo_supply_chain(files: list[tuple[str, str]], deps: list[dict]) -> dict:
+    manifest_text = "\n".join(
+        text for rel, text in files
+        if _basename(rel) in ("setup.py", "package.json", "pyproject.toml", "setup.cfg", "pipfile")
+    ).lower()
+
+    typosquat = []
+    for d in deps:
+        near = next((p for p in _POPULAR if _edit_distance_one(d["name"].lower(), p)), "")
+        if near:
+            typosquat.append({"name": d["name"], "of": near, "ecosystem": d["ecosystem"]})
+
+    src_pkgs = {_top_dir(rel) for rel, _ in files if "/" in rel.replace("\\", "/")}
+    confusion = []
+    for d in deps:
+        n = d["name"].lower()
+        if n in src_pkgs:
+            confusion.append({"name": d["name"], "reason": "shadows a first-party package in the repo"})
+        elif n.startswith("@") or n.endswith(("-internal", "-private")):
+            confusion.append({"name": d["name"], "reason": "internal-looking name resolvable from a public registry"})
+
+    install_scripts = []
+    if re.search(r'"(?:pre|post)install"\s*:', manifest_text) or re.search(r"cmdclass|install_requires.*subprocess", manifest_text):
+        install_scripts.append({"hook": "install", "detail": "manifest runs code at install time"})
+    if _CURL_PIPE.search(manifest_text):
+        install_scripts.append({"hook": "install", "detail": "manifest pipes a remote script into a shell"})
+
+    return {
+        "dependencies": deps,
+        "typosquat": typosquat,
+        "dependency_confusion": confusion,
+        "install_scripts": install_scripts,
+    }
+
+
+def _repo_licences(files: list[tuple[str, str]]) -> dict:
+    manifest = "\n".join(
+        text for rel, text in files
+        if _basename(rel) in ("package.json", "pyproject.toml", "setup.py", "setup.cfg")
+    )
+    declared: list[str] = []
+    for spdx in _SPDX_LICENCE.findall(manifest):
+        if spdx not in declared:
+            declared.append(spdx)
+    flagged = [{"license": lic, "risk": "strong copyleft"} for lic in declared
+               if lic.upper().startswith(("GPL", "AGPL"))]
+    return {"declared": declared, "flagged": flagged}
+
+
 def _analyse_repositories(files: list[tuple[str, str]]) -> dict:
     vulnerabilities: list[dict] = []
     for rel, text in files:
@@ -409,20 +554,60 @@ def _analyse_repositories(files: list[tuple[str, str]]) -> dict:
                 "severity": severity,
             })
 
-    critical = any(v["severity"] == "high" for v in vulnerabilities)
-    decision = "BLOCK" if critical else ("WARN" if vulnerabilities else "ALLOW")
-    risk = 90 if critical else (45 if vulnerabilities else 8)
+    deps = _parse_dependencies(files)
+    supply_chain = _repo_supply_chain(files, deps)
+    secrets = _scan_secrets(files)
+    licences = _repo_licences(files)
+    dep_files = sorted({rel for rel, _ in files if _basename(rel) in _DEP_FILE_NAMES})
+
+    findings: list[dict] = [
+        {"category": v["cwe"], "severity": v["severity"].upper(), "title": v["title"],
+         "file": v["file"], "location": f"line {v['line']}"}
+        for v in vulnerabilities
+    ]
+    findings += [
+        {"category": "leaked_secret", "severity": "CRITICAL", "plane": "supply_chain",
+         "title": f"{s['type']} in {s['file']}", "file": s["file"], "location": f"line {s['line']}"}
+        for s in secrets
+    ]
+    findings += [
+        {"category": "typosquat", "severity": "HIGH", "plane": "supply_chain",
+         "title": f"dependency '{t['name']}' resembles '{t['of']}'", "file": ""}
+        for t in supply_chain["typosquat"]
+    ]
+    findings += [
+        {"category": "dependency_confusion", "severity": "HIGH", "plane": "supply_chain",
+         "title": f"dependency '{c['name']}' {c['reason']}", "file": ""}
+        for c in supply_chain["dependency_confusion"]
+    ]
+    findings += [
+        {"category": "install_script", "severity": "HIGH", "plane": "supply_chain",
+         "title": s["detail"], "file": ""}
+        for s in supply_chain["install_scripts"]
+    ]
+
+    code_critical = any(v["severity"] == "high" for v in vulnerabilities)
+    supply_critical = bool(
+        secrets or supply_chain["typosquat"] or supply_chain["dependency_confusion"]
+        or supply_chain["install_scripts"]
+    )
+    if code_critical or supply_critical:
+        decision, risk = "BLOCK", 90
+    elif vulnerabilities:
+        decision, risk = "WARN", 45
+    else:
+        decision, risk = "ALLOW", 8
+
     return {
         "verdict": {"decision": decision, "risk_score": risk, "confidence": 0.7},
         "evidence": {
-            "audit": {"files_analysed": len(files)},
+            "audit": {"files_analysed": len(files), "dependency_files": dep_files},
             "vulnerabilities": vulnerabilities,
+            "supply_chain": supply_chain,
+            "secrets": secrets,
+            "licenses": licences,
         },
-        "findings": [
-            {"category": v["cwe"], "severity": v["severity"].upper(), "title": v["title"],
-             "file": v["file"], "location": f"line {v['line']}"}
-            for v in vulnerabilities
-        ],
+        "findings": findings,
     }
 
 

@@ -106,8 +106,13 @@ executed. Correctness still dominates the score.
 - **Graduated weights** — top three per track split emissions 0.50 / 0.30 / 0.20.
 - **Consensus** — stake-weighted median (Yuma), on chain. The server never picks
   winners; it records and reflects on-chain consensus.
-- **Repositories** — findings are matched to ground truth semantically (file +
-  fuzzy title/CWE + line window), scored on recall and clean-precision.
+- **Repositories** — two evidence layers scored together: exploitable code
+  vulnerabilities (`vulnerabilities[]`, the Bitsec-style audit) and supply-chain
+  risk (`supply_chain` + `secrets`, the Socket-style scan of the repo's own
+  dependencies). Each labelled dimension is matched to ground truth semantically
+  (file + fuzzy title/CWE + line window for vulns; type + name for supply-chain;
+  file + type for secrets) and the recalls blend 0.5 / 0.3 / 0.2. A
+  vulnerabilities-only ground truth scores exactly as before.
 
 ## 8. Rounds (server-scheduled)
 
