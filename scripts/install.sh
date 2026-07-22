@@ -146,13 +146,14 @@ Files:
   $TARGET/docker-compose.yml   OPTIONAL neuron (AgentSynapse fallback only)
 
 Onboarding (submit-only — there is no neuron to run):
-  cd $TARGET
-  ./src/scripts/register_testnet.sh miner   # 1. chain registration
-  # set PHYLAX_TRACK + PHYLAX_EXECUTION_API_KEY (+ PHYLAX_AGENT_CODE_PATH) in .env
-  ./src/scripts/register.sh                 # 2. submit your agent to the backend
+  1. Register your hotkey on the subnet yourself with btcli (netuid 486):
+       btcli subnet register --netuid 486 --network test --wallet.name <name> --wallet.hotkey <hotkey>
+  2. Edit $TARGET/.env: PHYLAX_TRACK, PHYLAX_EXECUTION_API_KEY, PHYLAX_AGENT_CODE_PATH
+  3. Submit your agent to the backend:
+       cd $TARGET && ./src/scripts/register.sh
 
-To ship a new version later, edit your agent and re-run ./src/scripts/register.sh.
-Validators pull it from the backend at the start of each round. (The compose file
+To ship a new version later, edit your agent and re-run ./src/scripts/register.sh;
+validators pull it from the backend at the start of each round. (The compose file
 is optional — only for keeping the peer-to-peer AgentSynapse fallback alive.)
 
 EOF
