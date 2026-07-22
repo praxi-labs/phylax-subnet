@@ -86,8 +86,6 @@ class PhylaxMiner:
                 hotkey=self.wallet.hotkey.ss58_address,
                 code=self._agent_code(),
                 execution_api_key=self.execution_api_key,
-                sandbox_image=self.sandbox_image,
-                sandbox_digest=self.sandbox_digest,
                 entrypoint=self.entrypoint,
                 name=os.getenv("PHYLAX_MINER_LABEL", ""),
                 inference_model=self.inference_model,

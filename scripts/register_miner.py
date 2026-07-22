@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Register a miner into a Phylax track and submit its agent (code + image + key)."""
+"""Register a miner into a Phylax track and submit its agent (code + inference key)."""
 from __future__ import annotations
 
 import datetime as dt
@@ -125,16 +125,16 @@ def main() -> int:
     api_key = require(env, "PHYLAX_EXECUTION_API_KEY")
     if not (api_key.startswith("cpk_") or api_key.startswith("sk-or-")):
         sys.exit("ERROR: PHYLAX_EXECUTION_API_KEY must start with 'cpk_' or 'sk-or-'")
-    sandbox_image = require(env, "PHYLAX_SANDBOX_IMAGE")
-    sandbox_digest = require(env, "PHYLAX_SANDBOX_DIGEST")
-    if not sandbox_digest.startswith("sha256:"):
-        sys.exit("ERROR: PHYLAX_SANDBOX_DIGEST must start with 'sha256:'")
 
     default_agent = (
         Path(__file__).resolve().parent.parent
-        / "phylax" / "harness" / "skills_reference_agent.py"
+        / "phylax" / "harness" / "reference_agent.py"
     )
-    agent_path = Path(env.get("PHYLAX_AGENT_PATH", "") or default_agent).expanduser()
+    agent_path = Path(
+        env.get("PHYLAX_AGENT_CODE_PATH", "")
+        or env.get("PHYLAX_AGENT_PATH", "")
+        or default_agent
+    ).expanduser()
     if not agent_path.exists():
         sys.exit(f"ERROR: agent file not found at {agent_path}")
     code = agent_path.read_text(encoding="utf-8")
@@ -151,7 +151,6 @@ def main() -> int:
     print(f"==> hotkey: {hotkey}")
     print(f"==> track:  {track}")
     print(f"==> agent:  {agent_path.name} ({len(code)} bytes)")
-    print(f"==> image:  {sandbox_image}@{sandbox_digest[:20]}…")
 
     reg = post(
         server,
@@ -178,7 +177,6 @@ def main() -> int:
             "entrypoint": env.get("PHYLAX_AGENT_ENTRYPOINT", "agent_main"),
             "execution_api_key": api_key,
             "inference_model": env.get("PHYLAX_INFERENCE_MODEL", ""),
-            "sandbox": {"image_uri": sandbox_image, "image_hash": sandbox_digest},
             "dependency_manifest": manifest,
         },
         keypair,

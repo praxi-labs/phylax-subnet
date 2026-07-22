@@ -148,10 +148,9 @@ Files:
 Onboarding:
   cd $TARGET
   ./src/scripts/register_testnet.sh miner          # 1. chain registration
-  # set PHYLAX_TRACK + PHYLAX_EXECUTION_API_KEY in .env
-  ./src/scripts/build-agent.sh <registry>/<you>/phylax-agent-skills:v1   # 2. build agent image
-  ./src/scripts/register.sh                          # 3. register track + submit agent
-  docker compose pull && docker compose up -d        # 4. run the neuron
+  # set PHYLAX_TRACK + PHYLAX_EXECUTION_API_KEY (+ PHYLAX_AGENT_CODE_PATH) in .env
+  ./src/scripts/register.sh                          # 2. register track + submit agent (code only)
+  docker compose pull && docker compose up -d        # 3. run the neuron
 
 EOF
 else

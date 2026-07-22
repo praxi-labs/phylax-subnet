@@ -160,27 +160,26 @@ class PhylaxServerClient:
         hotkey: str,
         code: str,
         execution_api_key: str,
-        sandbox_image: str,
-        sandbox_digest: str,
+        sandbox_image: str = "",
+        sandbox_digest: str = "",
         entrypoint: str = "agent_main",
         name: str = "",
         inference_model: str = "",
         dependency_manifest: str = "",
     ) -> dict:
-        return self._request(
-            "POST",
-            "/v1/specialization/agent",
-            json_body={
-                "hotkey": hotkey,
-                "name": name,
-                "code": code,
-                "entrypoint": entrypoint,
-                "execution_api_key": execution_api_key,
-                "inference_model": inference_model,
-                "sandbox": {"image_uri": sandbox_image, "image_hash": sandbox_digest},
-                "dependency_manifest": dependency_manifest,
-            },
-        )
+        body = {
+            "hotkey": hotkey,
+            "name": name,
+            "code": code,
+            "entrypoint": entrypoint,
+            "execution_api_key": execution_api_key,
+            "inference_model": inference_model,
+            "dependency_manifest": dependency_manifest,
+        }
+        # Code-only submissions omit the sandbox; the validator owns the runtime.
+        if sandbox_image and sandbox_digest:
+            body["sandbox"] = {"image_uri": sandbox_image, "image_hash": sandbox_digest}
+        return self._request("POST", "/v1/specialization/agent", json_body=body)
 
 
 __all__ = ["PhylaxServerClient", "ServerIdentityMismatch", "ServerUnreachable"]

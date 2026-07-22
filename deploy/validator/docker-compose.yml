@@ -56,11 +56,16 @@ services:
       - phylax-jail
       - egress
 
+  # Mandatory for validators: keeps the validator and inference-proxy containers
+  # on the latest published image so the whole set of validators stays in lockstep
+  # when we push an update. It only acts on containers labelled
+  # com.centurylinklabs.watchtower.enable=true, and restarts one at a time. The
+  # sandbox image (phylax-agent) is NOT covered here — the executor docker-pulls it
+  # fresh on every agent run, so it is always current on its own.
   watchtower:
     image: containrrr/watchtower:latest
     container_name: phylax-watchtower
     restart: unless-stopped
-    profiles: ["auto-update"]
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
@@ -68,7 +73,7 @@ services:
       WATCHTOWER_CLEANUP: "true"
       WATCHTOWER_INCLUDE_RESTARTING: "false"
       WATCHTOWER_ROLLING_RESTART: "true"
-      WATCHTOWER_POLL_INTERVAL: "${WATCHTOWER_POLL_INTERVAL:-120}"
+      WATCHTOWER_POLL_INTERVAL: "${WATCHTOWER_POLL_INTERVAL:-3600}"
       DOCKER_API_VERSION: "${DOCKER_API_VERSION:-1.41}"
       TZ: "UTC"
 

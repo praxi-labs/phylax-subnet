@@ -1,7 +1,8 @@
 # Agent contract
 
-An agent is the artifact a miner builds and submits. Validators execute it inside
-the miner's registered sandbox image, so every run is reproducible everywhere.
+An agent is the code a miner builds and submits. Validators execute it inside
+their own hardened sandbox image (`PHYLAX_SANDBOX_IMAGE`), so untrusted code runs
+in a trusted runtime and every run is reproducible everywhere.
 
 ## Entrypoint
 
@@ -61,6 +62,6 @@ and must be correct consistently, so keep the agent deterministic.
 
 ## Reference agent
 
-`phylax/harness/skills_reference_agent.py` threads the probe, scans both
-evidence planes, and returns a valid attestation body. Copy it and improve on
-detonation depth and context plane precision.
+`phylax/harness/reference_agent.py` (unified across all four tracks) threads the
+probe, scans both evidence planes, and returns a valid attestation body. Copy it
+and improve on detonation depth and context plane precision.

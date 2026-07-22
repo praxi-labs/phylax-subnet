@@ -58,8 +58,7 @@ if [[ "$ROLE" == "validator" ]]; then
     echo "    btcli stake add --wallet.name $WALLET_NAME --wallet.hotkey $WALLET_HOTKEY --amount <TAO>"
 else
     echo
-    echo "→ Next: declare your track and submit your agent:"
-    echo "    ./scripts/build-agent.sh <registry/image>:<tag>   # build + push, copy digest to .env"
+    echo "→ Next: set PHYLAX_TRACK + PHYLAX_EXECUTION_API_KEY in .env, then submit your agent (code only):"
     echo "    ./scripts/register.sh"
 fi
 

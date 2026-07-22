@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # register.sh — register this miner into its track and submit its agent
-# (code + sandbox image + inference key) to the phylax-server.
+# (code + inference key) to the phylax-server.
 #
 # Reads config from the miner .env file. Walks up two directories from this
 # script's path (src/scripts -> src -> miner install dir) to find the .env.

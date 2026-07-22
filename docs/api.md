@@ -16,28 +16,30 @@ The miner fills in its submission:
 | `entrypoint` | The entry function, default `agent_main` |
 | `execution_api_key` | The metered inference key validators spend |
 | `inference_model` | Optional preferred model |
-| `sandbox_image` / `sandbox_digest` | The pinned run environment |
 | `agent_hash` | `sha256:` of the code |
 | `signature` | ed25519 over the submission digest, by the miner's hotkey |
 
-Miners blacklist callers without a validator permit (and below
+The submission is code only — the validator owns the sandbox image, so it carries
+no image or digest. Miners blacklist callers without a validator permit (and below
 `PHYLAX_MIN_VALIDATOR_STAKE` when set). The validator verifies the signature and
 the hash pin before admitting the agent to a round, then screens for size,
-entrypoint, and image pin.
+entrypoint, and copied code.
 
 ## The chain
 
 | Value | Role |
 |---|---|
-| Block height | Round boundaries per track |
-| Start block hash | The round seed for task selection and probes |
+| Block hash | Fallback round seed for task selection and probes when no server schedules the round |
 | Weight submissions | Each validator's graduated vector |
 | Yuma consensus | Stake weighted median with clipping |
 | Commitments | The recognized contributor set |
 
 ## The server (product only)
 
-The miner optionally registers its agent with `phylax-server`
-(`register_track`, `submit_agent`) so it appears in the marketplace. The server
-never dispatches tasks, executes agents, scores, or sets weights; the protocol
-runs entirely between the chain, the validators, and the miners.
+The server schedules rounds (`GET /v1/rounds/next` hands every validator the same
+round id and seed) and records the signed results validators post back
+(`POST /v1/rounds/results`) for the marketplace and leaderboard. The miner also
+registers its agent with it (`register_track`, `submit_agent`) so it appears in the
+marketplace. The server never derives tasks, executes agents, scores, or picks the
+winner — that is on-chain consensus. Without a server, validators fall back to a
+block-derived round seed.

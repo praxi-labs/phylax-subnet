@@ -15,6 +15,11 @@ signed results to the server, and sets graduated weights on chain.
 - Enough stake to hold a validator permit.
 - Capacity for `agents x tasks x repetitions x timeout` per round (divided by
   your parallelism).
+- Outbound access to `ghcr.io`. The host pulls four public images —
+  `phylax-validator`, `phylax-proxy`, `phylax-agent` (the sandbox), and
+  `containrrr/watchtower` — so no registry login is needed. If your evaluations
+  fail with `image pull failed`, the sandbox image is not reachable: confirm
+  `phylax-agent` and `phylax-proxy` are Public on GHCR, or log in with a token.
 
 ## 1. Create and fund a wallet
 
@@ -81,6 +86,25 @@ Optional tuning: `PHYLAX_TASKS_PER_ROUND`, `PHYLAX_REPETITIONS`,
 docker compose pull && docker compose up -d
 docker compose logs -f
 ```
+
+This starts three containers: the validator neuron, the inference proxy, and
+Watchtower.
+
+## Staying current (auto-updates)
+
+Watchtower is part of the validator deploy and runs automatically — it is not
+optional. It watches the containers labelled
+`com.centurylinklabs.watchtower.enable=true` (the validator and the proxy) and,
+when we publish a new image, pulls it and restarts that container in place, one at
+a time. This keeps every validator on the same build without anyone re-running
+`docker compose pull`. It polls hourly by default; override with
+`WATCHTOWER_POLL_INTERVAL` (seconds) in `.env`.
+
+The **sandbox image** (`phylax-agent`) is handled separately and does not need
+Watchtower: the executor runs `docker pull` on `PHYLAX_SANDBOX_IMAGE` before every
+agent run, so as long as you leave `PHYLAX_SANDBOX_DIGEST` unset it always resolves
+the latest `phylax-agent`. Pin `PHYLAX_SANDBOX_DIGEST` only when you deliberately
+want a frozen, reproducible sandbox — that disables the per-run refresh.
 
 ## What happens each round
 
