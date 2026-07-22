@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 #
-# Phylax neuron bootstrap (agent-as-artifact model). One command to lay down a
+# Phylax bootstrap (code-only submission model). One command to lay down a
 # working miner or validator install on a fresh host.
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/praxi-labs/phylax-subnet/main/scripts/install.sh | bash -s miner
 #   curl -fsSL https://raw.githubusercontent.com/praxi-labs/phylax-subnet/main/scripts/install.sh | bash -s validator
 #
-# After this finishes:
-#   cd ~/phylax/<role>
-#   docker compose pull && docker compose up -d
+# After this finishes, cd ~/phylax/<role> and follow the onboarding steps printed
+# at the end: miners submit their agent with register.sh (no neuron to run);
+# validators run docker compose up.
 #
 # Idempotent — re-running upgrades the compose file in place but never
 # overwrites .env (so your edits survive).
@@ -119,7 +119,7 @@ if [ "$ROLE" = "miner" ]; then
     git -C "$SRC_DIR" pull --ff-only origin main || \
       echo "==> WARNING: git pull failed; leaving existing source as-is"
   else
-    echo "==> Cloning phylax-subnet source into $SRC_DIR (for agent build + submit)"
+    echo "==> Cloning phylax-subnet source into $SRC_DIR (for agent submission)"
     if ! git clone --depth 1 "$REPO_URL_GIT" "$SRC_DIR" 2>/dev/null; then
       echo "==> WARNING: git clone failed."
       echo "    If the repo is private, export GITHUB_TOKEN first and re-run."
@@ -141,16 +141,19 @@ if [ "$ROLE" = "miner" ]; then
 ==> Installed at: $TARGET
 
 Files:
-  $TARGET/docker-compose.yml   miner neuron stack (holds registration)
-  $TARGET/.env                 your config (edit before first run)
+  $TARGET/.env                 your config (edit before submitting)
   $TARGET/src/                 phylax-subnet source + scripts
+  $TARGET/docker-compose.yml   OPTIONAL neuron (AgentSynapse fallback only)
 
-Onboarding:
+Onboarding (submit-only — there is no neuron to run):
   cd $TARGET
-  ./src/scripts/register_testnet.sh miner          # 1. chain registration
+  ./src/scripts/register_testnet.sh miner   # 1. chain registration
   # set PHYLAX_TRACK + PHYLAX_EXECUTION_API_KEY (+ PHYLAX_AGENT_CODE_PATH) in .env
-  ./src/scripts/register.sh                          # 2. register track + submit agent (code only)
-  docker compose pull && docker compose up -d        # 3. run the neuron
+  ./src/scripts/register.sh                 # 2. submit your agent to the backend
+
+To ship a new version later, edit your agent and re-run ./src/scripts/register.sh.
+Validators pull it from the backend at the start of each round. (The compose file
+is optional — only for keeping the peer-to-peer AgentSynapse fallback alive.)
 
 EOF
 else

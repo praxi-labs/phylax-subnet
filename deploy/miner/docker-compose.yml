@@ -1,3 +1,8 @@
+# OPTIONAL. Miners are submit-only: you submit your agent to the backend with
+# ./scripts/register.sh and run nothing. This long-lived neuron is only needed if
+# you want to keep the peer-to-peer AgentSynapse fallback alive so validators can
+# still fetch your agent directly when the backend is unreachable. It also
+# re-submits your agent to the backend on startup. Most miners do not need it.
 services:
   phylax-miner:
     image: ghcr.io/praxi-labs/phylax-miner:${PHYLAX_IMAGE_TAG:-latest}
