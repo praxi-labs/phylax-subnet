@@ -1,13 +1,11 @@
 # Protocol surfaces
 
-## The synapse
+## Agent submission and fetch
 
-The subnet has one synapse. There is no task dispatch: validators execute agents
-themselves.
+The backend is the source of truth for agent code. There is no task dispatch:
+validators execute agents themselves.
 
-### `AgentSynapse` (validator to miner)
-
-The miner fills in its submission:
+**Miner submits** — `POST /v1/specialization/agent`, signed by the hotkey:
 
 | Field | Meaning |
 |---|---|
@@ -16,14 +14,19 @@ The miner fills in its submission:
 | `entrypoint` | The entry function, default `agent_main` |
 | `execution_api_key` | The metered inference key validators spend |
 | `inference_model` | Optional preferred model |
-| `agent_hash` | `sha256:` of the code |
-| `signature` | ed25519 over the submission digest, by the miner's hotkey |
 
 The submission is code only — the validator owns the sandbox image, so it carries
-no image or digest. Miners blacklist callers without a validator permit (and below
-`PHYLAX_MIN_VALIDATOR_STAKE` when set). The validator verifies the signature and
-the hash pin before admitting the agent to a round, then screens for size,
-entrypoint, and copied code.
+no image or digest. The backend stores it keyed by `sha256:` of the code. No neuron
+runs on the miner side.
+
+**Validator fetches** — at round start, for each frozen participant,
+`GET /v1/specialization/agent/{hotkey}/runnable` returns the code, entrypoint, and
+key. The validator verifies the fetched code hash matches the frozen pin, then
+screens for size, entrypoint, and copied code before admitting the agent.
+
+The old peer-to-peer `AgentSynapse` (validator to miner, same fields plus the
+miner's signature over the submission digest) remains only as a local-dev fallback
+when no backend is configured.
 
 ## The chain
 

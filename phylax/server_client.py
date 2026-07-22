@@ -122,6 +122,24 @@ class PhylaxServerClient:
             return None
         return data
 
+    def get_runnable_agent(self, hotkey: str) -> dict | None:
+        """Fetch one participant's runnable agent from the backend.
+
+        The backend is the source of truth for agent code: miners submit to it,
+        and validators pull each frozen participant's agent here at round start.
+        Returns the code, entrypoint, inference key, and model, or None if the
+        participant has no active agent (404).
+        """
+        if self._server_hotkey is None:
+            self.fetch_server_identity()
+        try:
+            data = self._request("GET", f"/v1/specialization/agent/{hotkey}/runnable")
+        except Exception as exc:  # noqa: BLE001 — 404/other: treat as no agent
+            if isinstance(exc, ServerUnreachable):
+                raise
+            return None
+        return data or None
+
     def submit_round_results(
         self,
         *,

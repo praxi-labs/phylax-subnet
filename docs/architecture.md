@@ -21,9 +21,10 @@ report earns nothing. The server schedules and records; the chain decides.
 
 | Path | Role |
 |---|---|
-| `neurons/miner.py` | axon neuron: serves the signed, hash pinned agent submission |
-| `neurons/validator.py` | round loop: fetch agents, derive tasks, execute, score, set weights |
-| `phylax/protocol.py` | `AgentSynapse`: the submission a validator fetches |
+| `scripts/register_miner.py` | signs and submits a miner's agent (code + key) to the backend |
+| `neurons/validator.py` | round loop: fetch agents from the backend, derive tasks, execute, score, set weights |
+| `phylax/server_client.py` | validator and miner client for the backend (submit, round, results, fetch) |
+| `phylax/protocol.py` | `AgentSynapse`: legacy peer-to-peer fetch, kept as the local-dev fallback |
 | `phylax/rounds.py` | round boundaries, the round seed, deterministic task selection |
 | `phylax/screening.py` | agent similarity detection against copied submissions |
 | `phylax/analysis/` | scoring spine, proof verification, capability taxonomy, per track evaluators |
@@ -33,25 +34,26 @@ report earns nothing. The server schedules and records; the chain decides.
 | `phylax/harness/corpus.py` | loads the labelled benchmark; ground truth never ships to agents |
 | `phylax/utils/hashing.py` | canonical JSON, SSSA digest, submission digest |
 
-## The synapse
+## Agent distribution
 
-| Synapse | Direction | Carries |
-|---|---|---|
-| `AgentSynapse` | validator to miner | the miner's submission: code, entrypoint, inference key, agent hash, and the miner's signature over the submission digest |
-
-There is no task dispatch synapse: validators do not send tasks to miners.
-Miners gate the synapse to callers holding a validator permit.
+The backend is the source of truth for agent code. Miners submit to it
+(`POST /v1/specialization/agent`, signed by the hotkey); validators pull each
+round's participants from it (`GET /v1/specialization/agent/{hotkey}/runnable`).
+Miners run no serving neuron. The old peer-to-peer `AgentSynapse` (validator to
+miner) remains only as a local-dev fallback when no backend is configured.
 
 ## The round
 
 Rounds are scheduled by the server (`/v1/rounds/next`), not by block windows. When
-a round is due the validator fetches and verifies each miner's submission
-(signature over the submission digest, hash pin, screening for size, entrypoint,
-and copied code), derives the task set from the round's shared seed, runs every
-agent's code on every task `r` times inside the validator-owned sandbox with the
-per-track timeout, scores against ground truth, posts signed results to the
-server, and sets graduated weights above the quality threshold. Without a server
-configured, a block-timed fallback seeds rounds from the chain for local dev.
+the submission window closes, the server freezes the participant set (each active
+agent and its code hash). The validator pulls each participant's agent from the
+backend, verifies the fetched code hash against the frozen pin, screens for size,
+entrypoint, and copied code, derives the task set from the round's shared seed,
+runs every agent's code on every task `r` times inside the validator-owned sandbox
+with the per-track timeout, scores against ground truth, posts signed results to
+the server, and sets graduated weights above the quality threshold. Without a
+server configured, a block-derived fallback seeds rounds from the chain for local
+dev.
 
 ## Isolation
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -181,7 +182,69 @@ class PhylaxValidator:
             return "missing entrypoint"
         return ""
 
-    def _fetch_agents(self) -> dict[str, dict]:
+    def _fetch_agents(self, participants: list[dict] | None = None) -> dict[str, dict]:
+        """Pull each frozen participant's agent from the backend at round start.
+
+        The backend is the source of truth: miners submit there, and the round's
+        participant list (from ``/v1/rounds/next``) names who to fetch. Each agent's
+        code is hash-verified against the hash the backend froze. Falls back to the
+        peer-to-peer AgentSynapse path only for local dev without a server.
+        """
+        if not participants or self.server is None:
+            return self._fetch_agents_synapse()
+
+        agents: dict[str, dict] = {}
+        codes: dict[str, tuple[str, int]] = {}
+        for idx, part in enumerate(participants):
+            hotkey = str(part.get("hotkey", "") or "")
+            expected = str(part.get("agent_hash", "") or "")
+            if not hotkey:
+                continue
+            try:
+                data = self.server.get_runnable_agent(hotkey)
+            except ServerUnreachable as e:
+                bt.logging.warning(f"backend unreachable fetching {hotkey[:10]}: {e}")
+                continue
+            code = str((data or {}).get("code") or "")
+            if not code:
+                continue
+            actual = "sha256:" + hashlib.sha256(code.encode("utf-8")).hexdigest()
+            if expected and actual != expected:
+                bt.logging.warning(
+                    f"agent {hotkey[:10]} hash mismatch (frozen {expected[:18]}…); skipping"
+                )
+                continue
+            reason = self._screen_runnable(data, code)
+            if reason:
+                bt.logging.info(f"screened out agent={hotkey[:10]}: {reason}")
+                continue
+            agents[hotkey] = {
+                "code": code,
+                "entrypoint": data.get("entrypoint") or "agent_main",
+                "execution_api_key": data.get("execution_api_key") or "",
+                "inference_provider": data.get("inference_provider")
+                or _provider(data.get("execution_api_key") or ""),
+                "inference_model": data.get("inference_model") or "",
+                "agent_hash": expected or actual,
+            }
+            codes[hotkey] = (code, idx)
+
+        for hotkey in screening.duplicate_hotkeys(codes):
+            bt.logging.warning(f"screened out agent={hotkey[:10]}: copied agent code")
+            agents.pop(hotkey, None)
+        return agents
+
+    def _screen_runnable(self, data: dict, code: str) -> str:
+        if str(data.get("track", self.track)) != self.track:
+            return "wrong track"
+        if len(code.encode("utf-8")) > MAX_AGENT_BYTES:
+            return "agent exceeds size limit"
+        entrypoint = str(data.get("entrypoint") or "agent_main")
+        if f"def {entrypoint}" not in code:
+            return "missing entrypoint"
+        return ""
+
+    def _fetch_agents_synapse(self) -> dict[str, dict]:
         uids = self._serving_uids()
         if not uids:
             return {}
@@ -218,7 +281,8 @@ class PhylaxValidator:
             agents.pop(hotkey, None)
         return agents
 
-    def run_round(self, start_block: int, seed: str | None = None) -> dict[str, float]:
+    def run_round(self, start_block: int, seed: str | None = None,
+                  participants: list[dict] | None = None) -> dict[str, float]:
         if os.getenv("PHYLAX_EXECUTOR", "sandbox") != "docker":
             bt.logging.error(
                 "refusing to evaluate: PHYLAX_EXECUTOR must be docker so agents never run unjailed"
@@ -232,7 +296,7 @@ class PhylaxValidator:
             block_hash = str(self.subtensor.get_block_hash(start_block))
             seed = rounds.round_seed(block_hash, self.track)
         task_set = rounds.select_tasks(self.corpus, seed, self.tasks_per_round)
-        agents = self._fetch_agents()
+        agents = self._fetch_agents(participants)
         end_block = start_block + self.round_blocks
         bt.logging.info(
             f"round start={start_block} end={end_block} track={self.track} "
@@ -475,11 +539,12 @@ class PhylaxValidator:
         except Exception as e:  # noqa: BLE001
             bt.logging.warning(f"round result submission failed: {e}")
 
-    def _execute_round(self, round_id: str, start_block: int, seed: str | None = None) -> None:
+    def _execute_round(self, round_id: str, start_block: int, seed: str | None = None,
+                       participants: list[dict] | None = None) -> None:
         self.metagraph.sync(subtensor=self.subtensor, lite=True)
         if not seed:
             seed = rounds.round_seed(str(self.subtensor.get_block_hash(start_block)), self.track)
-        scores = self.run_round(start_block, seed=seed)
+        scores = self.run_round(start_block, seed=seed, participants=participants)
         self._submit_results(round_id, start_block, seed)
         self.set_weights(scores)
 
@@ -499,8 +564,12 @@ class PhylaxValidator:
                         start_block = int(spec.get("start_block") or self.subtensor.get_current_block())
                         round_id = str(spec["round_id"])
                         seed = str(spec.get("seed") or "") or None
-                        bt.logging.info(f"server scheduled round {round_id} track={self.track}")
-                        self._execute_round(round_id, start_block, seed=seed)
+                        participants = spec.get("participants") or []
+                        bt.logging.info(
+                            f"server scheduled round {round_id} track={self.track} "
+                            f"participants={len(participants)}"
+                        )
+                        self._execute_round(round_id, start_block, seed=seed, participants=participants)
                 time.sleep(POLL_INTERVAL_S)
             except KeyboardInterrupt:
                 bt.logging.info("validator stopped by KeyboardInterrupt")

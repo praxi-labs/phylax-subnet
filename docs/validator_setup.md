@@ -115,9 +115,10 @@ want a frozen, reproducible sandbox — that disables the per-run refresh.
    evaluation begins. Every validator working the round gets the same seed and set,
    so all evaluate the identical task set. (Without a server, a block-derived
    fallback seeds the round for local dev.)
-2. **Fetch and screen.** Fetch each serving miner's submission over
-   `AgentSynapse`; verify the hotkey signature and the agent hash; screen for
-   size, entrypoint, and copied code (token-level similarity across submissions).
+2. **Fetch and screen.** For each participant in the round's frozen list, pull the
+   agent from the backend (`GET /v1/specialization/agent/{hotkey}/runnable`); verify
+   the fetched code hash matches the hash the backend froze; screen for size,
+   entrypoint, and copied code (token-level similarity across submissions).
 3. **Derive tasks.** The round seed deterministically selects tasks from the
    corpus, identically for every validator.
 4. **Execute.** Run each agent's code on every task, `r` times, inside the

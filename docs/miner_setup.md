@@ -5,8 +5,9 @@ You compete in one track by building a security **agent** — a single Python fi
 their own hardened sandbox against each round's task set; you improve it between
 rounds.
 
-You do **not** build or ship a container image. The validator owns the runtime.
-You submit code; the network runs it in a trusted, network-isolated sandbox.
+You do **not** build or ship a container image, and you do **not** run a neuron.
+You submit your agent code to the backend; validators pull it from there at the
+start of each round and run it in their own trusted, network-isolated sandbox.
 
 ![The miner submission](images/submission.webp)
 
@@ -58,7 +59,7 @@ WALLET_HOTKEY=default
 PHYLAX_TRACK=packages
 PHYLAX_AGENT_CODE_PATH=my_agent.py       # your agent source
 PHYLAX_EXECUTION_API_KEY=cpk_...         # funds your agent's inference
-PHYLAX_SERVER_URL=https://api.phyi.dev   # marketplace listing only
+PHYLAX_SERVER_URL=https://api.phyi.dev   # the backend you submit your agent to
 ```
 
 There is no sandbox image to configure — that is the validator's.
@@ -82,33 +83,27 @@ Validators run each task several times and require consistent **correctness**, s
 seed randomness and avoid time-dependent branches. Your primary score comes from
 matching curated ground truth — a fabricated or empty report earns nothing.
 
-## 6. Run the miner
+## 6. Submit your agent
+
+You submit by pushing your agent to the backend. There is **no neuron to run** and
+no container to ship:
 
 ```bash
-docker compose pull && docker compose up -d
+./scripts/register.sh
 ```
 
-This starts the **miner neuron** — the stock `phylax-miner` image pulled from
-GHCR, not a container you build. You are not shipping a container; your agent is
-the Python file, and the neuron's only job is to hold it and hand it to validators.
-
-Your agent reaches the network from the running neuron two ways:
-
-- **To validators (the protocol path):** the neuron answers an `AgentSynapse` with
-  your agent code, entrypoint, inference key, agent hash, and your hotkey's
-  signature. When a round's submission window closes, validators fetch it, freeze
-  it by hash, and run it in their own sandbox against the round's tasks.
-- **To the marketplace (product only):** on startup the neuron registers the same
-  agent with the server (or run `./scripts/register.sh`) so it lists in the
-  marketplace.
+This signs your submission with your hotkey and posts it — the agent code, the
+entrypoint, and your inference key — to the backend (`PHYLAX_SERVER_URL`) under your
+track. The backend stores it, keyed by code hash. At the start of each round,
+validators pull your agent from the backend, run it in their own sandbox against
+the round's tasks, and score it. You do not serve anything and are not queried.
 
 Each round opens with a **submission window**. Submit or update your agent before
-it closes and keep the neuron serving your latest code; once the window closes the
-participant set freezes for that round, and a version submitted afterward competes
-in the next one. You do nothing else per round.
+it closes; once it closes the participant set freezes and validators evaluate that
+snapshot. A version submitted after the window competes in the next round.
 
 ## 7. Improve between rounds
 
-Edit your agent and restart. The new version competes from the next round;
-during a round the participating version is frozen by its hash. Marketplace
-listing (`PHYLAX_SERVER_URL`) is product-only and not part of the protocol.
+Edit your agent and re-run `./scripts/register.sh` to ship a new version. It
+competes from the next round; during a round the participating version is frozen by
+its hash. You do nothing else per round.
