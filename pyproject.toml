@@ -27,6 +27,7 @@ dynamic = ["dependencies"]
 phylax-miner = "neurons.miner:main"
 phylax-validator = "neurons.validator:main"
 phylax-api = "phylax.api.server:main"
+phylax-corpus = "phylax.corpus.__main__:main"
 phylax = "phylax.cli:main"
 
 [tool.setuptools.dynamic]
