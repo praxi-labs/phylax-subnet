@@ -2,7 +2,8 @@
 # scripts/register_testnet.sh
 #
 # Step 1 of onboarding: register a fresh Phylax miner or validator hotkey on
-# the Bittensor testnet (chain identity only). Reads config from .env.
+# the Bittensor network (chain identity only; finney mainnet by default).
+# Reads config from .env.
 #
 # Miners then run ./scripts/register.sh to declare their track and submit their
 # agent. Validators establish eligibility on-chain via permit + vtrust (stake +
@@ -23,7 +24,7 @@ source .env
 : "${PHYLAX_NETUID:?must be set in .env}"
 : "${WALLET_NAME:?must be set in .env}"
 : "${WALLET_HOTKEY:?must be set in .env}"
-: "${SUBTENSOR_NETWORK:=test}"
+: "${SUBTENSOR_NETWORK:=finney}"
 
 ROLE="${1:-miner}"
 if [[ "$ROLE" != "miner" && "$ROLE" != "validator" ]]; then

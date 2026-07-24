@@ -7,7 +7,7 @@
 [![Bittensor](https://img.shields.io/badge/Bittensor-Subnet-blue)](https://bittensor.com)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-green)](https://python.org)
-[![Status: Pre-launch](https://img.shields.io/badge/Status-Pre--launch-orange)]()
+[![Status: Live on mainnet](https://img.shields.io/badge/Status-Live%20on%20mainnet-brightgreen)](https://taostats.io/subnets/76)
 
 </div>
 
@@ -16,6 +16,9 @@
   <a href="https://docs.phyi.dev">Docs</a> &bull;
   <a href="https://phyi.dev/research">Research</a>
 </p>
+
+Phylax is live on Bittensor mainnet as **netuid 76** —
+[view the subnet on taostats](https://taostats.io/subnets/76).
 
 Phylax is a decentralized trust layer for the AI software supply chain. It takes
 untrusted artifacts (agent skills, MCP servers, packages, and source repositories)
@@ -141,7 +144,7 @@ cd phylax-subnet
 pip install -e .
 ```
 
-- **[Miner guide](docs/miner_setup.md):** choose a track, register your hotkey on netuid 486, build your agent, and submit it.
+- **[Miner guide](docs/miner_setup.md):** choose a track, register your hotkey on netuid 76, build your agent, and submit it.
 - **[Validator guide](docs/validator_setup.md):** register, stake for a permit, execute the round's agents, score, and set weights.
 
 Full documentation lives at [docs.phyi.dev](https://docs.phyi.dev).

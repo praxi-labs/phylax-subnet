@@ -146,8 +146,8 @@ Files:
   $TARGET/docker-compose.yml   OPTIONAL neuron (AgentSynapse fallback only)
 
 Onboarding (submit-only — there is no neuron to run):
-  1. Register your hotkey on the subnet yourself with btcli (netuid 486):
-       btcli subnet register --netuid 486 --network test --wallet.name <name> --wallet.hotkey <hotkey>
+  1. Register your hotkey on the subnet yourself with btcli (netuid 76):
+       btcli subnet register --netuid 76 --network finney --wallet.name <name> --wallet.hotkey <hotkey>
   2. Edit $TARGET/.env: PHYLAX_TRACK, PHYLAX_EXECUTION_API_KEY, PHYLAX_AGENT_CODE_PATH
   3. Submit your agent to the backend:
        cd $TARGET && ./src/scripts/register.sh

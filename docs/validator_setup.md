@@ -25,15 +25,19 @@ signed results to the server, and sets graduated weights on chain.
 
 ```bash
 btcli wallet create --wallet.name validator --wallet.hotkey default
-btcli wallet faucet --wallet.name validator --network test
+btcli wallet balance --wallet.name validator --network finney
 ```
 
-## 2. Register on netuid 486
+Mainnet has no faucet — fund the coldkey with real TAO; registering on netuid 76 burns the current recycle cost. (Testnet: `btcli wallet faucet --wallet.name validator --network test`.)
+
+## 2. Register on netuid 76
+
+Phylax is live on Bittensor mainnet — [subnet 76 on taostats](https://taostats.io/subnets/76).
 
 ```bash
 btcli subnet register \
-  --netuid 486 \
-  --network test \
+  --netuid 76 \
+  --network finney \
   --wallet.name validator \
   --wallet.hotkey default
 ```
@@ -42,7 +46,7 @@ btcli subnet register \
 
 ```bash
 btcli stake add --wallet.name validator --wallet.hotkey default --amount <TAO>
-btcli wallet overview --wallet.name validator --network test
+btcli wallet overview --wallet.name validator --network finney
 ```
 
 Eligibility is on chain and permissionless: a permit by stake weight and positive
@@ -56,8 +60,8 @@ cd ~/phylax/validator
 ```
 
 ```ini
-PHYLAX_NETUID=486
-SUBTENSOR_NETWORK=test
+PHYLAX_NETUID=76
+SUBTENSOR_NETWORK=finney
 WALLET_NAME=validator
 WALLET_HOTKEY=default
 

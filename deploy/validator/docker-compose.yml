@@ -33,9 +33,9 @@ services:
       - python
       - neurons/validator.py
       - --netuid
-      - "${PHYLAX_NETUID:-486}"
+      - "${PHYLAX_NETUID:-76}"
       - --subtensor.network
-      - "${SUBTENSOR_NETWORK:-test}"
+      - "${SUBTENSOR_NETWORK:-finney}"
       - --wallet.name
       - "${WALLET_NAME:-validator}"
       - --wallet.hotkey
