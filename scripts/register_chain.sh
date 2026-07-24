@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/register_testnet.sh
+# scripts/register_chain.sh
 #
 # Step 1 of onboarding: register a fresh Phylax miner or validator hotkey on
 # the Bittensor network (chain identity only; finney mainnet by default).

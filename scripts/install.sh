@@ -165,7 +165,7 @@ else
 Next:
   cd $TARGET
   # fill in PHYLAX_SERVER_URL / PHYLAX_SERVER_HOTKEY / PHYLAX_TRACK in .env
-  ./scripts/register_testnet.sh validator   # chain registration + stake
+  ./scripts/register_chain.sh validator   # chain registration + stake
   docker compose pull
   docker compose up -d
   docker compose logs -f
