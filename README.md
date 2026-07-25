@@ -14,11 +14,11 @@
 <p align="center">
   <a href="https://app.phyi.dev/">Homepage</a> &bull;
   <a href="https://docs.phyi.dev">Docs</a> &bull;
-  <a href="https://phyi.dev/research">Research</a>
+  <a href="https://app.phyi.dev/whitepaper">Research</a>
 </p>
 
-Phylax is live on Bittensor mainnet as **netuid 76** —
-[view the subnet on taostats](https://taostats.io/subnets/76).
+Phylax is live on Bittensor mainnet as **netuid 76**. View the subnet on
+[taostats](https://taostats.io/subnets/76).
 
 Phylax is a decentralized trust layer for the AI software supply chain. It takes
 untrusted artifacts (agent skills, MCP servers, packages, and source repositories)
@@ -39,15 +39,16 @@ is prose rather than something a runtime can enforce.
 ## How Phylax is different
 
 Phylax runs the analysis as a decentralized competition. A miner builds a
-security agent for a single track and submits it as **hash-pinned code**, signed
-by its hotkey, with a metered inference key. Validators run that code inside their
-**own** hardened, network-isolated sandbox image — miners never supply the runtime
-— against the task set for a server-scheduled round, score the findings against
-curated ground truth, and set graduated weights that stake-weighted consensus
-reconciles. A verdict that does not match the ground truth earns nothing.
+security agent for a single track and submits it as **hash pinned code**, signed
+by its hotkey, with a metered inference key. Validators run that code inside
+their **own** hardened, network isolated sandbox image (miners never supply the
+runtime) against the task set for a server scheduled round, score the findings
+against curated ground truth, and set graduated weights that stake weighted
+consensus reconciles. A verdict that does not match the ground truth earns
+nothing.
 
 The server schedules rounds and records results for the product surface, but it
-never decides the winner: that is on-chain Yuma consensus. The server is a clock
+never decides the winner: that is on chain Yuma consensus. The server is a clock
 and a ledger, not a judge.
 
 | | Traditional scanners | Phylax |
