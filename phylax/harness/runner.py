@@ -15,8 +15,20 @@ from phylax.harness.executor import run_agent_in_docker
 
 _MAX_ARTIFACT_UNCOMPRESSED_BYTES = 256 * 1024 * 1024
 
+_INFRA_ERRORS = (
+    "image pull failed",
+    "container create failed",
+    "container start failed",
+    "task copy-in failed",
+    "docker command timed out",
+)
 
-def _download(url: str, log: Callable[[str], None] | None) -> bytes | None:
+
+class InfraFailure(Exception):
+    pass
+
+
+def _download(url: str, log: Callable[[str], None] | None) -> bytes:
     import httpx
 
     try:
@@ -24,10 +36,10 @@ def _download(url: str, log: Callable[[str], None] | None) -> bytes | None:
             resp = client.get(url)
             resp.raise_for_status()
             return resp.content
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         if log:
             log(f"artifact download failed {url}: {exc}")
-        return None
+        raise InfraFailure(f"artifact fetch failed: {url}") from exc
 
 
 def _extract_into(data: bytes, artifact_dir: Path, log: Callable[[str], None] | None) -> None:
@@ -57,8 +69,6 @@ def materialise_artifact(
     if not url:
         return artifact_dir
     data = _download(url, log)
-    if not data:
-        return artifact_dir
     _extract_into(data, artifact_dir, log)
     return artifact_dir
 
@@ -78,7 +88,7 @@ def run_task(
     runnable: dict,
     *,
     log: Callable[[str], None] | None = None,
-    timeout: int | None = None,
+    cpu_budget_s: int = 120,
 ) -> dict | None:
     work_dir = Path(tempfile.mkdtemp(prefix="phylax-run-"))
     try:
@@ -86,16 +96,14 @@ def run_task(
         if b64:
             try:
                 data = base64.b64decode(b64)
-            except (binascii.Error, ValueError):
-                data = None
+            except (binascii.Error, ValueError) as exc:
+                raise InfraFailure("artifact decode failed") from exc
             artifact_dir = materialise_bytes(data, work_dir, log)
         else:
             artifact_dir = materialise_artifact(dispatch.get("artifact_url"), work_dir, log)
         agent_path = work_dir / "agent.py"
         agent_path.write_text(runnable.get("code", ""), encoding="utf-8")
 
-        # The runtime is the validator's own image, not miner-supplied. This is
-        # what lets untrusted code run inside a trusted, hardened sandbox.
         image = os.getenv("PHYLAX_SANDBOX_IMAGE", "")
         digest = os.getenv("PHYLAX_SANDBOX_DIGEST", "")
         context = {
@@ -113,24 +121,27 @@ def run_task(
         }
 
         entrypoint = runnable.get("entrypoint", "agent_main")
-        if timeout is None:
-            timeout = int(os.getenv("PHYLAX_AGENT_TIMEOUT", "120"))
-        if os.getenv("PHYLAX_EXECUTOR", "sandbox") == "docker" and image:
+        if os.getenv("PHYLAX_DEV_UNSAFE_EXECUTOR") == "1":
+            report = run_agent(str(agent_path), context, entrypoint=entrypoint)
+        else:
+            if not image:
+                raise InfraFailure("PHYLAX_SANDBOX_IMAGE is unset; refusing to run agents outside the jail")
             report = run_agent_in_docker(
                 runnable.get("code", ""),
                 context,
                 image=image,
                 digest=digest,
                 entrypoint=entrypoint,
-                timeout=timeout,
+                cpu_budget_s=cpu_budget_s,
                 artifact_dir=str(artifact_dir),
             )
-        else:
-            report = run_agent(str(agent_path), context, entrypoint=entrypoint)
 
         if not report.get("success"):
+            error = str(report.get("error") or "")
+            if any(error.startswith(prefix) for prefix in _INFRA_ERRORS):
+                raise InfraFailure(error)
             if log:
-                log(f"agent run failed: {report.get('error')}")
+                log(f"agent run failed: {error}")
             return None
 
         body = report.get("report") or {}

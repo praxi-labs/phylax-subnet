@@ -13,11 +13,9 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       HOME: /opt/phylax
-      PHYLAX_TRACK: "${PHYLAX_TRACK:-skills}"
       PHYLAX_SERVER_URL: "${PHYLAX_SERVER_URL:-}"
       PHYLAX_SERVER_HOTKEY: "${PHYLAX_SERVER_HOTKEY:-}"
       PHYLAX_VALIDATOR_LABEL: "${PHYLAX_VALIDATOR_LABEL:-}"
-      PHYLAX_EXECUTOR: "${PHYLAX_EXECUTOR:-docker}"
       PHYLAX_JAIL_NETWORK: "phylax-jail"
       PHYLAX_INFERENCE_PROXY_URL: "${PHYLAX_INFERENCE_PROXY_URL:-http://phylax-proxy:8900}"
       # Validator-owned sandbox image: miner code runs inside THIS, never a miner image.

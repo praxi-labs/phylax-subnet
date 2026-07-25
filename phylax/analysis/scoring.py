@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 EVIDENCE_GATE = 0.10
@@ -60,11 +61,36 @@ CONTRIBUTION_SHARE = 0.05
 RUN_W_CORRECTNESS = 0.7
 RUN_W_QUALITY = 0.3
 
+TRACK_THRESHOLDS: dict[str, float] = {
+    "skills": 0.20,
+    "mcp_servers": 0.20,
+    "packages": 0.20,
+    "repositories": 0.50,
+}
+
+
+def mcc(tp: int, tn: int, fp: int, fn: int) -> float:
+    denom = math.sqrt(float(tp + fp) * (tp + fn) * (tn + fp) * (tn + fn))
+    if denom == 0.0:
+        return 0.0
+    return (tp * tn - fp * fn) / denom
+
+
+def clamped_mcc(tp: int, tn: int, fp: int, fn: int) -> float:
+    return max(0.0, mcc(tp, tn, fp, fn))
+
+
+def fbeta(precision: float, recall: float, beta: float = 2.0) -> float:
+    denom = beta * beta * precision + recall
+    if denom == 0.0:
+        return 0.0
+    return (1.0 + beta * beta) * precision * recall / denom
+
 
 def compute_emission_weights(
     scores_by_track: dict[str, list[tuple[str, float]]],
     contributor_hotkeys: set[str] | None = None,
-    threshold: float = 0.0,
+    thresholds: dict[str, float] | None = None,
 ) -> dict[str, float]:
     weights: dict[str, float] = {}
     active: set[str] = set()
@@ -72,10 +98,11 @@ def compute_emission_weights(
         track_share = TRACK_EMISSION_WEIGHTS.get(track, 0.0)
         if track_share <= 0.0:
             continue
+        cut = (thresholds or {}).get(track, 0.0)
         positive = [
             (hk, s)
             for hk, s in sorted(ranked, key=lambda r: r[1], reverse=True)
-            if s > 0.0 and s > threshold
+            if s > 0.0 and s >= cut
         ]
         active.update(hk for hk, _ in positive)
         top = positive[:TOP_K]

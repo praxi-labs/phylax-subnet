@@ -46,13 +46,9 @@ def _matches(expected: dict, reported: dict) -> bool:
     return _line_ok(expected, reported)
 
 
-def _recall(reported: list, expected: list, matcher=_matches) -> float:
-    # Semantic, greedy one-to-one matching under the given matcher. Each reported
-    # finding can satisfy at most one expected finding.
+def _match_counts(reported: list, expected: list, matcher) -> tuple[int, int, int]:
     exp = [v for v in expected if isinstance(v, dict)]
     rep = [v for v in reported if isinstance(v, dict)]
-    if not exp:
-        return 0.0
     used: set[int] = set()
     hits = 0
     for e in exp:
@@ -63,7 +59,7 @@ def _recall(reported: list, expected: list, matcher=_matches) -> float:
                 used.add(i)
                 hits += 1
                 break
-    return hits / len(exp)
+    return hits, len(exp), len(rep)
 
 
 def _clean_precision(reported: list) -> float:
@@ -107,9 +103,12 @@ def _flatten_supply_chain(sc: dict | None) -> list[dict]:
 
 
 def _dim_score(reported: list, expected: list, matcher) -> float:
-    if expected:
-        return _recall(reported, expected, matcher)
-    return _clean_precision(reported)
+    hits, n_exp, n_rep = _match_counts(reported, expected, matcher)
+    if not n_exp:
+        return _clean_precision(reported)
+    if not n_rep:
+        return 0.0
+    return scoring.fbeta(hits / n_rep, hits / n_exp, beta=2.0)
 
 
 def _heuristic_quality(vulnerabilities: list) -> float:
@@ -159,11 +158,18 @@ def evaluate(
             dims.append((0.2, _dim_score(evidence.get("secrets") or [], gt.get("secrets") or [], _secret_matches)))
         total_w = sum(w for w, _ in dims)
         benchmark = sum(w * s for w, s in dims) / total_w if total_w else 0.0
-        quality = benchmark
-    else:
-        benchmark = common.verdict_correctness(verdict, label)
-        quality = _heuristic_quality(vulnerabilities)
+        components = scoring.ScoreComponents(
+            verdict_correctness=common.verdict_correctness(verdict, label),
+            evidence_integrity=evidence_integrity,
+            solution_quality=benchmark,
+            benchmark_agreement=benchmark,
+        )
+        return common.TrackEvaluation(
+            scoring.ScoreResult(scoring.clip01(benchmark), True, components, ""), []
+        )
 
+    benchmark = common.verdict_correctness(verdict, label)
+    quality = _heuristic_quality(vulnerabilities)
     components = scoring.ScoreComponents(
         verdict_correctness=common.verdict_correctness(verdict, label),
         evidence_integrity=evidence_integrity,

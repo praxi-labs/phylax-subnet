@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import math
 import os
 import time
 import traceback
@@ -16,18 +15,23 @@ from phylax import rounds, screening
 from phylax.analysis import common, scoring, tracks
 from phylax.analysis import proof as proofmod
 from phylax.harness.corpus import load_corpus
-from phylax.harness.runner import run_task
+from phylax.harness.runner import InfraFailure, run_task
 from phylax.protocol import AgentSynapse
 from phylax.server_client import PhylaxServerClient, ServerUnreachable
 from phylax.utils.hashing import sha256_bytes, sssa_digest, submission_digest
 
 QUERY_TIMEOUT_S: float = float(os.getenv("PHYLAX_QUERY_TIMEOUT", "60"))
 POLL_INTERVAL_S: int = int(os.getenv("PHYLAX_POLL_INTERVAL", "30"))
-MAX_AGENT_BYTES: int = int(os.getenv("PHYLAX_MAX_AGENT_BYTES", str(512 * 1024)))
-SCORE_THRESHOLD: float = float(os.getenv("PHYLAX_SCORE_THRESHOLD", "0.6"))
-RELIABILITY_FRACTION: float = float(os.getenv("PHYLAX_RELIABILITY_FRACTION", "0.5"))
-CORRECTNESS_FLOOR: float = float(os.getenv("PHYLAX_CORRECTNESS_FLOOR", "0.5"))
-DEADLINE_MARGIN_BLOCKS: int = int(os.getenv("PHYLAX_DEADLINE_MARGIN_BLOCKS", "20"))
+MAX_AGENT_BYTES: int = 512 * 1024
+DEADLINE_MARGIN_BLOCKS: int = 20
+EMA_ALPHA: float = 0.3
+
+_VERDICT_ORDINAL = {"ALLOW": 0, "WARN": 1, "BLOCK": 2}
+_ORDINAL_VERDICT = {v: k for k, v in _VERDICT_ORDINAL.items()}
+
+
+class AbstainRound(Exception):
+    pass
 
 
 def _parse_contributors(raw: str) -> set[str]:
@@ -36,8 +40,6 @@ def _parse_contributors(raw: str) -> set[str]:
         return set()
     if text.startswith("["):
         try:
-            import json
-
             return {str(h).strip() for h in json.loads(text) if str(h).strip()}
         except (ValueError, TypeError):
             return set()
@@ -90,24 +92,22 @@ class PhylaxValidator:
         self.subtensor = subtensor if subtensor is not None else bt.Subtensor(config=config)
         self.metagraph = self.subtensor.metagraph(netuid=config.netuid)
         self.dendrite = bt.dendrite(wallet=self.wallet)
-        self.track = os.getenv("PHYLAX_TRACK", "skills")
-        params = rounds.params_for(self.track)
-        self.round_blocks = params["blocks"]
-        self.tasks_per_round = params["tasks"]
-        self.repetitions = params["repetitions"]
-        self.task_timeout = params["timeout_s"]
-        self.corpus = load_corpus(self.track)
+        self.round_blocks = rounds.ROUND_BLOCKS
+        self.corpora = {track: load_corpus(track) for track in rounds.TRACKS}
         self.last_round_start = -1
         self.should_exit = False
         self.server = self._init_server()
         self._round_attestations: list[dict] = []
-        self._round_scores: dict[str, dict] = {}
-        if os.getenv("PHYLAX_EXECUTOR", "sandbox") != "docker":
+        self._round_scores: dict[str, dict[str, dict]] = {}
+        self._round_seeds: dict[str, str] = {}
+        self._round_tasks: dict[str, list[str]] = {}
+        if os.getenv("PHYLAX_DEV_UNSAFE_EXECUTOR") == "1":
             bt.logging.warning(
-                "PHYLAX_EXECUTOR is not docker; agents will not be evaluated until the jail is enabled"
+                "PHYLAX_DEV_UNSAFE_EXECUTOR=1: agents run unjailed; never use outside development"
             )
-        if not self.corpus:
-            bt.logging.warning(f"no local corpus found for track={self.track}")
+        missing = [t for t in rounds.TRACKS if not self.corpora.get(t)]
+        if missing:
+            bt.logging.warning(f"no local corpus for tracks: {', '.join(missing)}")
 
     def _init_server(self) -> PhylaxServerClient | None:
         url = os.getenv("PHYLAX_SERVER_URL", "").strip()
@@ -137,6 +137,26 @@ class PhylaxValidator:
         except Exception:  # noqa: BLE001, S110
             pass
         return set()
+
+    def _state_dir(self) -> Path:
+        path = Path(os.getenv("PHYLAX_STATE_DIR", "state"))
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _load_prior_weights(self) -> dict[str, float]:
+        try:
+            raw = json.loads((self._state_dir() / "weights_ema.json").read_text(encoding="utf-8"))
+            return {str(k): float(v) for k, v in raw.items()}
+        except (OSError, ValueError, AttributeError):
+            return {}
+
+    def _save_prior_weights(self, weights: dict[str, float]) -> None:
+        try:
+            (self._state_dir() / "weights_ema.json").write_text(
+                json.dumps(weights, indent=2), encoding="utf-8"
+            )
+        except OSError as e:
+            bt.logging.warning(f"could not persist EMA state: {e}")
 
     def _serving_uids(self) -> list[int]:
         own = self.wallet.hotkey.ss58_address
@@ -171,9 +191,9 @@ class PhylaxValidator:
         except Exception:  # noqa: BLE001
             return False
 
-    def _screen(self, synapse) -> str:
+    def _screen(self, track: str, synapse) -> str:
         code = getattr(synapse, "code", "") or ""
-        if str(getattr(synapse, "track", "")) != self.track:
+        if str(getattr(synapse, "track", "")) != track:
             return "wrong track"
         if len(code.encode("utf-8")) > MAX_AGENT_BYTES:
             return "agent exceeds size limit"
@@ -182,16 +202,9 @@ class PhylaxValidator:
             return "missing entrypoint"
         return ""
 
-    def _fetch_agents(self, participants: list[dict] | None = None) -> dict[str, dict]:
-        """Pull each frozen participant's agent from the backend at round start.
-
-        The backend is the source of truth: miners submit there, and the round's
-        participant list (from ``/v1/rounds/next``) names who to fetch. Each agent's
-        code is hash-verified against the hash the backend froze. Falls back to the
-        peer-to-peer AgentSynapse path only for local dev without a server.
-        """
+    def _fetch_agents(self, track: str, participants: list[dict] | None = None) -> dict[str, dict]:
         if not participants or self.server is None:
-            return self._fetch_agents_synapse()
+            return self._fetch_agents_synapse(track)
 
         agents: dict[str, dict] = {}
         codes: dict[str, tuple[str, int]] = {}
@@ -203,8 +216,7 @@ class PhylaxValidator:
             try:
                 data = self.server.get_runnable_agent(hotkey)
             except ServerUnreachable as e:
-                bt.logging.warning(f"backend unreachable fetching {hotkey[:10]}: {e}")
-                continue
+                raise AbstainRound(f"backend unreachable fetching {hotkey[:10]}: {e}") from e
             code = str((data or {}).get("code") or "")
             if not code:
                 continue
@@ -214,7 +226,7 @@ class PhylaxValidator:
                     f"agent {hotkey[:10]} hash mismatch (frozen {expected[:18]}…); skipping"
                 )
                 continue
-            reason = self._screen_runnable(data, code)
+            reason = self._screen_runnable(track, data, code)
             if reason:
                 bt.logging.info(f"screened out agent={hotkey[:10]}: {reason}")
                 continue
@@ -234,8 +246,8 @@ class PhylaxValidator:
             agents.pop(hotkey, None)
         return agents
 
-    def _screen_runnable(self, data: dict, code: str) -> str:
-        if str(data.get("track", self.track)) != self.track:
+    def _screen_runnable(self, track: str, data: dict, code: str) -> str:
+        if str(data.get("track", track)) != track:
             return "wrong track"
         if len(code.encode("utf-8")) > MAX_AGENT_BYTES:
             return "agent exceeds size limit"
@@ -244,7 +256,7 @@ class PhylaxValidator:
             return "missing entrypoint"
         return ""
 
-    def _fetch_agents_synapse(self) -> dict[str, dict]:
+    def _fetch_agents_synapse(self, track: str) -> dict[str, dict]:
         uids = self._serving_uids()
         if not uids:
             return {}
@@ -258,9 +270,10 @@ class PhylaxValidator:
             hotkey = self.metagraph.hotkeys[uid]
             if not getattr(resp, "code", "") or not self._verify_submission(hotkey, resp):
                 continue
-            reason = self._screen(resp)
+            reason = self._screen(track, resp)
             if reason:
-                bt.logging.info(f"screened out agent={hotkey[:10]}: {reason}")
+                if reason != "wrong track":
+                    bt.logging.info(f"screened out agent={hotkey[:10]}: {reason}")
                 continue
             uid_by_hotkey[hotkey] = uid
             agents[hotkey] = {
@@ -269,8 +282,6 @@ class PhylaxValidator:
                 "execution_api_key": resp.execution_api_key or "",
                 "inference_provider": _provider(resp.execution_api_key or ""),
                 "inference_model": resp.inference_model or "",
-                "sandbox_image": resp.sandbox_image,
-                "sandbox_digest": resp.sandbox_digest,
                 "agent_hash": resp.agent_hash,
             }
         copied = screening.duplicate_hotkeys(
@@ -281,43 +292,49 @@ class PhylaxValidator:
             agents.pop(hotkey, None)
         return agents
 
-    def run_round(self, start_block: int, seed: str | None = None,
-                  participants: list[dict] | None = None) -> dict[str, float]:
-        if os.getenv("PHYLAX_EXECUTOR", "sandbox") != "docker":
-            bt.logging.error(
-                "refusing to evaluate: PHYLAX_EXECUTOR must be docker so agents never run unjailed"
-            )
-            return {}
+    def run_round(
+        self,
+        start_block: int,
+        seeds: dict[str, str] | None = None,
+        participants: dict[str, list[dict]] | None = None,
+    ) -> dict[str, list[tuple[str, float]]]:
         self._round_attestations = []
         self._round_scores = {}
-        # A server-scheduled round carries the seed so every validator derives the
-        # identical task set; the block-timed fallback derives it from the chain.
-        if not seed:
-            block_hash = str(self.subtensor.get_block_hash(start_block))
-            seed = rounds.round_seed(block_hash, self.track)
-        task_set = rounds.select_tasks(self.corpus, seed, self.tasks_per_round)
-        agents = self._fetch_agents(participants)
+        self._round_seeds = {}
+        self._round_tasks = {}
         end_block = start_block + self.round_blocks
-        bt.logging.info(
-            f"round start={start_block} end={end_block} track={self.track} "
-            f"tasks={len(task_set)} agents={len(agents)}"
-        )
-        scores: dict[str, float] = {}
-        for hotkey, runnable in agents.items():
-            if self._out_of_window(end_block):
-                bt.logging.warning(
-                    f"round window closing at block {end_block}; "
-                    f"{len(agents) - len(scores)} agents left unevaluated"
-                )
-                break
-            scores[hotkey] = self._score_agent(hotkey, runnable, task_set, seed)
-            self._round_scores[hotkey] = {
-                "agent_hash": agents[hotkey]["agent_hash"],
-                "score": round(scores[hotkey], 6),
-            }
-            bt.logging.info(f"round score agent={hotkey[:10]} S={scores[hotkey]:.3f}")
-        self._write_round_record(start_block, seed, task_set, agents, scores)
-        return scores
+        block_hash = str(self.subtensor.get_block_hash(start_block))
+        scores_by_track: dict[str, list[tuple[str, float]]] = {}
+        for track in rounds.TRACKS:
+            corpus = self.corpora.get(track) or []
+            if not corpus:
+                raise AbstainRound(f"no local corpus for track {track}")
+            seed = (seeds or {}).get(track) or rounds.round_seed(block_hash, track)
+            budgets = rounds.budgets_for(track)
+            task_set = rounds.select_tasks(corpus, seed, budgets["tasks"])
+            agents = self._fetch_agents(track, (participants or {}).get(track))
+            self._round_seeds[track] = seed
+            self._round_tasks[track] = [item["ref"] for item in task_set]
+            bt.logging.info(
+                f"round start={start_block} end={end_block} track={track} "
+                f"tasks={len(task_set)} agents={len(agents)}"
+            )
+            track_scores: list[tuple[str, float]] = []
+            for hotkey, runnable in agents.items():
+                if self._out_of_window(end_block):
+                    raise AbstainRound(
+                        f"window closing at block {end_block} with track {track} incomplete"
+                    )
+                score = self._score_agent(track, hotkey, runnable, task_set, seed, budgets)
+                track_scores.append((hotkey, score))
+                self._round_scores.setdefault(track, {})[hotkey] = {
+                    "agent_hash": runnable["agent_hash"],
+                    "score": round(score, 6),
+                }
+                bt.logging.info(f"round score track={track} agent={hotkey[:10]} S={score:.3f}")
+            scores_by_track[track] = track_scores
+        self._write_round_record(start_block, scores_by_track)
+        return scores_by_track
 
     def _out_of_window(self, end_block: int) -> bool:
         try:
@@ -327,130 +344,185 @@ class PhylaxValidator:
         return block >= end_block - DEADLINE_MARGIN_BLOCKS
 
     def _write_round_record(
-        self, start_block: int, seed: str,
-        task_set: list[dict], agents: dict[str, dict], scores: dict[str, float],
+        self, start_block: int, scores_by_track: dict[str, list[tuple[str, float]]]
     ) -> None:
-        state_dir = Path(os.getenv("PHYLAX_STATE_DIR", "state"))
         try:
-            state_dir.mkdir(parents=True, exist_ok=True)
             record = {
-                "track": self.track,
                 "start_block": start_block,
-                "seed": seed,
-                "tasks": [item["ref"] for item in task_set],
-                "agents": {
-                    hk: {
-                        "agent_hash": agents[hk]["agent_hash"],
-                        "score": round(scores.get(hk, 0.0), 6),
-                        "evaluated": hk in scores,
+                "tracks": {
+                    track: {
+                        "seed": self._round_seeds.get(track, ""),
+                        "tasks": self._round_tasks.get(track, []),
+                        "agents": self._round_scores.get(track, {}),
                     }
-                    for hk in agents
+                    for track in rounds.TRACKS
                 },
             }
-            path = state_dir / f"round_{self.track}_{start_block}.json"
+            path = self._state_dir() / f"round_{start_block}.json"
             path.write_text(json.dumps(record, indent=2), encoding="utf-8")
         except OSError as e:
             bt.logging.warning(f"could not write round record: {e}")
 
-    def _score_agent(self, hotkey: str, runnable: dict, task_set: list[dict], seed: str) -> float:
+    def _score_agent(
+        self,
+        track: str,
+        hotkey: str,
+        runnable: dict,
+        task_set: list[dict],
+        seed: str,
+        budgets: dict[str, int],
+    ) -> float:
         if not task_set:
             return 0.0
-        total = 0.0
+        wall_cap = rounds.agent_wall_cap_s(track)
+        wall_used = 0.0
+        if track == "repositories":
+            total = 0.0
+            for item in task_set:
+                score, wall_used = self._score_repo_task(
+                    hotkey, runnable, item, seed, budgets, wall_used, wall_cap
+                )
+                total += score
+            return total / len(task_set)
+        tp = tn = fp = fn = 0
         for item in task_set:
-            total += self._score_task(hotkey, runnable, item, seed)
-        return total / len(task_set)
+            target = common.label_risk(item["label"])
+            if target is None:
+                continue
+            verdict, wall_used = self._task_verdict(
+                track, hotkey, runnable, item, seed, budgets, wall_used, wall_cap
+            )
+            malicious = target >= 0.5
+            flagged = verdict in ("BLOCK", "WARN")
+            if malicious and flagged:
+                tp += 1
+            elif malicious:
+                fn += 1
+            elif verdict == "ALLOW":
+                tn += 1
+            else:
+                fp += 1
+        if tp + tn + fp + fn == 0:
+            return 0.0
+        return scoring.clamped_mcc(tp, tn, fp, fn)
 
-    def _score_task(self, hotkey: str, runnable: dict, item: dict, seed: str) -> float:
+    def _task_verdict(
+        self,
+        track: str,
+        hotkey: str,
+        runnable: dict,
+        item: dict,
+        seed: str,
+        budgets: dict[str, int],
+        wall_used: float,
+        wall_cap: float,
+    ) -> tuple[str | None, float]:
         nonce = rounds.task_nonce(seed, item["ref"], hotkey)
         probe = proofmod.derive_probe(nonce)
-        run_scores: list[float] = []
+        ordinals: list[int] = []
         last_result = None
-        for _ in range(self.repetitions):
-            score, result = self._score_run(runnable, item, nonce, probe)
-            run_scores.append(score)
-            if result is not None:
-                last_result = result
-        # Reliability counts runs the agent got CORRECT (score clears the floor),
-        # not merely nonzero — a partially-right run is not a reliable one.
-        passing = sum(1 for s in run_scores if s >= CORRECTNESS_FLOOR)
-        needed = math.ceil(RELIABILITY_FRACTION * self.repetitions)
-        task_score = sum(run_scores) / len(run_scores) if passing >= needed else 0.0
-        if last_result is not None and task_score > 0.0:
-            self._attest(hotkey, runnable, item, nonce, last_result)
-        return task_score
+        for _ in range(budgets["repetitions"]):
+            if wall_used >= wall_cap:
+                break
+            started = time.monotonic()
+            ordinal, result = self._run_rep(track, runnable, item, nonce, probe, budgets["cpu_s"])
+            wall_used += time.monotonic() - started
+            if ordinal is None:
+                continue
+            ordinals.append(ordinal)
+            last_result = result
+        if not ordinals:
+            return None, wall_used
+        ordinals.sort()
+        decision = _ORDINAL_VERDICT[ordinals[(len(ordinals) - 1) // 2]]
+        if last_result is not None:
+            self._attest(track, hotkey, runnable, item, nonce, last_result)
+        return decision, wall_used
 
-    def _liveness_ok(self, result: dict, nonce: str) -> bool:
-        if result.get("observed_probe_file") is True:
-            return True
-        return self._inference_seen(nonce)
-
-    def _inference_seen(self, nonce: str) -> bool:
-        url = os.getenv("PHYLAX_INFERENCE_PROXY_URL", "").strip()
-        token = os.getenv("PHYLAX_PROXY_ADMIN_TOKEN", "").strip()
-        if not url or not token or not nonce:
-            return False
-        try:
-            import httpx
-
-            r = httpx.get(
-                f"{url.rstrip('/')}/metrics",
-                params={"nonce": nonce},
-                headers={"X-Phylax-Admin": token},
-                timeout=5.0,
-            )
-            usage = (r.json() or {}).get("usage") or {}
-            return int(usage.get("requests", 0) or 0) > 0
-        except Exception:  # noqa: BLE001
-            return False
-
-    def _score_run(self, runnable: dict, item: dict, nonce: str, probe) -> tuple[float, dict | None]:
+    def _run_rep(
+        self, track: str, runnable: dict, item: dict, nonce: str, probe, cpu_s: int
+    ) -> tuple[int | None, dict | None]:
         dispatch = {
-            "track": self.track,
+            "track": track,
             "nonce": nonce,
             "probe": probe.as_inputs(),
             "artifact_ref": item["ref"],
             "artifact_b64": item["artifact_b64"],
         }
-        result = run_task(
-            dispatch, runnable, log=bt.logging.warning, timeout=self.task_timeout
-        )
+        result = run_task(dispatch, runnable, log=bt.logging.warning, cpu_budget_s=cpu_s)
         if result is None:
-            return 0.0, None
-        # Liveness: a behavioural-track run must show it actually executed — either
-        # the probe was observed or the agent made real inference calls this task.
-        # Correctness (below) still dominates; this only rejects no-op runs.
-        if self.track != "repositories" and not self._liveness_ok(result, nonce):
-            return 0.0, result
+            return None, None
+        if result.get("observed_probe_file") is not True:
+            return None, result
         verdict = result["verdict"] if isinstance(result["verdict"], dict) else {}
-        decision = str(verdict.get("decision", ""))
-        ev = tracks.evaluate(
-            self.track,
-            result["evidence"],
-            decision,
-            label=item["label"],
-            probe=probe,
-            ground_truth=item.get("ground_truth"),
-        )
+        decision = str(verdict.get("decision", "")).upper()
+        if decision not in _VERDICT_ORDINAL:
+            return None, result
+        ev = tracks.evaluate(track, result["evidence"], decision, label=item["label"], probe=probe)
         if not ev.result.gate_passed:
-            return 0.0, result
-        if self.track == "repositories":
-            return scoring.clip01(ev.result.score), result
-        correctness = common.risk_correctness(verdict, item["label"])
-        if correctness is None:
-            correctness = ev.result.components.verdict_correctness
-        quality = ev.result.components.solution_quality
-        base = scoring.RUN_W_CORRECTNESS * correctness + scoring.RUN_W_QUALITY * quality
-        return scoring.clip01(base), result
+            return None, result
+        return _VERDICT_ORDINAL[decision], result
 
-    def _attest(self, hotkey: str, runnable: dict, item: dict, nonce: str, result: dict) -> None:
+    def _score_repo_task(
+        self,
+        hotkey: str,
+        runnable: dict,
+        item: dict,
+        seed: str,
+        budgets: dict[str, int],
+        wall_used: float,
+        wall_cap: float,
+    ) -> tuple[float, float]:
+        nonce = rounds.task_nonce(seed, item["ref"], hotkey)
+        probe = proofmod.derive_probe(nonce)
+        rep_scores: list[float] = []
+        last_result = None
+        dispatch = {
+            "track": "repositories",
+            "nonce": nonce,
+            "probe": probe.as_inputs(),
+            "artifact_ref": item["ref"],
+            "artifact_b64": item["artifact_b64"],
+        }
+        for _ in range(budgets["repetitions"]):
+            if wall_used >= wall_cap:
+                break
+            started = time.monotonic()
+            result = run_task(dispatch, runnable, log=bt.logging.warning, cpu_budget_s=budgets["cpu_s"])
+            wall_used += time.monotonic() - started
+            if result is None:
+                continue
+            verdict = result["verdict"] if isinstance(result["verdict"], dict) else {}
+            decision = str(verdict.get("decision", ""))
+            ev = tracks.evaluate(
+                "repositories",
+                result["evidence"],
+                decision,
+                label=item["label"],
+                probe=probe,
+                ground_truth=item.get("ground_truth"),
+            )
+            if not ev.result.gate_passed:
+                continue
+            rep_scores.append(scoring.clip01(ev.result.score))
+            last_result = result
+        if not rep_scores:
+            return 0.0, wall_used
+        if last_result is not None:
+            self._attest("repositories", hotkey, runnable, item, nonce, last_result)
+        return sum(rep_scores) / len(rep_scores), wall_used
+
+    def _attest(
+        self, track: str, hotkey: str, runnable: dict, item: dict, nonce: str, result: dict
+    ) -> None:
         verdict = result["verdict"]
         evidence = result["evidence"]
         findings = result.get("findings") or []
         policy = result.get("policy") or {}
-        digest = sssa_digest(self.track, item["ref"], nonce, verdict, evidence, findings, policy)
+        digest = sssa_digest(track, item["ref"], nonce, verdict, evidence, findings, policy)
         signature = "ed25519:" + self.wallet.hotkey.sign(digest).hex()
         sssa = {
-            "track": self.track,
+            "track": track,
             "artifact": {"bundle_hash": item["ref"], "nonce": nonce},
             "verdict": verdict,
             "evidence": evidence,
@@ -470,22 +542,28 @@ class PhylaxValidator:
             f"attested agent={hotkey[:10]} artifact={item['ref']} hash={digest.hex()[:16]}"
         )
 
-    def set_weights(self, scores: dict[str, float]) -> None:
-        ranked = list(scores.items())
+    def set_weights(self, scores_by_track: dict[str, list[tuple[str, float]]]) -> None:
         weight_map = scoring.compute_emission_weights(
-            {self.track: ranked},
+            scores_by_track,
             contributor_hotkeys=self._load_contributors(),
-            threshold=SCORE_THRESHOLD,
+            thresholds=scoring.TRACK_THRESHOLDS,
         )
-        if not weight_map:
+        prior = self._load_prior_weights()
+        blended = {
+            hk: EMA_ALPHA * weight_map.get(hk, 0.0) + (1.0 - EMA_ALPHA) * prior.get(hk, 0.0)
+            for hk in set(weight_map) | set(prior)
+        }
+        blended = {hk: w for hk, w in blended.items() if w > 1e-9}
+        if not blended:
             bt.logging.info("set_weights: no agent cleared the quality threshold; skipping")
             return
+        self._save_prior_weights(blended)
 
         n = _metagraph_size(self.metagraph)
         hotkey_to_uid = {hk: uid for uid, hk in enumerate(self.metagraph.hotkeys)}
         weights = torch.zeros(n)
         matched = 0
-        for hotkey, w in weight_map.items():
+        for hotkey, w in blended.items():
             uid = hotkey_to_uid.get(hotkey)
             if uid is not None and 0 <= uid < n:
                 weights[uid] += float(w)
@@ -514,81 +592,90 @@ class PhylaxValidator:
         else:
             bt.logging.warning(f"set_weights returned False: {msg}")
 
-    def _submit_results(self, round_id: str, start_block: int, seed: str) -> None:
+    def _submit_results(self, round_ids: dict[str, str], start_block: int) -> None:
         if self.server is None:
             return
-        results = [
-            {"miner_hotkey": hk, **detail} for hk, detail in self._round_scores.items()
-        ]
-        try:
-            self.server.submit_round_results(
-                round_id=round_id,
-                track=self.track,
-                validator_hotkey=self.wallet.hotkey.ss58_address,
-                start_block=start_block,
-                seed=seed,
-                results=results,
-                attestations=self._round_attestations,
-            )
-            bt.logging.success(
-                f"submitted round results: {len(results)} agents, "
-                f"{len(self._round_attestations)} attestations"
-            )
-        except ServerUnreachable as e:
-            bt.logging.warning(f"could not submit round results: {e}")
-        except Exception as e:  # noqa: BLE001
-            bt.logging.warning(f"round result submission failed: {e}")
-
-    def _execute_round(self, round_id: str, start_block: int, seed: str | None = None,
-                       participants: list[dict] | None = None) -> None:
-        self.metagraph.sync(subtensor=self.subtensor, lite=True)
-        if not seed:
-            seed = rounds.round_seed(str(self.subtensor.get_block_hash(start_block)), self.track)
-        scores = self.run_round(start_block, seed=seed, participants=participants)
-        self._submit_results(round_id, start_block, seed)
-        self.set_weights(scores)
-
-    def _server_round_loop(self) -> None:
-        while not self.should_exit:
+        for track, per_agent in self._round_scores.items():
+            results = [
+                {"miner_hotkey": hk, **detail} for hk, detail in per_agent.items()
+            ]
+            attestations = [a for a in self._round_attestations if a.get("track") == track]
             try:
-                spec = self.server.next_round(self.track, self.wallet.hotkey.ss58_address)
-                if spec and self.corpus:
-                    if spec.get("phase") == "submission":
-                        # Submission window open: miners are still submitting.
-                        # Hold off; the participant set is not frozen yet.
-                        bt.logging.info(
-                            f"round {spec.get('round_id')} submission window open "
-                            f"until {spec.get('submission_closes_at', '?')}; waiting"
-                        )
-                    else:
-                        start_block = int(spec.get("start_block") or self.subtensor.get_current_block())
-                        round_id = str(spec["round_id"])
-                        seed = str(spec.get("seed") or "") or None
-                        participants = spec.get("participants") or []
-                        bt.logging.info(
-                            f"server scheduled round {round_id} track={self.track} "
-                            f"participants={len(participants)}"
-                        )
-                        self._execute_round(round_id, start_block, seed=seed, participants=participants)
-                time.sleep(POLL_INTERVAL_S)
-            except KeyboardInterrupt:
-                bt.logging.info("validator stopped by KeyboardInterrupt")
-                break
+                self.server.submit_round_results(
+                    round_id=round_ids.get(track, f"block-{start_block}"),
+                    track=track,
+                    validator_hotkey=self.wallet.hotkey.ss58_address,
+                    start_block=start_block,
+                    seed=self._round_seeds.get(track, ""),
+                    results=results,
+                    attestations=attestations,
+                )
+                bt.logging.success(
+                    f"submitted {track} results: {len(results)} agents, "
+                    f"{len(attestations)} attestations"
+                )
             except ServerUnreachable as e:
-                bt.logging.warning(f"server unreachable: {e}")
-                time.sleep(POLL_INTERVAL_S)
+                bt.logging.warning(f"could not submit {track} results: {e}")
             except Exception as e:  # noqa: BLE001
-                bt.logging.error(f"run loop error: {e}")
-                bt.logging.debug(traceback.format_exc())
-                time.sleep(POLL_INTERVAL_S)
+                bt.logging.warning(f"{track} result submission failed: {e}")
 
-    def _block_timed_loop(self) -> None:
+    def _execute_round(
+        self,
+        round_ids: dict[str, str],
+        start_block: int,
+        seeds: dict[str, str] | None = None,
+        participants: dict[str, list[dict]] | None = None,
+    ) -> None:
+        self.metagraph.sync(subtensor=self.subtensor, lite=True)
+        try:
+            scores_by_track = self.run_round(start_block, seeds=seeds, participants=participants)
+        except (AbstainRound, InfraFailure) as e:
+            bt.logging.warning(f"abstaining this round: {e}")
+            return
+        self._submit_results(round_ids, start_block)
+        self.set_weights(scores_by_track)
+
+    def _begin_round(self, start_block: int) -> bool:
+        round_ids: dict[str, str] = {}
+        seeds: dict[str, str] = {}
+        participants: dict[str, list[dict]] = {}
+        if self.server is not None:
+            for track in rounds.TRACKS:
+                try:
+                    spec = self.server.next_round(track, self.wallet.hotkey.ss58_address)
+                except ServerUnreachable as e:
+                    bt.logging.warning(f"server unreachable for {track}: {e}; retrying next poll")
+                    return False
+                if not spec:
+                    continue
+                if spec.get("phase") == "submission":
+                    bt.logging.info(
+                        f"track {track} submission window open "
+                        f"until {spec.get('submission_closes_at', '?')}; waiting"
+                    )
+                    return False
+                round_ids[track] = str(spec.get("round_id") or f"block-{start_block}")
+                seed = str(spec.get("seed") or "")
+                if seed:
+                    seeds[track] = seed
+                participants[track] = spec.get("participants") or []
+        self._execute_round(
+            round_ids, start_block, seeds=seeds or None, participants=participants or None
+        )
+        return True
+
+    def run(self) -> None:
+        corpus_sizes = {t: len(self.corpora.get(t) or []) for t in rounds.TRACKS}
+        bt.logging.info(
+            f"starting Phylax validator on netuid={self.config.netuid} "
+            f"hotkey={self.wallet.hotkey.ss58_address} corpora={corpus_sizes} "
+            f"round_blocks={self.round_blocks}"
+        )
         while not self.should_exit:
             try:
                 block = self.subtensor.get_current_block()
                 start = rounds.round_start(block, self.round_blocks)
-                if start > self.last_round_start and self.corpus:
-                    self._execute_round(f"block-{start}", start)
+                if start > self.last_round_start and self._begin_round(start):
                     self.last_round_start = start
                 time.sleep(POLL_INTERVAL_S)
             except KeyboardInterrupt:
@@ -598,18 +685,6 @@ class PhylaxValidator:
                 bt.logging.error(f"run loop error: {e}")
                 bt.logging.debug(traceback.format_exc())
                 time.sleep(POLL_INTERVAL_S)
-
-    def run(self) -> None:
-        mode = "server-scheduled" if self.server is not None else "block-timed"
-        bt.logging.info(
-            f"starting Phylax validator on netuid={self.config.netuid} track={self.track} "
-            f"hotkey={self.wallet.hotkey.ss58_address} corpus={len(self.corpus)} "
-            f"rounds={mode}"
-        )
-        if self.server is not None:
-            self._server_round_loop()
-        else:
-            self._block_timed_loop()
 
 
 def _provider(api_key: str) -> str:

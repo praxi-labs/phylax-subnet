@@ -5,12 +5,22 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
+from phylax.rounds import WALL_BACKSTOP_FACTOR
+
 JAIL_NETWORK = os.getenv("PHYLAX_JAIL_NETWORK", "phylax-jail")
-_MEMORY = os.getenv("PHYLAX_SANDBOX_MEMORY", "1g")
-_CPUS = os.getenv("PHYLAX_SANDBOX_CPUS", "1.0")
-_PIDS = os.getenv("PHYLAX_SANDBOX_PIDS", "256")
+_MEMORY = "2g"
+_CPUS = "1.0"
+_PIDS = "256"
+
+_INFRA_ERRORS = (
+    "image pull failed",
+    "container create failed",
+    "container start failed",
+    "task copy-in failed",
+)
 
 
 def _docker(*args: str, timeout: int = 60) -> subprocess.CompletedProcess:
@@ -54,6 +64,45 @@ def _observed_probe(cid: str, context: dict, work: Path) -> bool | None:
         return False
 
 
+def _running(cid: str) -> bool:
+    r = _docker("inspect", "-f", "{{.State.Running}}", cid, timeout=10)
+    return r.returncode == 0 and r.stdout.strip() == "true"
+
+
+def _exit_code(cid: str) -> str:
+    r = _docker("inspect", "-f", "{{.State.ExitCode}}", cid, timeout=10)
+    return r.stdout.strip() if r.returncode == 0 else "?"
+
+
+def _cpu_seconds(cid: str) -> float | None:
+    r = _docker("exec", cid, "cat", "/sys/fs/cgroup/cpu.stat", timeout=10)
+    if r.returncode != 0:
+        return None
+    for line in r.stdout.splitlines():
+        if line.startswith("usage_usec"):
+            try:
+                return int(line.split()[1]) / 1_000_000
+            except (IndexError, ValueError):
+                return None
+    return None
+
+
+def _await_exit(cid: str, cpu_budget_s: int) -> dict | None:
+    deadline = time.monotonic() + WALL_BACKSTOP_FACTOR * cpu_budget_s
+    interval = max(0.5, min(2.0, cpu_budget_s / 4))
+    while True:
+        if not _running(cid):
+            return None
+        cpu = _cpu_seconds(cid)
+        if cpu is not None and cpu > cpu_budget_s:
+            _docker("kill", cid, timeout=15)
+            return {"success": False, "error": "cpu budget exceeded"}
+        if time.monotonic() > deadline:
+            _docker("kill", cid, timeout=15)
+            return {"success": False, "error": "wall backstop exceeded"}
+        time.sleep(interval)
+
+
 def run_agent_in_docker(
     agent_code: str,
     context: dict,
@@ -61,7 +110,7 @@ def run_agent_in_docker(
     image: str,
     digest: str = "",
     entrypoint: str = "agent_main",
-    timeout: int = 120,
+    cpu_budget_s: int = 120,
     artifact_dir: str | None = None,
 ) -> dict:
     ensure_jail_network()
@@ -97,7 +146,6 @@ def run_agent_in_docker(
             "--cpus", _CPUS,
             "--pids-limit", _PIDS,
             "-e", "PHYLAX_TASK_DIR=/task",
-            # Load the miner's mounted code, not the image-baked reference agent.
             "-e", "PHYLAX_AGENT_PATH=/task/agent.py",
             "-e", f"PHYLAX_INFERENCE_PROXY_URL={proxy_url}",
             ref,
@@ -111,24 +159,33 @@ def run_agent_in_docker(
         if cp_in.returncode != 0:
             return {"success": False, "error": f"task copy-in failed: {cp_in.stderr[-400:]}"}
 
-        try:
-            run = _docker("start", "-a", cid, timeout=timeout)
-        except subprocess.TimeoutExpired:
-            return {"success": False, "error": "agent execution timed out"}
+        start = _docker("start", cid, timeout=30)
+        if start.returncode != 0:
+            return {"success": False, "error": f"container start failed: {start.stderr[-400:]}"}
+
+        outcome = _await_exit(cid, cpu_budget_s)
+        if outcome is not None:
+            return outcome
 
         out = work / "result.json"
         cp_out = _docker("cp", f"{cid}:/task/result.json", str(out), timeout=30)
         if cp_out.returncode != 0 or not out.exists():
+            logs = _docker("logs", "--tail", "50", cid, timeout=15)
             return {
                 "success": False,
-                "error": f"no result.json (rc={run.returncode})",
-                "stderr": run.stderr[-1500:],
+                "error": f"no result.json (rc={_exit_code(cid)})",
+                "stderr": (logs.stderr or logs.stdout)[-1500:],
             }
-        report = json.loads(out.read_text(encoding="utf-8"))
+        try:
+            report = json.loads(out.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            return {"success": False, "error": "malformed result.json"}
+        if not isinstance(report, dict):
+            return {"success": False, "error": "malformed result.json"}
         report["observed_probe_file"] = _observed_probe(cid, context, work)
         return report
     except subprocess.TimeoutExpired:
-        return {"success": False, "error": "agent execution timed out"}
+        return {"success": False, "error": "docker command timed out"}
     finally:
         if cid:
             _docker("rm", "-f", cid, timeout=30)
