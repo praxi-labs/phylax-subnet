@@ -7,9 +7,8 @@
 #   curl -fsSL https://raw.githubusercontent.com/praxi-labs/phylax-subnet/main/scripts/install.sh | bash -s miner
 #   curl -fsSL https://raw.githubusercontent.com/praxi-labs/phylax-subnet/main/scripts/install.sh | bash -s validator
 #
-# After this finishes, cd ~/phylax/<role> and follow the onboarding steps printed
-# at the end: miners submit their agent with register.sh (no neuron to run);
-# validators run docker compose up.
+# Writes a clean role-specific .env: a validator install contains only validator
+# settings, a miner install only miner settings.
 #
 # Idempotent — re-running upgrades the compose file in place but never
 # overwrites .env (so your edits survive).
@@ -27,6 +26,8 @@ esac
 
 REPO_RAW="https://raw.githubusercontent.com/praxi-labs/phylax-subnet/main"
 TARGET="${PHYLAX_INSTALL_DIR:-$HOME/phylax/$ROLE}"
+SERVER_URL="https://api.phyi.dev"
+SERVER_HOTKEY="a53f8e390446e31cd077517e44e585c0e0474bbd5b1db5864c52fb07bcbe541c"
 
 CURL_AUTH=()
 if [ -n "${GITHUB_TOKEN:-}" ]; then
@@ -61,46 +62,101 @@ echo "==> Fetching deploy/$ROLE/docker-compose.yml"
 fetch "$REPO_RAW/deploy/$ROLE/docker-compose.yml" -o "$TARGET/docker-compose.yml"
 
 # ---------------------------------------------------------------------------
-# .env — only write if missing; never clobber an existing one
+# .env — role-specific, only written if missing; never clobbers an existing one
 # ---------------------------------------------------------------------------
+gen_token() {
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex 24
+  else
+    od -vN 24 -An -tx1 /dev/urandom | tr -d ' \n'
+  fi
+}
+
 if [ -f "$TARGET/.env" ]; then
   echo "==> Keeping existing $TARGET/.env (delete it manually to start over)"
-else
-  echo "==> Seeding $TARGET/.env from .env.example"
-  fetch "$REPO_RAW/.env.example" -o "$TARGET/.env"
-
-  {
-    echo ""
-    echo "# --- Host identity (written by install.sh) ---"
-    echo "HOST_UID=$(id -u)"
-    echo "HOST_GID=$(id -g)"
-    echo "BITTENSOR_DIR=$HOME/.bittensor"
-    echo "PHYLAX_TRACK=skills"
-  } >> "$TARGET/.env"
-
-  # Only the validator runs untrusted agent images, so only it needs docker
-  # socket access (and therefore the host docker group GID).
-  if [ "$ROLE" = "validator" ]; then
-    DOCKER_GID="$(getent group docker | cut -d: -f3)"
-    if [ -z "$DOCKER_GID" ]; then
-      echo "==> WARNING: no 'docker' group on this host. Agent runs will fail." >&2
-      DOCKER_GID=999
-    fi
-    echo "DOCKER_GID=$DOCKER_GID" >> "$TARGET/.env"
-    cat >&2 <<EOF
-
-==> Validator extra step required:
-    Edit $TARGET/.env and fill in:
-      PHYLAX_SERVER_URL=https://<your-phylax-server>
-      PHYLAX_SERVER_HOTKEY=<hex from /v1/server-identity, pinned anti-impersonation>
-      PHYLAX_VALIDATOR_LABEL=<friendly label for dashboards>
-      PHYLAX_TRACK=<skills|mcp_servers|packages|repositories>
-
-    Get PHYLAX_SERVER_HOTKEY with:
-      curl -fsSL https://<your-phylax-server>/v1/server-identity
-
-EOF
+elif [ "$ROLE" = "validator" ]; then
+  DOCKER_GID="$(getent group docker | cut -d: -f3)"
+  if [ -z "$DOCKER_GID" ]; then
+    echo "==> WARNING: no 'docker' group on this host. Agent runs will fail." >&2
+    DOCKER_GID=999
   fi
+  PROXY_TOKEN="$(gen_token)"
+  echo "==> Writing validator .env (server identity pinned, proxy token generated, docker gid detected)"
+  cat > "$TARGET/.env" <<EOF
+# Phylax validator configuration. Do NOT commit this file.
+# A validator evaluates all four tracks every round; there is no track to pick.
+# Round length, budgets, and thresholds are pinned by docs/mechanism.md.
+
+PHYLAX_NETUID=76
+SUBTENSOR_NETWORK=finney
+WALLET_NAME=validator
+WALLET_HOTKEY=default
+BITTENSOR_DIR=$HOME/.bittensor
+
+# Phylax backend and its pinned ed25519 identity. Verify anytime with:
+#   curl -s https://api.phyi.dev/v1/server-identity
+PHYLAX_SERVER_URL=$SERVER_URL
+PHYLAX_SERVER_HOTKEY=$SERVER_HOTKEY
+
+# Shared secret between your validator and your proxy containers only.
+# Generated at install; regenerate anytime with: openssl rand -hex 24
+PHYLAX_PROXY_ADMIN_TOKEN=$PROXY_TOKEN
+
+# Host docker group gid, detected at install.
+DOCKER_GID=$DOCKER_GID
+
+# Optional friendly label shown in dashboards.
+PHYLAX_VALIDATOR_LABEL=
+
+# Host identity, detected at install.
+HOST_UID=$(id -u)
+HOST_GID=$(id -g)
+EOF
+else
+  echo "==> Writing miner .env"
+  cat > "$TARGET/.env" <<EOF
+# Phylax miner configuration. Do NOT commit this file.
+
+PHYLAX_NETUID=76
+SUBTENSOR_NETWORK=finney
+WALLET_NAME=miner
+WALLET_HOTKEY=default
+BITTENSOR_DIR=$HOME/.bittensor
+
+# Phylax backend and its pinned ed25519 identity. Verify anytime with:
+#   curl -s https://api.phyi.dev/v1/server-identity
+PHYLAX_SERVER_URL=$SERVER_URL
+PHYLAX_SERVER_HOTKEY=$SERVER_HOTKEY
+
+# REQUIRED: the single track your agent competes in.
+# One of: skills | mcp_servers | packages | repositories
+PHYLAX_TRACK=skills
+
+# REQUIRED: inference key that funds your agent. Must start with 'cpk_'
+# (Chutes) or 'sk-or-' (OpenRouter). Validators meter reruns through this key.
+PHYLAX_EXECUTION_API_KEY=
+
+# Your agent file and entrypoint. Defaults to the bundled reference agent.
+# You submit code only; the validator owns the sandbox image.
+PHYLAX_AGENT_CODE_PATH=
+PHYLAX_AGENT_ENTRYPOINT=agent_main
+
+# Optional model id passed to your agent.
+PHYLAX_INFERENCE_MODEL=
+# Optional dependency manifest stored alongside the submission.
+PHYLAX_DEPENDENCY_MANIFEST=
+# Optional friendly label shown in dashboards.
+PHYLAX_MINER_LABEL=
+
+# Only used if you run the OPTIONAL peer-to-peer fallback neuron.
+PHYLAX_AXON_PORT=8091
+PHYLAX_AXON_EXTERNAL_IP=
+PHYLAX_MINER_INTERVAL=20
+
+# Host identity, detected at install.
+HOST_UID=$(id -u)
+HOST_GID=$(id -g)
+EOF
 fi
 
 # ---------------------------------------------------------------------------
@@ -153,8 +209,7 @@ Onboarding (submit-only — there is no neuron to run):
        cd $TARGET && ./src/scripts/register.sh
 
 To ship a new version later, edit your agent and re-run ./src/scripts/register.sh;
-validators pull it from the backend at the start of each round. (The compose file
-is optional — only for keeping the peer-to-peer AgentSynapse fallback alive.)
+validators pull it from the backend at the start of each round.
 
 EOF
 else
@@ -162,10 +217,13 @@ else
 
 ==> Installed at: $TARGET
 
+Your .env is complete: server identity pinned, proxy token generated, docker
+gid detected. Nothing to edit (PHYLAX_VALIDATOR_LABEL is optional).
+
 Next:
+  btcli subnet register --netuid 76 --network finney --wallet.name validator --wallet.hotkey default
+  btcli stake add --wallet.name validator --wallet.hotkey default --amount <TAO>
   cd $TARGET
-  # fill in PHYLAX_SERVER_URL / PHYLAX_SERVER_HOTKEY / PHYLAX_TRACK in .env
-  ./scripts/register_chain.sh validator   # chain registration + stake
   docker compose pull
   docker compose up -d
   docker compose logs -f
