@@ -25,9 +25,9 @@ COPY requirements.txt ./
 RUN pip install --upgrade pip && pip install -r requirements.txt
 
 RUN pip install --force-reinstall \
-        bittensor==9.12.2 \
+        bittensor==11.0.1 \
         'bittensor-wallet>=4.1.0' \
-        'async-substrate-interface<2' \
+        'async-substrate-interface>=2.2' \
  && pip uninstall -y scalecodec cyscale \
  && pip install --no-deps cyscale \
  && pip uninstall -y scalecodec
