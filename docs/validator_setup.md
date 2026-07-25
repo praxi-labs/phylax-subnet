@@ -14,7 +14,9 @@ signed results to the server, and sets graduated weights on chain.
 - `btcli`: `pip install bittensor-cli`.
 - Enough stake to hold a validator permit.
 - Capacity for `agents x tasks x repetitions x timeout` per round (divided by
-  your parallelism).
+  your parallelism). Each sandbox run is capped at `PHYLAX_SANDBOX_MEMORY` (2 GB)
+  and `PHYLAX_SANDBOX_CPUS` (2) by default, so N agents in parallel need roughly
+  N × 2 GB RAM. A practical starting point is **8 vCPU / 16 GB RAM / 40 GB disk**.
 - Outbound access to `ghcr.io`. The host pulls four public images —
   `phylax-validator`, `phylax-proxy`, `phylax-agent` (the sandbox), and
   `containrrr/watchtower` — so no registry login is needed. If your evaluations
@@ -65,14 +67,22 @@ SUBTENSOR_NETWORK=finney
 WALLET_NAME=validator
 WALLET_HOTKEY=default
 
-PHYLAX_TRACK=skills
+PHYLAX_TRACK=skills                                          # skills | mcp_servers | packages | repositories
 PHYLAX_EXECUTOR=docker
 PHYLAX_SANDBOX_IMAGE=ghcr.io/praxi-labs/phylax-agent:latest  # the runtime you own
-PHYLAX_INFERENCE_PROXY_URL=http://phylax-proxy:8900          # metered egress
-PHYLAX_PROXY_ADMIN_TOKEN=<shared secret>                     # read inference liveness
+PHYLAX_INFERENCE_PROXY_URL=http://phylax-proxy:8900          # metered egress (deploy default)
 PHYLAX_SERVER_URL=https://api.phyi.dev                       # round scheduler + results
-PHYLAX_SERVER_HOTKEY=<pinned server hotkey>
-DOCKER_GID=<host docker group gid>
+PHYLAX_PROXY_ADMIN_TOKEN=<generate — see below>              # your validator + proxy share it
+PHYLAX_SERVER_HOTKEY=<fetch — see below>                     # pins the server identity
+DOCKER_GID=<look up — see below>                             # host docker group gid
+```
+
+Fill in the three host-specific values:
+
+```bash
+getent group docker | cut -d: -f3                  # DOCKER_GID
+curl -s https://api.phyi.dev/v1/server-identity    # PHYLAX_SERVER_HOTKEY (the "hotkey" field)
+openssl rand -hex 24                               # PHYLAX_PROXY_ADMIN_TOKEN (any secret; the validator and proxy just need the SAME value)
 ```
 
 Miner code runs inside `PHYLAX_SANDBOX_IMAGE`, not a miner-supplied image — this
@@ -93,6 +103,26 @@ docker compose logs -f
 
 This starts three containers: the validator neuron, the inference proxy, and
 Watchtower.
+
+### Confirm it's healthy
+
+The logs should show the validator connect and start polling:
+
+```
+starting Phylax validator on netuid=76 track=skills ...
+```
+
+Then, per round phase, either a `submission` wait (miners still submitting) or task
+execution once the window closes. Quick checks:
+
+- `docker compose ps` — validator, proxy, and watchtower all `Up`.
+- `btcli wallet overview --wallet.name validator --network finney` — confirms your
+  hotkey is on netuid 76 with a validator permit, and shows your vtrust once you set weights.
+- `curl -s https://api.phyi.dev/v1/server-identity` matches your `PHYLAX_SERVER_HOTKEY`.
+
+Common failures: `image pull failed` → the sandbox image isn't reachable (see
+Requirements); `PHYLAX_EXECUTOR must be docker` → wrong executor in `.env`; can't
+reach the docker socket → wrong `DOCKER_GID`.
 
 ## Staying current (auto-updates)
 
