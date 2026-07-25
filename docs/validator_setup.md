@@ -67,28 +67,42 @@ SUBTENSOR_NETWORK=finney
 WALLET_NAME=validator
 WALLET_HOTKEY=default
 
-PHYLAX_TRACK=skills                                          # skills | mcp_servers | packages | repositories
+PHYLAX_TRACK=skills
 PHYLAX_EXECUTOR=docker
-PHYLAX_SANDBOX_IMAGE=ghcr.io/praxi-labs/phylax-agent:latest  # the runtime you own
-PHYLAX_INFERENCE_PROXY_URL=http://phylax-proxy:8900          # metered egress (deploy default)
-PHYLAX_SERVER_URL=https://api.phyi.dev                       # round scheduler + results
-PHYLAX_PROXY_ADMIN_TOKEN=<generate — see below>              # your validator + proxy share it
-PHYLAX_SERVER_HOTKEY=<fetch — see below>                     # pins the server identity
-DOCKER_GID=<look up — see below>                             # host docker group gid
+PHYLAX_SANDBOX_IMAGE=ghcr.io/praxi-labs/phylax-agent:latest
+PHYLAX_INFERENCE_PROXY_URL=http://phylax-proxy:8900
+PHYLAX_SERVER_URL=https://api.phyi.dev
+PHYLAX_SERVER_HOTKEY=
+PHYLAX_PROXY_ADMIN_TOKEN=
+DOCKER_GID=
 ```
 
-Fill in the three host-specific values:
+Most of these are already correct for mainnet, so leave them as they are:
+
+* `PHYLAX_TRACK` is the one track this validator evaluates. Change it only if you want a track other than skills. Valid values are `skills`, `mcp_servers`, `packages`, `repositories`.
+* `PHYLAX_SANDBOX_IMAGE` is the hardened runtime that Phylax publishes at `ghcr.io/praxi-labs/phylax-agent`. Every miner's untrusted code runs inside this image, which belongs to you, never inside an image a miner supplies. You do not build it. The deploy pulls it from GHCR, where it is public. Leave the value as it is.
+* `PHYLAX_INFERENCE_PROXY_URL` is the address of your inference proxy. The deploy runs it as a container named `phylax-proxy` on port 8900. It is the only outbound path the sandbox has, so every agent's LLM call passes through it and can be metered. Leave it as `http://phylax-proxy:8900`.
+* `PHYLAX_SERVER_URL` is the Phylax backend. Leave it as `https://api.phyi.dev`. If you leave it empty, the validator falls back to a block timed loop for local development.
+
+Three values you fill in yourself:
+
+`PHYLAX_SERVER_HOTKEY` pins the backend's on chain identity so your validator refuses an impostor that tries to feed it fake rounds or agents. It is a fixed public value that every validator uses. Fetch it once and copy the `hotkey` field into your `.env`:
 
 ```bash
-getent group docker | cut -d: -f3                  # DOCKER_GID
-curl -s https://api.phyi.dev/v1/server-identity    # PHYLAX_SERVER_HOTKEY (the "hotkey" field)
-openssl rand -hex 24                               # PHYLAX_PROXY_ADMIN_TOKEN (any secret; the validator and proxy just need the SAME value)
+curl -s https://api.phyi.dev/v1/server-identity
 ```
 
-Miner code runs inside `PHYLAX_SANDBOX_IMAGE`, not a miner-supplied image — this
-is what lets untrusted code run in a trusted, hardened jail. The deploy compose
-builds and sets this for you. If `PHYLAX_SERVER_URL` is unset the validator falls
-back to a block-timed loop for local dev.
+`PHYLAX_PROXY_ADMIN_TOKEN` is a secret that you choose. Your validator uses it to ask the proxy whether each agent actually made metered inference, which is the liveness check used in scoring. No one issues it to you. Your validator and your proxy just read the same value from this `.env`, so any random string works. Generate one:
+
+```bash
+openssl rand -hex 24
+```
+
+`DOCKER_GID` is your host's docker group id. The validator launches sandbox containers by talking to the docker socket, so it must belong to that group. Look it up:
+
+```bash
+getent group docker | cut -d: -f3
+```
 
 Optional tuning: `PHYLAX_TASKS_PER_ROUND`, `PHYLAX_REPETITIONS`,
 `PHYLAX_TASK_TIMEOUT`, `PHYLAX_SCORE_THRESHOLD`, `PHYLAX_RELIABILITY_FRACTION`,
@@ -108,21 +122,18 @@ Watchtower.
 
 The logs should show the validator connect and start polling:
 
-```
+```text
 starting Phylax validator on netuid=76 track=skills ...
 ```
 
-Then, per round phase, either a `submission` wait (miners still submitting) or task
-execution once the window closes. Quick checks:
+After that, per round phase, you see either a `submission` wait while miners are
+still submitting, or task execution once the window closes. Quick checks:
 
-- `docker compose ps` — validator, proxy, and watchtower all `Up`.
-- `btcli wallet overview --wallet.name validator --network finney` — confirms your
-  hotkey is on netuid 76 with a validator permit, and shows your vtrust once you set weights.
-- `curl -s https://api.phyi.dev/v1/server-identity` matches your `PHYLAX_SERVER_HOTKEY`.
+* `docker compose ps` shows the validator, proxy, and watchtower all `Up`.
+* `btcli wallet overview --wallet.name validator --network finney` confirms your hotkey is on netuid 76 with a validator permit, and shows your vtrust once you set weights.
+* `curl -s https://api.phyi.dev/v1/server-identity` returns the same hotkey you put in `PHYLAX_SERVER_HOTKEY`.
 
-Common failures: `image pull failed` → the sandbox image isn't reachable (see
-Requirements); `PHYLAX_EXECUTOR must be docker` → wrong executor in `.env`; can't
-reach the docker socket → wrong `DOCKER_GID`.
+Common failures and their cause: `image pull failed` means the sandbox image is not reachable (see Requirements). `PHYLAX_EXECUTOR must be docker` means the wrong executor is set in `.env`. A docker socket permission error means a wrong `DOCKER_GID`.
 
 ## Staying current (auto-updates)
 
