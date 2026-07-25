@@ -83,9 +83,7 @@ elif [ "$ROLE" = "validator" ]; then
   PROXY_TOKEN="$(gen_token)"
   echo "==> Writing validator .env (server identity pinned, proxy token generated, docker gid detected)"
   cat > "$TARGET/.env" <<EOF
-# Phylax validator configuration. Do NOT commit this file.
-# A validator evaluates all four tracks every round; there is no track to pick.
-# Round length, budgets, and thresholds are pinned by docs/mechanism.md.
+# Phylax validator. Do NOT commit.
 
 PHYLAX_NETUID=76
 SUBTENSOR_NETWORK=finney
@@ -93,29 +91,19 @@ WALLET_NAME=validator
 WALLET_HOTKEY=default
 BITTENSOR_DIR=$HOME/.bittensor
 
-# Phylax backend and its pinned ed25519 identity. Verify anytime with:
-#   curl -s https://api.phyi.dev/v1/server-identity
 PHYLAX_SERVER_URL=$SERVER_URL
 PHYLAX_SERVER_HOTKEY=$SERVER_HOTKEY
-
-# Shared secret between your validator and your proxy containers only.
-# Generated at install; regenerate anytime with: openssl rand -hex 24
 PHYLAX_PROXY_ADMIN_TOKEN=$PROXY_TOKEN
-
-# Host docker group gid, detected at install.
 DOCKER_GID=$DOCKER_GID
-
-# Optional friendly label shown in dashboards.
 PHYLAX_VALIDATOR_LABEL=
 
-# Host identity, detected at install.
 HOST_UID=$(id -u)
 HOST_GID=$(id -g)
 EOF
 else
   echo "==> Writing miner .env"
   cat > "$TARGET/.env" <<EOF
-# Phylax miner configuration. Do NOT commit this file.
+# Phylax miner. Do NOT commit.
 
 PHYLAX_NETUID=76
 SUBTENSOR_NETWORK=finney
@@ -123,37 +111,23 @@ WALLET_NAME=miner
 WALLET_HOTKEY=default
 BITTENSOR_DIR=$HOME/.bittensor
 
-# Phylax backend and its pinned ed25519 identity. Verify anytime with:
-#   curl -s https://api.phyi.dev/v1/server-identity
 PHYLAX_SERVER_URL=$SERVER_URL
 PHYLAX_SERVER_HOTKEY=$SERVER_HOTKEY
 
-# REQUIRED: the single track your agent competes in.
-# One of: skills | mcp_servers | packages | repositories
+# skills | mcp_servers | packages | repositories
 PHYLAX_TRACK=skills
-
-# REQUIRED: inference key that funds your agent. Must start with 'cpk_'
-# (Chutes) or 'sk-or-' (OpenRouter). Validators meter reruns through this key.
+# cpk_ (Chutes) or sk-or- (OpenRouter)
 PHYLAX_EXECUTION_API_KEY=
-
-# Your agent file and entrypoint. Defaults to the bundled reference agent.
-# You submit code only; the validator owns the sandbox image.
 PHYLAX_AGENT_CODE_PATH=
 PHYLAX_AGENT_ENTRYPOINT=agent_main
-
-# Optional model id passed to your agent.
 PHYLAX_INFERENCE_MODEL=
-# Optional dependency manifest stored alongside the submission.
 PHYLAX_DEPENDENCY_MANIFEST=
-# Optional friendly label shown in dashboards.
 PHYLAX_MINER_LABEL=
 
-# Only used if you run the OPTIONAL peer-to-peer fallback neuron.
 PHYLAX_AXON_PORT=8091
 PHYLAX_AXON_EXTERNAL_IP=
 PHYLAX_MINER_INTERVAL=20
 
-# Host identity, detected at install.
 HOST_UID=$(id -u)
 HOST_GID=$(id -g)
 EOF
