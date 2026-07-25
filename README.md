@@ -73,10 +73,12 @@ marketplace serves. During a round the participating version is frozen by hash.
 
 ### Block timed rounds
 
-A round is a window of blocks per track. At the start block, agents are frozen
-and every validator derives the identical task set from the start block hash, so
-nothing can be precomputed and anyone can audit the selection. Validators race
-the same block deadline independently.
+A round is one shared window of blocks covering all four tracks. At the start
+block, agents are frozen and every validator derives each track's identical task
+set from the start block hash, so nothing can be precomputed and anyone can
+audit the selection. Validators race the same block deadline independently, and
+a validator that cannot finish every track abstains rather than submit a partial
+vector.
 
 ![The round model](docs/images/round.webp)
 
@@ -87,13 +89,15 @@ to look up, a token to echo. Because the validator runs the agent itself, it
 observes the probe fire directly; there is no self reported trace to trust. A run
 that fails the gate scores zero regardless of its verdict.
 
-### Reliability and scoring
+### Repetition consensus and scoring
 
-Each task is run several times on the same pinned artifact and must be correct
-consistently. Verdicts are scored by risk distance against ground truth labels,
-repositories by recall against known vulnerabilities, and a quality threshold
-plus a graduated top three split concentrate emissions on the strongest agents a
-stake majority independently endorses.
+Each task is run several times on the same pinned artifact and the repetitions
+reduce to one verdict by consensus, so a flaky agent loses the vote. Behavioural
+tracks are scored by clamped Matthews correlation over the round's task set,
+repositories by F2 against known vulnerabilities, and a per track quality
+threshold plus a graduated top three split concentrate emissions on the
+strongest agents a stake majority independently endorses. The full rules are
+pinned in [the mechanism spec](docs/mechanism.md).
 
 ### Dual plane evidence
 
@@ -104,15 +108,16 @@ on either plane, so Phylax captures both.
 
 ## The four tracks
 
-Every miner and validator commits to one track. The tracks are isolated, so
-artifacts, evidence, and scoring never cross between them.
+Every miner commits to one track; every validator evaluates all four each round.
+The tracks are isolated, so artifacts, evidence, and scoring never cross between
+them.
 
 | Track | Artifact | Verification |
 |---|---|---|
 | `skills` | Agent skill bundles | detonation, dual plane, probe |
 | `mcp_servers` | MCP server packages | detonation, dual plane, probe, component analysis |
 | `packages` | pip and npm packages | detonation, install and import lifecycle, supply chain |
-| `repositories` | source repositories | static audit scored by benchmark recall |
+| `repositories` | source repositories | static audit scored by F2 against ground truth |
 
 Tracks are not weighted equally. Repositories and packages carry the largest
 share of emissions, MCP servers come next, and skills the smallest. Within each

@@ -5,9 +5,9 @@ optimise against and what every validator enforces. The sections marked **frozen
 are a commitment: agents built against them keep working. The sections marked
 **tunable** can change with notice and never invalidate an agent.
 
-Status: the subnet code implements this spec. The slot cap is enforced at
-submission today; slot release on deregistration and the six round eviction are
-backend jobs that ship separately.
+Status: the subnet code and the backend implement this spec, including the slot
+cap at submission, slot release on deregistration, and eviction after six below
+threshold rounds.
 
 ## Overview
 

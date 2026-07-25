@@ -12,7 +12,8 @@ vector spanning all tracks on chain. The full rules live in
 ## Requirements
 
 - A Linux host with Docker and `docker compose`. The jail is mandatory: the
-  validator refuses to evaluate if `PHYLAX_EXECUTOR` is not `docker`.
+  executor fails closed, and the validator abstains rather than run agents
+  outside it.
 - `btcli`: `pip install bittensor-cli`.
 - Enough stake to hold a validator permit.
 - Capacity for a full four track pass per round. Each sandbox run is pinned at
@@ -76,8 +77,8 @@ PHYLAX_PROXY_ADMIN_TOKEN=
 DOCKER_GID=
 ```
 
-Most of these are already correct for mainnet, so leave them as they are. There
-is no track to choose: every validator evaluates all four tracks every round.
+Every validator evaluates all four tracks every round; there is no track to
+choose. These values are fixed:
 
 - `PHYLAX_SANDBOX_IMAGE` is the hardened runtime that Phylax publishes at `ghcr.io/praxi-labs/phylax-agent`. Every miner's untrusted code runs inside this image, which belongs to you, never inside an image a miner supplies. You do not build it. The deploy pulls it from GHCR, where it is public. Leave the value as it is.
 - `PHYLAX_INFERENCE_PROXY_URL` is the address of your inference proxy. The deploy runs it as a container named `phylax-proxy` on port 8900. It is the only outbound path the sandbox has, so every agent's LLM call passes through it and can be metered. Leave it as `http://phylax-proxy:8900`.

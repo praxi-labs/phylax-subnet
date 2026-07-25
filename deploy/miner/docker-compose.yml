@@ -20,7 +20,6 @@ services:
       PHYLAX_TRACK: "${PHYLAX_TRACK:-skills}"
       PHYLAX_SERVER_URL: "${PHYLAX_SERVER_URL:-}"
       PHYLAX_SERVER_HOTKEY: "${PHYLAX_SERVER_HOTKEY:-}"
-      PHYLAX_EXECUTOR: "${PHYLAX_EXECUTOR:-sandbox}"
     env_file:
       - .env
     command:
