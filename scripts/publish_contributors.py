@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
 import bittensor as bt
@@ -28,17 +29,23 @@ def main() -> int:
         "Validators read this with PHYLAX_CONTRIBUTOR_AUTHORITY set to the publishing hotkey."
     )
     parser.add_argument("--netuid", type=int, required=True)
+    parser.add_argument("--network", default=os.getenv("SUBTENSOR_NETWORK", "finney"))
+    parser.add_argument(
+        "--wallet.name", dest="wallet_name", default=os.getenv("WALLET_NAME", "owner")
+    )
+    parser.add_argument(
+        "--wallet.hotkey", dest="wallet_hotkey", default=os.getenv("WALLET_HOTKEY", "default")
+    )
     parser.add_argument("--file", help="file with one contributor hotkey per line")
     parser.add_argument("--add", action="append", help="a contributor hotkey (repeatable)")
-    bt.Wallet.add_args(parser)
-    bt.Subtensor.add_args(parser)
-    config = bt.Config(parser)
-    wallet = bt.Wallet(config=config)
-    subtensor = bt.Subtensor(config=config)
+    args = parser.parse_args()
 
-    contributors = _load_hotkeys(getattr(config, "file", None), getattr(config, "add", None))
-    payload = ",".join(sorted(contributors))
-    print(f"netuid={config.netuid} authority={wallet.hotkey.ss58_address}")
+    wallet = bt.Wallet(name=args.wallet_name, hotkey=args.wallet_hotkey)
+    subtensor = bt.Subtensor(args.network)
+
+    contributors = _load_hotkeys(args.file, args.add)
+    payload = ",".join(sorted(contributors)).encode("utf-8")
+    print(f"netuid={args.netuid} authority={wallet.hotkey.ss58_address}")
     print(f"publishing {len(contributors)} contributors ({len(payload)} bytes)")
     for hk in sorted(contributors):
         print(f"  {hk}")
@@ -46,10 +53,15 @@ def main() -> int:
         print("ERROR: payload exceeds the on-chain commitment size limit (1024 bytes)")
         return 1
 
+    info = {"fields": [[{f"Raw{len(payload)}": payload}]]}
+    call = bt.calls.Commitments.set_commitment(args.netuid, info)
     try:
-        subtensor.commit(wallet, config.netuid, payload)
+        result = subtensor.submit_call(call, wallet)
     except Exception as exc:  # noqa: BLE001
         print(f"commit failed: {exc}")
+        return 1
+    if not getattr(result, "success", True):
+        print(f"commit failed: {getattr(result, 'error', result)}")
         return 1
     print("committed; validators will pick it up on their next round")
     return 0

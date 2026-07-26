@@ -124,8 +124,6 @@ PHYLAX_INFERENCE_MODEL=
 PHYLAX_DEPENDENCY_MANIFEST=
 PHYLAX_MINER_LABEL=
 
-PHYLAX_AXON_PORT=8091
-PHYLAX_AXON_EXTERNAL_IP=
 PHYLAX_MINER_INTERVAL=20
 
 HOST_UID=$(id -u)
@@ -173,7 +171,7 @@ if [ "$ROLE" = "miner" ]; then
 Files:
   $TARGET/.env                 your config (edit before submitting)
   $TARGET/src/                 phylax-subnet source + scripts
-  $TARGET/docker-compose.yml   OPTIONAL neuron (AgentSynapse fallback only)
+  $TARGET/docker-compose.yml   OPTIONAL keepalive (resubmits your agent on start)
 
 Onboarding (submit-only — there is no neuron to run):
   1. Register your hotkey on the subnet yourself with btcli (netuid 76):

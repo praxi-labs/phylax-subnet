@@ -1,8 +1,6 @@
 # OPTIONAL. Miners are submit-only: you submit your agent to the backend with
-# ./scripts/register.sh and run nothing. This long-lived neuron is only needed if
-# you want to keep the peer-to-peer AgentSynapse fallback alive so validators can
-# still fetch your agent directly when the backend is unreachable. It also
-# re-submits your agent to the backend on startup. Most miners do not need it.
+# ./scripts/register.sh and run nothing. This container just resubmits your
+# agent on startup and then idles. Most miners do not need it.
 services:
   phylax-miner:
     image: ghcr.io/praxi-labs/phylax-miner:${PHYLAX_IMAGE_TAG:-latest}
@@ -11,8 +9,6 @@ services:
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
-    ports:
-      - "${PHYLAX_AXON_PORT:-8091}:${PHYLAX_AXON_PORT:-8091}"
     volumes:
       - ${BITTENSOR_DIR:-~/.bittensor}:/opt/phylax/.bittensor
     environment:
@@ -33,8 +29,6 @@ services:
       - "${WALLET_NAME:-miner}"
       - --wallet.hotkey
       - "${WALLET_HOTKEY:-default}"
-      - --axon.port
-      - "${PHYLAX_AXON_PORT:-8091}"
       - --logging.debug
 
   watchtower:

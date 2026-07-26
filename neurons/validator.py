@@ -3,24 +3,22 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import os
 import time
 import traceback
 from pathlib import Path
 
 import bittensor as bt
-import torch
 
 from phylax import rounds, screening
 from phylax.analysis import common, scoring, tracks
 from phylax.analysis import proof as proofmod
 from phylax.harness.corpus import load_corpus
 from phylax.harness.runner import InfraFailure, run_task
-from phylax.protocol import AgentSynapse
 from phylax.server_client import PhylaxServerClient, ServerUnreachable
-from phylax.utils.hashing import sha256_bytes, sssa_digest, submission_digest
+from phylax.utils.hashing import sssa_digest
 
-QUERY_TIMEOUT_S: float = float(os.getenv("PHYLAX_QUERY_TIMEOUT", "60"))
 POLL_INTERVAL_S: int = int(os.getenv("PHYLAX_POLL_INTERVAL", "30"))
 MAX_AGENT_BYTES: int = 512 * 1024
 DEADLINE_MARGIN_BLOCKS: int = 20
@@ -28,6 +26,8 @@ EMA_ALPHA: float = 0.3
 
 _VERDICT_ORDINAL = {"ALLOW": 0, "WARN": 1, "BLOCK": 2}
 _ORDINAL_VERDICT = {v: k for k, v in _VERDICT_ORDINAL.items()}
+
+log = logging.getLogger("phylax.validator")
 
 
 class AbstainRound(Exception):
@@ -46,52 +46,15 @@ def _parse_contributors(raw: str) -> set[str]:
     return {h.strip() for h in text.split(",") if h.strip()}
 
 
-def _keypair_for(ss58: str):
-    try:
-        return bt.Keypair(ss58_address=ss58)
-    except Exception:  # noqa: BLE001, S110
-        pass
-    try:
-        from bittensor_wallet import Keypair
-
-        return Keypair(ss58_address=ss58)
-    except Exception:  # noqa: BLE001
-        return None
-
-
-def _metagraph_size(metagraph) -> int:
-    if metagraph is None:
-        return 0
-    val = getattr(metagraph, "n", 0)
-    if val is None:
-        return 0
-    if hasattr(val, "item"):
-        try:
-            return int(val.item())
-        except (ValueError, RuntimeError):
-            pass
-    try:
-        return int(val)
-    except (TypeError, ValueError):
-        try:
-            return len(val)
-        except TypeError:
-            return 0
-
-
 class PhylaxValidator:
     neuron_type: str = "ValidatorNeuron"
 
-    def __init__(self, config=None, wallet=None, subtensor=None):
-        self.config = config
-        if callable(bt.logging):
-            bt.logging(config=config)
-        elif hasattr(bt.logging, "set_config"):
-            bt.logging.set_config(config)
-        self.wallet = wallet if wallet is not None else bt.Wallet(config=config)
-        self.subtensor = subtensor if subtensor is not None else bt.Subtensor(config=config)
-        self.metagraph = self.subtensor.metagraph(netuid=config.netuid)
-        self.dendrite = bt.dendrite(wallet=self.wallet)
+    def __init__(self, netuid: int, network: str, wallet: bt.Wallet, subtensor: bt.Subtensor):
+        self.netuid = netuid
+        self.network = network
+        self.wallet = wallet
+        self.subtensor = subtensor
+        self.metagraph = self._fetch_metagraph()
         self.round_blocks = rounds.ROUND_BLOCKS
         self.corpora = {track: load_corpus(track) for track in rounds.TRACKS}
         self.last_round_start = -1
@@ -102,12 +65,24 @@ class PhylaxValidator:
         self._round_seeds: dict[str, str] = {}
         self._round_tasks: dict[str, list[str]] = {}
         if os.getenv("PHYLAX_DEV_UNSAFE_EXECUTOR") == "1":
-            bt.logging.warning(
+            log.warning(
                 "PHYLAX_DEV_UNSAFE_EXECUTOR=1: agents run unjailed; never use outside development"
             )
         missing = [t for t in rounds.TRACKS if not self.corpora.get(t)]
         if missing:
-            bt.logging.warning(f"no local corpus for tracks: {', '.join(missing)}")
+            log.warning("no local corpus for tracks: %s", ", ".join(missing))
+
+    def _fetch_metagraph(self):
+        mg = self.subtensor.subnets.metagraph(self.netuid)
+        if mg is None:
+            raise RuntimeError(f"netuid {self.netuid} not found on {self.network}")
+        return mg
+
+    def _refresh_metagraph(self) -> None:
+        try:
+            self.metagraph = self._fetch_metagraph()
+        except Exception as e:  # noqa: BLE001
+            log.warning("metagraph refresh failed; using previous snapshot: %s", e)
 
     def _init_server(self) -> PhylaxServerClient | None:
         url = os.getenv("PHYLAX_SERVER_URL", "").strip()
@@ -119,7 +94,7 @@ class PhylaxValidator:
                 base_url=url, wallet=self.wallet, expected_server_hotkey=expected
             )
         except Exception as e:  # noqa: BLE001
-            bt.logging.warning(f"server client unavailable: {e}")
+            log.warning("server client unavailable: %s", e)
             return None
 
     def _load_contributors(self) -> set[str]:
@@ -130,10 +105,13 @@ class PhylaxValidator:
         if not authority:
             return set()
         try:
-            uid = self.metagraph.hotkeys.index(authority)
-            commitment = self.subtensor.get_commitment(self.config.netuid, uid)
-            if commitment:
-                return _parse_contributors(str(commitment))
+            neuron = self.metagraph.by_hotkey(authority)
+            commitment = getattr(neuron, "commitment", None)
+            if commitment is None:
+                commitment = self.metagraph.unregistered_commitments.get(authority)
+            value = getattr(commitment, "value", None)
+            if value:
+                return _parse_contributors(str(value))
         except Exception:  # noqa: BLE001, S110
             pass
         return set()
@@ -156,55 +134,12 @@ class PhylaxValidator:
                 json.dumps(weights, indent=2), encoding="utf-8"
             )
         except OSError as e:
-            bt.logging.warning(f"could not persist EMA state: {e}")
-
-    def _serving_uids(self) -> list[int]:
-        own = self.wallet.hotkey.ss58_address
-        uids: list[int] = []
-        for uid, axon in enumerate(self.metagraph.axons):
-            if self.metagraph.hotkeys[uid] == own:
-                continue
-            if getattr(axon, "is_serving", False):
-                uids.append(uid)
-        return uids
-
-    def _verify_submission(self, hotkey: str, synapse) -> bool:
-        code = getattr(synapse, "code", "") or ""
-        claimed = str(getattr(synapse, "agent_hash", "") or "")
-        sig = str(getattr(synapse, "signature", "") or "").removeprefix("ed25519:")
-        if not code or not claimed or not sig:
-            return False
-        if sha256_bytes(code.encode("utf-8")) != claimed:
-            return False
-        digest = submission_digest(
-            str(getattr(synapse, "track", "") or ""),
-            code,
-            str(getattr(synapse, "entrypoint", "") or "agent_main"),
-            str(getattr(synapse, "sandbox_image", "") or ""),
-            str(getattr(synapse, "sandbox_digest", "") or ""),
-        )
-        keypair = _keypair_for(hotkey)
-        if keypair is None:
-            return False
-        try:
-            return bool(keypair.verify(digest, bytes.fromhex(sig)))
-        except Exception:  # noqa: BLE001
-            return False
-
-    def _screen(self, track: str, synapse) -> str:
-        code = getattr(synapse, "code", "") or ""
-        if str(getattr(synapse, "track", "")) != track:
-            return "wrong track"
-        if len(code.encode("utf-8")) > MAX_AGENT_BYTES:
-            return "agent exceeds size limit"
-        entrypoint = str(getattr(synapse, "entrypoint", "") or "agent_main")
-        if f"def {entrypoint}" not in code:
-            return "missing entrypoint"
-        return ""
+            log.warning("could not persist EMA state: %s", e)
 
     def _fetch_agents(self, track: str, participants: list[dict] | None = None) -> dict[str, dict]:
         if not participants or self.server is None:
-            return self._fetch_agents_synapse(track)
+            log.info("no frozen participants for track=%s; nothing to evaluate", track)
+            return {}
 
         agents: dict[str, dict] = {}
         codes: dict[str, tuple[str, int]] = {}
@@ -222,13 +157,13 @@ class PhylaxValidator:
                 continue
             actual = "sha256:" + hashlib.sha256(code.encode("utf-8")).hexdigest()
             if expected and actual != expected:
-                bt.logging.warning(
-                    f"agent {hotkey[:10]} hash mismatch (frozen {expected[:18]}…); skipping"
+                log.warning(
+                    "agent %s hash mismatch (frozen %s…); skipping", hotkey[:10], expected[:18]
                 )
                 continue
             reason = self._screen_runnable(track, data, code)
             if reason:
-                bt.logging.info(f"screened out agent={hotkey[:10]}: {reason}")
+                log.info("screened out agent=%s: %s", hotkey[:10], reason)
                 continue
             agents[hotkey] = {
                 "code": code,
@@ -242,7 +177,7 @@ class PhylaxValidator:
             codes[hotkey] = (code, idx)
 
         for hotkey in screening.duplicate_hotkeys(codes):
-            bt.logging.warning(f"screened out agent={hotkey[:10]}: copied agent code")
+            log.warning("screened out agent=%s: copied agent code", hotkey[:10])
             agents.pop(hotkey, None)
         return agents
 
@@ -256,42 +191,6 @@ class PhylaxValidator:
             return "missing entrypoint"
         return ""
 
-    def _fetch_agents_synapse(self, track: str) -> dict[str, dict]:
-        uids = self._serving_uids()
-        if not uids:
-            return {}
-        axons = [self.metagraph.axons[uid] for uid in uids]
-        responses = self.dendrite.query(
-            axons=axons, synapse=AgentSynapse(), timeout=QUERY_TIMEOUT_S, deserialize=False
-        )
-        agents: dict[str, dict] = {}
-        uid_by_hotkey: dict[str, int] = {}
-        for uid, resp in zip(uids, responses, strict=False):
-            hotkey = self.metagraph.hotkeys[uid]
-            if not getattr(resp, "code", "") or not self._verify_submission(hotkey, resp):
-                continue
-            reason = self._screen(track, resp)
-            if reason:
-                if reason != "wrong track":
-                    bt.logging.info(f"screened out agent={hotkey[:10]}: {reason}")
-                continue
-            uid_by_hotkey[hotkey] = uid
-            agents[hotkey] = {
-                "code": resp.code,
-                "entrypoint": resp.entrypoint or "agent_main",
-                "execution_api_key": resp.execution_api_key or "",
-                "inference_provider": _provider(resp.execution_api_key or ""),
-                "inference_model": resp.inference_model or "",
-                "agent_hash": resp.agent_hash,
-            }
-        copied = screening.duplicate_hotkeys(
-            {hk: (agents[hk]["code"], uid_by_hotkey[hk]) for hk in agents}
-        )
-        for hotkey in copied:
-            bt.logging.warning(f"screened out agent={hotkey[:10]}: copied agent code")
-            agents.pop(hotkey, None)
-        return agents
-
     def run_round(
         self,
         start_block: int,
@@ -303,7 +202,10 @@ class PhylaxValidator:
         self._round_seeds = {}
         self._round_tasks = {}
         end_block = start_block + self.round_blocks
-        block_hash = str(self.subtensor.get_block_hash(start_block))
+        info = self.subtensor.block_info(start_block)
+        if info is None:
+            raise AbstainRound(f"block info unavailable for block {start_block}")
+        block_hash = str(info.hash)
         scores_by_track: dict[str, list[tuple[str, float]]] = {}
         for track in rounds.TRACKS:
             corpus = self.corpora.get(track) or []
@@ -315,9 +217,9 @@ class PhylaxValidator:
             agents = self._fetch_agents(track, (participants or {}).get(track))
             self._round_seeds[track] = seed
             self._round_tasks[track] = [item["ref"] for item in task_set]
-            bt.logging.info(
-                f"round start={start_block} end={end_block} track={track} "
-                f"tasks={len(task_set)} agents={len(agents)}"
+            log.info(
+                "round start=%d end=%d track=%s tasks=%d agents=%d",
+                start_block, end_block, track, len(task_set), len(agents),
             )
             track_scores: list[tuple[str, float]] = []
             for hotkey, runnable in agents.items():
@@ -331,14 +233,14 @@ class PhylaxValidator:
                     "agent_hash": runnable["agent_hash"],
                     "score": round(score, 6),
                 }
-                bt.logging.info(f"round score track={track} agent={hotkey[:10]} S={score:.3f}")
+                log.info("round score track=%s agent=%s S=%.3f", track, hotkey[:10], score)
             scores_by_track[track] = track_scores
         self._write_round_record(start_block, scores_by_track)
         return scores_by_track
 
     def _out_of_window(self, end_block: int) -> bool:
         try:
-            block = self.subtensor.get_current_block()
+            block = self.subtensor.block()
         except Exception:  # noqa: BLE001
             return False
         return block >= end_block - DEADLINE_MARGIN_BLOCKS
@@ -361,7 +263,7 @@ class PhylaxValidator:
             path = self._state_dir() / f"round_{start_block}.json"
             path.write_text(json.dumps(record, indent=2), encoding="utf-8")
         except OSError as e:
-            bt.logging.warning(f"could not write round record: {e}")
+            log.warning("could not write round record: %s", e)
 
     def _score_agent(
         self,
@@ -449,7 +351,7 @@ class PhylaxValidator:
             "artifact_ref": item["ref"],
             "artifact_b64": item["artifact_b64"],
         }
-        result = run_task(dispatch, runnable, log=bt.logging.warning, cpu_budget_s=cpu_s)
+        result = run_task(dispatch, runnable, log=log.warning, cpu_budget_s=cpu_s)
         if result is None:
             return None, None
         if result.get("observed_probe_file") is not True:
@@ -488,7 +390,7 @@ class PhylaxValidator:
             if wall_used >= wall_cap:
                 break
             started = time.monotonic()
-            result = run_task(dispatch, runnable, log=bt.logging.warning, cpu_budget_s=budgets["cpu_s"])
+            result = run_task(dispatch, runnable, log=log.warning, cpu_budget_s=budgets["cpu_s"])
             wall_used += time.monotonic() - started
             if result is None:
                 continue
@@ -520,7 +422,7 @@ class PhylaxValidator:
         findings = result.get("findings") or []
         policy = result.get("policy") or {}
         digest = sssa_digest(track, item["ref"], nonce, verdict, evidence, findings, policy)
-        signature = "ed25519:" + self.wallet.hotkey.sign(digest).hex()
+        signature = "ed25519:" + bytes(self.wallet.hotkey.sign(digest)).hex()
         sssa = {
             "track": track,
             "artifact": {"bundle_hash": item["ref"], "nonce": nonce},
@@ -538,9 +440,7 @@ class PhylaxValidator:
         }
         self.last_sssa = sssa
         self._round_attestations.append(sssa)
-        bt.logging.debug(
-            f"attested agent={hotkey[:10]} artifact={item['ref']} hash={digest.hex()[:16]}"
-        )
+        log.debug("attested agent=%s artifact=%s hash=%s", hotkey[:10], item["ref"], digest.hex()[:16])
 
     def set_weights(self, scores_by_track: dict[str, list[tuple[str, float]]]) -> None:
         weight_map = scoring.compute_emission_weights(
@@ -555,42 +455,28 @@ class PhylaxValidator:
         }
         blended = {hk: w for hk, w in blended.items() if w > 1e-9}
         if not blended:
-            bt.logging.info("set_weights: no agent cleared the quality threshold; skipping")
+            log.info("set_weights: no agent cleared the quality threshold; skipping")
             return
         self._save_prior_weights(blended)
 
-        n = _metagraph_size(self.metagraph)
-        hotkey_to_uid = {hk: uid for uid, hk in enumerate(self.metagraph.hotkeys)}
-        weights = torch.zeros(n)
-        matched = 0
+        uid_by_hotkey = {n.hotkey: n.uid for n in self.metagraph.neurons}
+        uid_weights: dict[int, float] = {}
         for hotkey, w in blended.items():
-            uid = hotkey_to_uid.get(hotkey)
-            if uid is not None and 0 <= uid < n:
-                weights[uid] += float(w)
-                matched += 1
-
-        total = weights.sum().item()
-        if total <= 0.0:
-            bt.logging.warning("set_weights: no miner hotkeys matched metagraph; skipping")
+            uid = uid_by_hotkey.get(hotkey)
+            if uid is not None:
+                uid_weights[uid] = uid_weights.get(uid, 0.0) + float(w)
+        if not uid_weights:
+            log.warning("set_weights: no miner hotkeys matched metagraph; skipping")
             return
-        weights = weights / total
-        bt.logging.info(f"set_weights | matched {matched} agents")
 
         try:
-            result, msg = self.subtensor.set_weights(
-                netuid=self.config.netuid,
-                wallet=self.wallet,
-                uids=torch.arange(n),
-                weights=weights,
-                wait_for_inclusion=False,
+            bt.set_weights(
+                self.netuid, uid_weights, wallet=self.wallet, network=self.network
             )
         except Exception as e:  # noqa: BLE001
-            bt.logging.warning(f"set_weights raised: {e}")
+            log.warning("set_weights failed: %s", e)
             return
-        if result:
-            bt.logging.success("weights set")
-        else:
-            bt.logging.warning(f"set_weights returned False: {msg}")
+        log.info("weights set | matched %d agents", len(uid_weights))
 
     def _submit_results(self, round_ids: dict[str, str], start_block: int) -> None:
         if self.server is None:
@@ -610,14 +496,14 @@ class PhylaxValidator:
                     results=results,
                     attestations=attestations,
                 )
-                bt.logging.success(
-                    f"submitted {track} results: {len(results)} agents, "
-                    f"{len(attestations)} attestations"
+                log.info(
+                    "submitted %s results: %d agents, %d attestations",
+                    track, len(results), len(attestations),
                 )
             except ServerUnreachable as e:
-                bt.logging.warning(f"could not submit {track} results: {e}")
+                log.warning("could not submit %s results: %s", track, e)
             except Exception as e:  # noqa: BLE001
-                bt.logging.warning(f"{track} result submission failed: {e}")
+                log.warning("%s result submission failed: %s", track, e)
 
     def _execute_round(
         self,
@@ -626,11 +512,11 @@ class PhylaxValidator:
         seeds: dict[str, str] | None = None,
         participants: dict[str, list[dict]] | None = None,
     ) -> None:
-        self.metagraph.sync(subtensor=self.subtensor, lite=True)
+        self._refresh_metagraph()
         try:
             scores_by_track = self.run_round(start_block, seeds=seeds, participants=participants)
         except (AbstainRound, InfraFailure) as e:
-            bt.logging.warning(f"abstaining this round: {e}")
+            log.warning("abstaining this round: %s", e)
             return
         self._submit_results(round_ids, start_block)
         self.set_weights(scores_by_track)
@@ -644,14 +530,14 @@ class PhylaxValidator:
                 try:
                     spec = self.server.next_round(track, self.wallet.hotkey.ss58_address)
                 except ServerUnreachable as e:
-                    bt.logging.warning(f"server unreachable for {track}: {e}; retrying next poll")
+                    log.warning("server unreachable for %s: %s; retrying next poll", track, e)
                     return False
                 if not spec:
                     continue
                 if spec.get("phase") == "submission":
-                    bt.logging.info(
-                        f"track {track} submission window open "
-                        f"until {spec.get('submission_closes_at', '?')}; waiting"
+                    log.info(
+                        "track %s submission window open until %s; waiting",
+                        track, spec.get("submission_closes_at", "?"),
                     )
                     return False
                 round_ids[track] = str(spec.get("round_id") or f"block-{start_block}")
@@ -666,24 +552,23 @@ class PhylaxValidator:
 
     def run(self) -> None:
         corpus_sizes = {t: len(self.corpora.get(t) or []) for t in rounds.TRACKS}
-        bt.logging.info(
-            f"starting Phylax validator on netuid={self.config.netuid} "
-            f"hotkey={self.wallet.hotkey.ss58_address} corpora={corpus_sizes} "
-            f"round_blocks={self.round_blocks}"
+        log.info(
+            "starting Phylax validator on netuid=%d hotkey=%s corpora=%s round_blocks=%d",
+            self.netuid, self.wallet.hotkey.ss58_address, corpus_sizes, self.round_blocks,
         )
         while not self.should_exit:
             try:
-                block = self.subtensor.get_current_block()
+                block = self.subtensor.block()
                 start = rounds.round_start(block, self.round_blocks)
                 if start > self.last_round_start and self._begin_round(start):
                     self.last_round_start = start
                 time.sleep(POLL_INTERVAL_S)
             except KeyboardInterrupt:
-                bt.logging.info("validator stopped by KeyboardInterrupt")
+                log.info("validator stopped by KeyboardInterrupt")
                 break
             except Exception as e:  # noqa: BLE001
-                bt.logging.error(f"run loop error: {e}")
-                bt.logging.debug(traceback.format_exc())
+                log.error("run loop error: %s", e)
+                log.debug(traceback.format_exc())
                 time.sleep(POLL_INTERVAL_S)
 
 
@@ -695,33 +580,38 @@ def _provider(api_key: str) -> str:
     return ""
 
 
-_NETWORK_ENDPOINTS = {
-    "finney":  "wss://entrypoint-finney.opentensor.ai:443",
-    "test":    "wss://test.finney.opentensor.ai:443",
-    "archive": "wss://archive.chain.opentensor.ai:443",
-    "local":   "ws://127.0.0.1:9944",
-}
-
-
-def _resolve_endpoint(network: str | None) -> str:
-    if not network:
-        return _NETWORK_ENDPOINTS["finney"]
-    if network.startswith(("ws://", "wss://")):
-        return network
-    return _NETWORK_ENDPOINTS.get(network, _NETWORK_ENDPOINTS["finney"])
+def _setup_logging(debug: bool) -> None:
+    level = logging.DEBUG if debug else os.getenv("PHYLAX_LOG_LEVEL", "INFO").upper()
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Phylax validator neuron")
-    parser.add_argument("--netuid", type=int, required=True, help="Subnet netuid to validate on")
-    bt.Wallet.add_args(parser)
-    bt.Subtensor.add_args(parser)
-    bt.logging.add_args(parser)
-    config = bt.Config(parser)
-    config.subtensor.chain_endpoint = _resolve_endpoint(config.subtensor.network)
-    wallet = bt.Wallet(config=config)
-    subtensor = bt.Subtensor(config=config)
-    validator = PhylaxValidator(config=config, wallet=wallet, subtensor=subtensor)
+    parser.add_argument("--netuid", type=int, default=int(os.getenv("PHYLAX_NETUID", "76")))
+    parser.add_argument(
+        "--subtensor.network", dest="network",
+        default=os.getenv("SUBTENSOR_NETWORK", "finney"),
+    )
+    parser.add_argument(
+        "--wallet.name", dest="wallet_name", default=os.getenv("WALLET_NAME", "validator")
+    )
+    parser.add_argument(
+        "--wallet.hotkey", dest="wallet_hotkey", default=os.getenv("WALLET_HOTKEY", "default")
+    )
+    parser.add_argument("--logging.debug", dest="debug", action="store_true")
+    args, extra = parser.parse_known_args()
+    _setup_logging(args.debug)
+    if extra:
+        log.warning("ignoring unrecognised arguments: %s", " ".join(extra))
+    wallet = bt.Wallet(name=args.wallet_name, hotkey=args.wallet_hotkey)
+    subtensor = bt.Subtensor(args.network)
+    validator = PhylaxValidator(
+        netuid=args.netuid, network=args.network, wallet=wallet, subtensor=subtensor
+    )
     validator.run()
 
 

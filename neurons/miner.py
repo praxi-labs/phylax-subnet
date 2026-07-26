@@ -1,18 +1,18 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import time
 from pathlib import Path
 
 import bittensor as bt
 
-from phylax.protocol import AgentSynapse
 from phylax.server_client import PhylaxServerClient
-from phylax.utils.hashing import sha256_bytes, submission_digest
 
 MINER_INTERVAL_S: int = int(os.getenv("PHYLAX_MINER_INTERVAL", "20"))
-MIN_VALIDATOR_STAKE: float = float(os.getenv("PHYLAX_MIN_VALIDATOR_STAKE", "0"))
+
+log = logging.getLogger("phylax.miner")
 
 
 def _reference_agent_path() -> str:
@@ -25,18 +25,10 @@ def _reference_agent_path() -> str:
 class PhylaxMiner:
     neuron_type: str = "MinerNeuron"
 
-    def __init__(self, config=None, wallet=None, subtensor=None):
-        self.config = config
-        if callable(bt.logging):
-            bt.logging(config=config)
-        elif hasattr(bt.logging, "set_config"):
-            bt.logging.set_config(config)
-        self.wallet = wallet if wallet is not None else bt.Wallet(config=config)
-        self.subtensor = subtensor if subtensor is not None else bt.Subtensor(config=config)
-        self.metagraph = self.subtensor.metagraph(netuid=config.netuid)
+    def __init__(self, wallet: bt.Wallet):
+        self.wallet = wallet
         self.track = os.getenv("PHYLAX_TRACK", "skills")
         self.should_exit = False
-
         self.agent_path = (
             os.getenv("PHYLAX_AGENT_CODE_PATH", "")
             or os.getenv("PHYLAX_AGENT_PATH", "")
@@ -45,34 +37,15 @@ class PhylaxMiner:
         self.entrypoint = os.getenv("PHYLAX_AGENT_ENTRYPOINT", "agent_main")
         self.execution_api_key = os.getenv("PHYLAX_EXECUTION_API_KEY", "")
         self.inference_model = os.getenv("PHYLAX_INFERENCE_MODEL", "")
-        # Miners submit code only; the validator owns the sandbox runtime. These
-        # stay empty and are kept for wire/signature compatibility.
-        self.sandbox_image = ""
-        self.sandbox_digest = ""
-
-        axon_kwargs: dict = {"wallet": self.wallet, "config": config}
-        axon_port = os.getenv("PHYLAX_AXON_PORT", "").strip()
-        if axon_port:
-            axon_kwargs["port"] = int(axon_port)
-        axon_external_ip = os.getenv("PHYLAX_AXON_EXTERNAL_IP", "").strip()
-        if axon_external_ip:
-            axon_kwargs["external_ip"] = axon_external_ip
-        self.axon = bt.axon(**axon_kwargs)
-        self.axon.attach(
-            forward_fn=self.handle_agent,
-            blacklist_fn=self.blacklist_agent,
-            priority_fn=self.priority,
-        )
-
-        self._register_agent_for_marketplace()
 
     def _agent_code(self) -> str:
         return Path(self.agent_path).read_text(encoding="utf-8")
 
-    def _register_agent_for_marketplace(self) -> None:
+    def submit(self) -> bool:
         server_url = os.getenv("PHYLAX_SERVER_URL", "")
         if not server_url:
-            return
+            log.warning("PHYLAX_SERVER_URL unset; nothing to submit")
+            return False
         expected = os.getenv("PHYLAX_SERVER_HOTKEY", "").strip() or None
         try:
             client = PhylaxServerClient(
@@ -90,97 +63,56 @@ class PhylaxMiner:
                 name=os.getenv("PHYLAX_MINER_LABEL", ""),
                 inference_model=self.inference_model,
             )
-            bt.logging.success("registered agent with marketplace")
+            log.info("agent submitted to the backend for track=%s", self.track)
+            return True
         except Exception as e:  # noqa: BLE001
-            bt.logging.warning(f"marketplace registration skipped: {e}")
+            log.warning("agent submission failed: %s", e)
+            return False
 
-    def handle_agent(self, synapse: AgentSynapse) -> AgentSynapse:
-        code = self._agent_code()
-        synapse.track = self.track
-        synapse.code = code
-        synapse.entrypoint = self.entrypoint
-        synapse.execution_api_key = self.execution_api_key
-        synapse.inference_model = self.inference_model
-        synapse.sandbox_image = self.sandbox_image
-        synapse.sandbox_digest = self.sandbox_digest
-        synapse.agent_hash = sha256_bytes(code.encode("utf-8"))
-        digest = submission_digest(
-            self.track, code, self.entrypoint, self.sandbox_image, self.sandbox_digest
+    def run(self) -> None:
+        log.info(
+            "Phylax mining is submit only: validators fetch your agent from the "
+            "backend at round start. This process idles and resubmits on restart; "
+            "it is safe to stop it."
         )
-        synapse.signature = "ed25519:" + self.wallet.hotkey.sign(digest).hex()
-        return synapse
-
-    def blacklist_agent(self, synapse: AgentSynapse) -> tuple[bool, str]:
-        hotkey = getattr(synapse.dendrite, "hotkey", None)
-        if hotkey is None or hotkey not in self.metagraph.hotkeys:
-            return True, "unrecognised hotkey"
-        uid = self.metagraph.hotkeys.index(hotkey)
-        try:
-            permit = bool(self.metagraph.validator_permit[uid])
-        except (IndexError, TypeError, AttributeError):
-            permit = False
-        if not permit:
-            return True, "caller lacks a validator permit"
-        if float(self.metagraph.S[uid]) < MIN_VALIDATOR_STAKE:
-            return True, "caller stake below validator minimum"
-        return False, ""
-
-    def priority(self, synapse) -> float:
-        hotkey = getattr(synapse.dendrite, "hotkey", None)
-        if hotkey in self.metagraph.hotkeys:
-            uid = self.metagraph.hotkeys.index(hotkey)
-            return float(self.metagraph.S[uid])
-        return 0.0
-
-    def run(self):
-        bt.logging.info(
-            f"Starting Phylax miner on subnet {self.config.netuid} track={self.track} "
-            f"| hotkey: {self.wallet.hotkey.ss58_address}"
-        )
-        self.axon.serve(netuid=self.config.netuid, subtensor=self.subtensor).start()
-        step = 0
         while not self.should_exit:
             try:
-                if step % 10 == 0:
-                    self.metagraph.sync(subtensor=self.subtensor)
-                step += 1
                 time.sleep(MINER_INTERVAL_S)
             except KeyboardInterrupt:
-                bt.logging.info("Miner stopped by KeyboardInterrupt")
+                log.info("miner stopped by KeyboardInterrupt")
                 break
-            except Exception as e:  # noqa: BLE001
-                bt.logging.error(f"run loop error: {e}")
-                time.sleep(MINER_INTERVAL_S)
 
 
-_NETWORK_ENDPOINTS = {
-    "finney":  "wss://entrypoint-finney.opentensor.ai:443",
-    "test":    "wss://test.finney.opentensor.ai:443",
-    "archive": "wss://archive.chain.opentensor.ai:443",
-    "local":   "ws://127.0.0.1:9944",
-}
+def _setup_logging(debug: bool) -> None:
+    level = logging.DEBUG if debug else os.getenv("PHYLAX_LOG_LEVEL", "INFO").upper()
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
 
 
-def _resolve_endpoint(network: str | None) -> str:
-    if not network:
-        return _NETWORK_ENDPOINTS["finney"]
-    if network.startswith(("ws://", "wss://")):
-        return network
-    return _NETWORK_ENDPOINTS.get(network, _NETWORK_ENDPOINTS["finney"])
-
-
-def main():
-    parser = argparse.ArgumentParser(description="Phylax miner neuron")
-    parser.add_argument("--netuid", type=int, required=True, help="Subnet netuid to mine on")
-    bt.Wallet.add_args(parser)
-    bt.Subtensor.add_args(parser)
-    bt.logging.add_args(parser)
-    bt.Axon.add_args(parser)
-    config = bt.Config(parser)
-    config.subtensor.chain_endpoint = _resolve_endpoint(config.subtensor.network)
-    wallet = bt.Wallet(config=config)
-    subtensor = bt.Subtensor(config=config)
-    miner = PhylaxMiner(config=config, wallet=wallet, subtensor=subtensor)
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Phylax miner (submit only)")
+    parser.add_argument("--netuid", type=int, default=int(os.getenv("PHYLAX_NETUID", "76")))
+    parser.add_argument(
+        "--subtensor.network", dest="network",
+        default=os.getenv("SUBTENSOR_NETWORK", "finney"),
+    )
+    parser.add_argument(
+        "--wallet.name", dest="wallet_name", default=os.getenv("WALLET_NAME", "miner")
+    )
+    parser.add_argument(
+        "--wallet.hotkey", dest="wallet_hotkey", default=os.getenv("WALLET_HOTKEY", "default")
+    )
+    parser.add_argument("--logging.debug", dest="debug", action="store_true")
+    args, extra = parser.parse_known_args()
+    _setup_logging(args.debug)
+    if extra:
+        log.warning("ignoring unrecognised arguments: %s", " ".join(extra))
+    wallet = bt.Wallet(name=args.wallet_name, hotkey=args.wallet_hotkey)
+    miner = PhylaxMiner(wallet)
+    miner.submit()
     miner.run()
 
 
