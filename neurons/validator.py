@@ -240,7 +240,7 @@ class PhylaxValidator:
 
     def _out_of_window(self, end_block: int) -> bool:
         try:
-            block = self.subtensor.block()
+            block = self.subtensor.block
         except Exception:  # noqa: BLE001
             return False
         return block >= end_block - DEADLINE_MARGIN_BLOCKS
@@ -558,7 +558,7 @@ class PhylaxValidator:
         )
         while not self.should_exit:
             try:
-                block = self.subtensor.block()
+                block = self.subtensor.block
                 start = rounds.round_start(block, self.round_blocks)
                 if start > self.last_round_start and self._begin_round(start):
                     self.last_round_start = start
