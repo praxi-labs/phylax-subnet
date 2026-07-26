@@ -24,7 +24,6 @@ classifiers = [
 dynamic = ["dependencies"]
 
 [project.scripts]
-phylax-miner = "neurons.miner:main"
 phylax-validator = "neurons.validator:main"
 phylax-api = "phylax.api.server:main"
 phylax = "phylax.cli:main"
@@ -86,7 +85,3 @@ ignore = [
 "phylax/pipeline/**" = ["S110", "S112"]
 "phylax/api/server.py" = ["S110"]  # countersign best-effort
 "docker/harness/**" = ["S110"]     # entry-point probing
-# bittensor 9.x inspect.signature on blacklist_fn requires typing.Tuple,
-# not the modern tuple[...] generic. Keeping the import + annotation
-# as-is is intentional; ignore the deprecation-style rules for this file.
-"neurons/miner.py" = ["UP006", "UP035"]

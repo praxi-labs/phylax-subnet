@@ -56,10 +56,12 @@ docker compose version >/dev/null 2>&1 || {
 }
 
 # ---------------------------------------------------------------------------
-# Compose file — always overwrite, this is repo-authored config
+# Compose file — validator only; miners are submit-only and run no containers
 # ---------------------------------------------------------------------------
-echo "==> Fetching deploy/$ROLE/docker-compose.yml"
-fetch "$REPO_RAW/deploy/$ROLE/docker-compose.yml" -o "$TARGET/docker-compose.yml"
+if [ "$ROLE" = "validator" ]; then
+  echo "==> Fetching deploy/validator/docker-compose.yml"
+  fetch "$REPO_RAW/deploy/validator/docker-compose.yml" -o "$TARGET/docker-compose.yml"
+fi
 
 # ---------------------------------------------------------------------------
 # .env — role-specific, only written if missing; never clobbers an existing one
@@ -124,8 +126,6 @@ PHYLAX_INFERENCE_MODEL=
 PHYLAX_DEPENDENCY_MANIFEST=
 PHYLAX_MINER_LABEL=
 
-PHYLAX_MINER_INTERVAL=20
-
 HOST_UID=$(id -u)
 HOST_GID=$(id -g)
 EOF
@@ -171,7 +171,6 @@ if [ "$ROLE" = "miner" ]; then
 Files:
   $TARGET/.env                 your config (edit before submitting)
   $TARGET/src/                 phylax-subnet source + scripts
-  $TARGET/docker-compose.yml   OPTIONAL keepalive (resubmits your agent on start)
 
 Onboarding (submit-only — there is no neuron to run):
   1. Register your hotkey on the subnet yourself with btcli (netuid 76):
@@ -181,7 +180,8 @@ Onboarding (submit-only — there is no neuron to run):
        cd $TARGET && ./src/scripts/register.sh
 
 To ship a new version later, edit your agent and re-run ./src/scripts/register.sh;
-validators pull it from the backend at the start of each round.
+validators pull it from the backend at the start of each round. There is no
+miner container or image; submission is the whole job.
 
 EOF
 else

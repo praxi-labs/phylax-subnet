@@ -1,10 +1,9 @@
 name: Images
 
-# Build and publish the four subnet images to GitHub Container Registry on
-# every push to main. Operators (miners and validators) pull from ghcr.io
-# instead of cloning the repo and running docker build by hand.
+# Build and publish the three subnet images to GitHub Container Registry on
+# every push to main. Validators pull from ghcr.io instead of cloning the repo
+# and running docker build by hand. Miners are submit only and need no image.
 #
-#   phylax-miner      pulled by the miner deploy (the neuron)
 #   phylax-validator  pulled by the validator deploy (the neuron)
 #   phylax-agent      the VALIDATOR-OWNED sandbox; the executor docker-pulls it
 #                     on every agent run (PHYLAX_SANDBOX_IMAGE)
@@ -15,7 +14,7 @@ name: Images
 #   - sha-<short>    (always — for reproducible deploys)
 #   - <tag>          (when pushed as a v* tag — for releases)
 #
-# Packages default to private on first publish. Every one of the four MUST be
+# Packages default to private on first publish. Every one of the three MUST be
 # flipped to Public at
 #   https://github.com/orgs/praxi-labs/packages
 # or miners and validators cannot pull without auth. In particular a validator
@@ -43,7 +42,6 @@ jobs:
       fail-fast: false
       matrix:
         image:
-          - { name: miner,     dockerfile: docker/Dockerfile.miner }
           - { name: validator, dockerfile: docker/Dockerfile.validator }
           - { name: agent,     dockerfile: docker/Dockerfile.agent }
           - { name: proxy,     dockerfile: docker/Dockerfile.proxy }

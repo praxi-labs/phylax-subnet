@@ -1,29 +1,5 @@
 services:
 
-  miner:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile.miner
-    image: phylax-miner:dev
-    container_name: phylax-miner
-    env_file: ../.env
-    environment:
-      - PHYLAX_TRACK=${PHYLAX_TRACK:-skills}
-      - PHYLAX_LOG_LEVEL=DEBUG
-      - PHYLAX_SERVER_URL=${PHYLAX_SERVER_URL:-}
-      - PHYLAX_SERVER_HOTKEY=${PHYLAX_SERVER_HOTKEY:-}
-    volumes:
-      - ../:/opt/phylax
-    networks:
-      - egress
-    command: >
-      python neurons/miner.py
-      --netuid ${PHYLAX_NETUID:-76}
-      --subtensor.network ${SUBTENSOR_NETWORK:-finney}
-      --wallet.name ${WALLET_NAME:-miner}
-      --wallet.hotkey ${WALLET_HOTKEY:-default}
-      --logging.debug
-
   validator:
     build:
       context: ..
@@ -43,8 +19,6 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ../:/opt/phylax
-    depends_on:
-      - miner
     networks:
       - egress
     command: >
