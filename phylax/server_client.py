@@ -21,6 +21,14 @@ class ServerUnreachable(Exception):
     pass
 
 
+class ServerRejected(Exception):
+    def __init__(self, status_code: int, detail: str, path: str):
+        super().__init__(f"{path}: HTTP {status_code}: {detail}")
+        self.status_code = status_code
+        self.detail = detail
+        self.path = path
+
+
 class ServerIdentityMismatch(Exception):
     pass
 
@@ -72,7 +80,12 @@ class PhylaxServerClient:
             )
         except (httpx.ConnectError, httpx.ReadTimeout, httpx.TransportError) as exc:
             raise ServerUnreachable(f"{method} {path}: {exc}") from exc
-        r.raise_for_status()
+        if r.status_code >= 400:
+            try:
+                detail = str((r.json() or {}).get("detail") or "")
+            except ValueError:
+                detail = r.text[:200]
+            raise ServerRejected(r.status_code, detail or r.reason_phrase, path)
         return r.json() if r.content else {}
 
     def fetch_server_identity(self) -> str:

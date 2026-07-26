@@ -16,7 +16,7 @@ from phylax.analysis import common, scoring, tracks
 from phylax.analysis import proof as proofmod
 from phylax.harness.corpus import load_corpus
 from phylax.harness.runner import InfraFailure, run_task
-from phylax.server_client import PhylaxServerClient, ServerUnreachable
+from phylax.server_client import PhylaxServerClient, ServerRejected, ServerUnreachable
 from phylax.utils.hashing import sssa_digest
 
 POLL_INTERVAL_S: int = int(os.getenv("PHYLAX_POLL_INTERVAL", "30"))
@@ -64,6 +64,7 @@ class PhylaxValidator:
         self._round_scores: dict[str, dict[str, dict]] = {}
         self._round_seeds: dict[str, str] = {}
         self._round_tasks: dict[str, list[str]] = {}
+        self._last_server_reject: str | None = None
         if os.getenv("PHYLAX_DEV_UNSAFE_EXECUTOR") == "1":
             log.warning(
                 "PHYLAX_DEV_UNSAFE_EXECUTOR=1: agents run unjailed; never use outside development"
@@ -150,8 +151,8 @@ class PhylaxValidator:
                 continue
             try:
                 data = self.server.get_runnable_agent(hotkey)
-            except ServerUnreachable as e:
-                raise AbstainRound(f"backend unreachable fetching {hotkey[:10]}: {e}") from e
+            except (ServerUnreachable, ServerRejected) as e:
+                raise AbstainRound(f"backend unavailable fetching {hotkey[:10]}: {e}") from e
             code = str((data or {}).get("code") or "")
             if not code:
                 continue
@@ -521,6 +522,13 @@ class PhylaxValidator:
         self._submit_results(round_ids, start_block)
         self.set_weights(scores_by_track)
 
+    def _warn_once(self, message: str) -> None:
+        if message != self._last_server_reject:
+            log.warning("%s", message)
+            self._last_server_reject = message
+        else:
+            log.debug("%s", message)
+
     def _begin_round(self, start_block: int) -> bool:
         round_ids: dict[str, str] = {}
         seeds: dict[str, str] = {}
@@ -530,7 +538,19 @@ class PhylaxValidator:
                 try:
                     spec = self.server.next_round(track, self.wallet.hotkey.ss58_address)
                 except ServerUnreachable as e:
-                    log.warning("server unreachable for %s: %s; retrying next poll", track, e)
+                    self._warn_once(f"server unreachable ({e}); retrying next poll")
+                    return False
+                except ServerRejected as e:
+                    if e.status_code in (401, 403):
+                        self._warn_once(
+                            f"server declined the round poll (HTTP {e.status_code}: {e.detail}). "
+                            "Expected until this hotkey holds a validator permit "
+                            "(stake, then wait an epoch) and its IP is allowlisted; retrying"
+                        )
+                    else:
+                        self._warn_once(
+                            f"server rejected the round poll (HTTP {e.status_code}: {e.detail}); retrying"
+                        )
                     return False
                 if not spec:
                     continue
@@ -545,6 +565,7 @@ class PhylaxValidator:
                 if seed:
                     seeds[track] = seed
                 participants[track] = spec.get("participants") or []
+        self._last_server_reject = None
         self._execute_round(
             round_ids, start_block, seeds=seeds or None, participants=participants or None
         )
@@ -587,6 +608,9 @@ def _setup_logging(debug: bool) -> None:
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
+    if os.getenv("PHYLAX_LOG_TRANSPORT") != "1":
+        for noisy in ("httpx", "httpcore", "websockets", "bittensor"):
+            logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
 def main() -> None:
