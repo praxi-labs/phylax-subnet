@@ -24,11 +24,13 @@ _FINDING_BUCKETS = {
 }
 
 
-def _repo_root() -> Path:
+def _repo_root() -> Path | None:
     override = os.getenv("PHYLAX_CORPUS_DIR", "").strip()
     if override:
         return Path(override).expanduser()
-    return Path(__file__).resolve().parents[2] / "corpora"
+    if os.getenv("PHYLAX_DEV_CORPUS") == "1":
+        return Path(__file__).resolve().parents[2] / "corpora"
+    return None
 
 
 def _zip_dir_b64(directory: Path) -> str:
@@ -77,7 +79,10 @@ def _ground_truth(track: str, label_doc: dict | None) -> dict | None:
 
 
 def load_corpus(track: str) -> list[dict]:
-    base = _repo_root() / track
+    root = _repo_root()
+    if root is None:
+        return []
+    base = root / track
     items: list[dict] = []
     for label in _LABEL_DIRS:
         label_dir = base / label
