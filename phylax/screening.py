@@ -1,8 +1,75 @@
 from __future__ import annotations
 
 import difflib
+import re
 
 SIMILARITY_THRESHOLD = 0.92
+
+_STRING_LITERAL = re.compile(r'"[^"\n]*"|\'[^\'\n]*\'')
+
+
+def _strip_literals(code: str) -> str:
+    return _STRING_LITERAL.sub('""', code)
+
+
+_ABUSE_RULES: tuple[tuple[str, re.Pattern[str], bool], ...] = (
+    (
+        "reads operator secrets",
+        re.compile(
+            r"(?:open|read_text|read_bytes|readlines|expanduser|Path|load|"
+            r"readFileSync|cat)\s*\([^)\n]{0,160}"
+            r"(?:\.ssh/id_|id_rsa|id_ed25519|\.aws/credentials|\.netrc|"
+            r"\.git-credentials|\.password-store|/etc/shadow|"
+            r"\.docker/config|\.kube/config|wallet\.dat|coldkey|\.bittensor)"
+        ),
+        False,
+    ),
+    (
+        "executes unauthorised system commands",
+        re.compile(
+            r"os\.system\s*\(|subprocess\.(?:Popen|run|call|check_output)\s*\(\s*"
+            r"[\"'](?:/bin/|/usr/bin/|sh\b|bash\b|curl\b|wget\b|nc\b)|"
+            r"pty\.spawn|/dev/tcp/"
+        ),
+        True,
+    ),
+    (
+        "obfuscates its behaviour",
+        re.compile(
+            r"eval\s*\(\s*(?:base64|bytes\.fromhex|codecs\.decode|__import__)|"
+            r"exec\s*\(\s*(?:base64|bytes\.fromhex|codecs\.decode|__import__)|"
+            r"marshal\.loads|pickle\.loads\s*\(\s*base64|"
+            r"getattr\s*\(\s*__import__\s*\("
+        ),
+        True,
+    ),
+    (
+        "exhausts resources",
+        re.compile(
+            r"while\s+True\s*:\s*(?:\n\s+pass|\s*pass\b)|"
+            r"fork\s*\(\s*\)\s*(?:while|for)|os\.fork\s*\(\s*\)\s*\n\s*while|"
+            r"\[\s*0\s*\]\s*\*\s*\d{9,}|range\s*\(\s*\d{10,}\s*\)"
+        ),
+        True,
+    ),
+    (
+        "abuses the inference channel",
+        re.compile(
+            r"for\s+\w+\s+in\s+range\s*\(\s*\d{4,}\s*\)\s*:[^\n]{0,200}\n[^\n]{0,200}"
+            r"(?:chat/completions|inference|\.complete\s*\(|openai|anthropic)"
+        ),
+        True,
+    ),
+)
+
+
+def abuse_reason(code: str) -> str:
+    base = normalise_code(code)
+    without_literals = _strip_literals(base)
+    for reason, pattern, strip in _ABUSE_RULES:
+        if pattern.search(without_literals if strip else base):
+            return reason
+    return ""
 
 
 def normalise_code(code: str) -> str:

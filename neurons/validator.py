@@ -193,6 +193,9 @@ class PhylaxValidator:
         entrypoint = str(data.get("entrypoint") or "agent_main")
         if f"def {entrypoint}" not in code:
             return "missing entrypoint"
+        abuse = screening.abuse_reason(code)
+        if abuse:
+            return f"abuse pattern: {abuse}"
         return ""
 
     def run_round(
