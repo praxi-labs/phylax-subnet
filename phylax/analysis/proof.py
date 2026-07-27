@@ -94,6 +94,35 @@ def verify_probe_evidence(submitted: dict | None, probe: ProbeSpec) -> ProofResu
     return ProofResult(True, "")
 
 
+def verify_validator_trace(events: list | None, probe: ProbeSpec) -> ProofResult:
+    """Check the probe effects against the trace the validator's own runner
+    recorded while the agent executed. Nothing here is agent-authored."""
+    if not events:
+        return ProofResult(False, "validator trace empty")
+    saw_fs = saw_net = saw_proc = False
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        kind = str(event.get("kind", ""))
+        if kind == "fs" and probe.file_path in str(event.get("path", "")):
+            saw_fs = True
+        elif kind == "net":
+            blob = f"{event.get('host', '')} {event.get('url', '')} {event.get('peer', '')}"
+            if probe.dns_host in blob:
+                saw_net = True
+        elif kind == "proc":
+            blob = f"{event.get('cmd', '')} {event.get('args', '')}"
+            if probe.process_echo in blob:
+                saw_proc = True
+    if not saw_fs:
+        return ProofResult(False, "probe file write absent from validator trace")
+    if not saw_net:
+        return ProofResult(False, "probe dns lookup absent from validator trace")
+    if not saw_proc:
+        return ProofResult(False, "probe process echo absent from validator trace")
+    return ProofResult(True, "")
+
+
 def verify_proof_of_execution(
     probe: ProbeSpec,
     evidence: dict | None,

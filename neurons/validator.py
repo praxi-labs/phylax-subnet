@@ -400,6 +400,10 @@ class PhylaxValidator:
             return None, None
         if result.get("observed_probe_file") is not True:
             return None, result
+        poe = proofmod.verify_validator_trace(result.get("validator_trace"), probe)
+        if not poe.passed:
+            log.debug("rep rejected: %s", poe.reason)
+            return None, result
         verdict = result["verdict"] if isinstance(result["verdict"], dict) else {}
         decision = str(verdict.get("decision", "")).upper()
         if decision not in _VERDICT_ORDINAL:

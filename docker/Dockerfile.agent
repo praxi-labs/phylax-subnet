@@ -18,6 +18,7 @@ RUN pip install --upgrade pip && pip install -r requirements.txt
 
 COPY phylax /agent/phylax
 COPY docker/agent/entrypoint.py /agent/entrypoint.py
+COPY docker/agent/_agent_runner.py /agent/_agent_runner.py
 # Kept only as a reference/fallback for local runs; the runner loads /task/agent.py.
 COPY phylax/harness/reference_agent.py /agent/agent.py
 

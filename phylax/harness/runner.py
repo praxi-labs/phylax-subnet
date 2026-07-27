@@ -155,6 +155,7 @@ def run_task(
             "findings": body.get("findings") or [],
             "policy": body.get("policy") or {},
             "observed_probe_file": report.get("observed_probe_file"),
+            "validator_trace": report.get("validator_trace") or [],
         }
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
