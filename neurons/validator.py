@@ -15,6 +15,7 @@ from phylax import rounds, screening
 from phylax.analysis import common, scoring, tracks
 from phylax.analysis import proof as proofmod
 from phylax.harness.corpus import load_corpus
+from phylax.harness.detonate import detonate_artifact_bytes
 from phylax.harness.runner import InfraFailure, run_task
 from phylax.server_client import PhylaxServerClient, ServerRejected, ServerUnreachable
 from phylax.utils.hashing import sssa_digest
@@ -64,6 +65,7 @@ class PhylaxValidator:
         self._round_scores: dict[str, dict[str, dict]] = {}
         self._round_seeds: dict[str, str] = {}
         self._round_tasks: dict[str, list[str]] = {}
+        self._traces: dict[str, dict] = {}
         self._last_server_reject: str | None = None
         self._registered_with_server = False
         if os.getenv("PHYLAX_DEV_UNSAFE_EXECUTOR") == "1":
@@ -216,6 +218,7 @@ class PhylaxValidator:
             seed = (seeds or {}).get(track) or rounds.round_seed(block_hash, track)
             budgets = rounds.budgets_for(track)
             task_set = rounds.select_tasks(corpus, seed, budgets["tasks"])
+            self._detonate_task_set(track, task_set, budgets)
             agents = self._fetch_agents(track, (participants or {}).get(track))
             self._round_seeds[track] = seed
             self._round_tasks[track] = [item["ref"] for item in task_set]
@@ -239,6 +242,27 @@ class PhylaxValidator:
             scores_by_track[track] = track_scores
         self._write_round_record(start_block, scores_by_track)
         return scores_by_track
+
+    def _detonate_task_set(self, track: str, task_set: list[dict], budgets: dict) -> None:
+        if track == "repositories":
+            return
+        started = time.monotonic()
+        detonated = 0
+        for item in task_set:
+            ref = item["ref"]
+            if ref in self._traces:
+                item["observed"] = self._traces[ref]
+                continue
+            trace = detonate_artifact_bytes(
+                track, item.get("artifact_b64", ""), timeout_s=budgets["cpu_s"]
+            )
+            self._traces[ref] = trace
+            item["observed"] = trace
+            detonated += 1
+        log.info(
+            "detonated %d/%d %s artifacts in %.1fs",
+            detonated, len(task_set), track, time.monotonic() - started,
+        )
 
     def _out_of_window(self, end_block: int) -> bool:
         try:
@@ -352,6 +376,7 @@ class PhylaxValidator:
             "probe": probe.as_inputs(),
             "artifact_ref": item["ref"],
             "artifact_b64": item["artifact_b64"],
+            "observed": self._traces.get(item["ref"]),
         }
         result = run_task(dispatch, runnable, log=log.warning, cpu_budget_s=cpu_s)
         if result is None:
@@ -420,7 +445,14 @@ class PhylaxValidator:
         self, track: str, hotkey: str, runnable: dict, item: dict, nonce: str, result: dict
     ) -> None:
         verdict = result["verdict"]
-        evidence = result["evidence"]
+        evidence = dict(result["evidence"] or {})
+        trace = self._traces.get(item["ref"])
+        if trace is not None:
+            evidence["validator_observed"] = {
+                "capabilities": trace.get("capabilities", []),
+                "detonated": bool(trace.get("detonated")),
+                "tool_surface": trace.get("tool_surface", []),
+            }
         findings = result.get("findings") or []
         policy = result.get("policy") or {}
         digest = sssa_digest(track, item["ref"], nonce, verdict, evidence, findings, policy)

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import base64
+import io
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import zipfile
 from pathlib import Path
 
 _CHILD = Path(__file__).resolve().parent / "_detonate_child.py"
@@ -125,6 +128,36 @@ def _detonate_mcp(artifact_dir: Path, timeout_s: int) -> dict:
     if surface:
         caps.add("EXPOSE_TOOL")
     return {"capabilities": sorted(caps), "phases": phases, "tool_surface": surface}
+
+
+def detonate_artifact_bytes(
+    track: str, artifact_b64: str, timeout_s: int = _DEFAULT_TIMEOUT_S
+) -> dict:
+    if track == "repositories" or not artifact_b64:
+        return {"capabilities": [], "phases": {}, "track": track, "detonated": False}
+    with tempfile.TemporaryDirectory(prefix="phylax-art-") as tmp:
+        work = Path(tmp)
+        try:
+            data = base64.b64decode(artifact_b64)
+        except (ValueError, TypeError):
+            return {"capabilities": [], "phases": {}, "track": track,
+                    "detonated": False, "error": "artifact decode failed"}
+        target = work / "artifact"
+        target.mkdir()
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                root = target.resolve()
+                for member in zf.infolist():
+                    dest = (target / member.filename).resolve()
+                    if dest != root and root not in dest.parents:
+                        continue
+                    zf.extract(member, target)
+        except zipfile.BadZipFile:
+            return {"capabilities": [], "phases": {}, "track": track,
+                    "detonated": False, "error": "artifact not a zip"}
+        result = detonate(track, str(target), timeout_s)
+        result["detonated"] = True
+        return result
 
 
 def detonate(track: str, artifact_dir: str, timeout_s: int = _DEFAULT_TIMEOUT_S) -> dict:

@@ -111,6 +111,7 @@ def run_task(
             "track": dispatch.get("track", ""),
             "nonce": dispatch.get("nonce", ""),
             "probe": dispatch.get("probe", {}),
+            "observed": dispatch.get("observed") or {},
             "inference": {
                 "api": os.getenv("PHYLAX_INFERENCE_PROXY_URL", ""),
                 "api_key": runnable.get("execution_api_key", ""),
