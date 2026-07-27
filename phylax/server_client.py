@@ -162,6 +162,22 @@ class PhylaxServerClient:
             return None
         return data or None
 
+    def get_round_tasks(self, round_id: str) -> dict:
+        """Fetch this round's frozen task set from the backend.
+
+        The corpus never ships with the validator image. The server pins the
+        same set for every validator in the round and only serves it to hotkeys
+        that pass the validator signature gate.
+        """
+        if self._server_hotkey is None:
+            self.fetch_server_identity()
+        return self._request("GET", f"/v1/rounds/{round_id}/tasks")
+
+    def get_round_artifact(self, round_id: str, source_id: str) -> dict:
+        if self._server_hotkey is None:
+            self.fetch_server_identity()
+        return self._request("GET", f"/v1/rounds/{round_id}/artifact/{source_id}")
+
     def submit_round_results(
         self,
         *,

@@ -14,7 +14,7 @@ import bittensor as bt
 from phylax import rounds, screening
 from phylax.analysis import common, quality, scoring, tracks
 from phylax.analysis import proof as proofmod
-from phylax.harness.corpus import load_corpus
+from phylax.harness.corpus import fetch_corpus, load_corpus
 from phylax.harness.detonate import detonate_artifact_bytes
 from phylax.harness.runner import InfraFailure, run_task
 from phylax.server_client import PhylaxServerClient, ServerRejected, ServerUnreachable
@@ -72,9 +72,11 @@ class PhylaxValidator:
             log.warning(
                 "PHYLAX_DEV_UNSAFE_EXECUTOR=1: agents run unjailed; never use outside development"
             )
-        missing = [t for t in rounds.TRACKS if not self.corpora.get(t)]
-        if missing:
-            log.warning("no local corpus for tracks: %s", ", ".join(missing))
+        if any(self.corpora.get(t) for t in rounds.TRACKS):
+            log.warning(
+                "a local corpus is present; it is a development override and is never "
+                "used when the backend serves the round task set"
+            )
 
     def _fetch_metagraph(self):
         mg = self.subtensor.subnets.metagraph(self.netuid)
@@ -198,11 +200,27 @@ class PhylaxValidator:
             return f"abuse pattern: {abuse}"
         return ""
 
+    def _corpus_for(self, track: str, round_id: str) -> list[dict]:
+        if self.server is not None and round_id:
+            try:
+                items = fetch_corpus(self.server, round_id, track)
+            except ServerUnreachable as e:
+                raise AbstainRound(f"task set unreachable for track {track}: {e}") from e
+            except ServerRejected as e:
+                raise AbstainRound(
+                    f"backend declined the {track} task set (HTTP {e.status_code}: {e.detail})"
+                ) from e
+            if items:
+                return items
+            raise AbstainRound(f"backend served no tasks for track {track}")
+        return self.corpora.get(track) or []
+
     def run_round(
         self,
         start_block: int,
         seeds: dict[str, str] | None = None,
         participants: dict[str, list[dict]] | None = None,
+        round_ids: dict[str, str] | None = None,
     ) -> dict[str, list[tuple[str, float]]]:
         self._round_attestations = []
         self._round_scores = {}
@@ -215,9 +233,9 @@ class PhylaxValidator:
         block_hash = str(info.hash)
         scores_by_track: dict[str, list[tuple[str, float]]] = {}
         for track in rounds.TRACKS:
-            corpus = self.corpora.get(track) or []
+            corpus = self._corpus_for(track, str((round_ids or {}).get(track) or ""))
             if not corpus:
-                raise AbstainRound(f"no local corpus for track {track}")
+                raise AbstainRound(f"no task set available for track {track}")
             seed = (seeds or {}).get(track) or rounds.round_seed(block_hash, track)
             budgets = rounds.budgets_for(track)
             task_set = rounds.select_tasks(corpus, seed, budgets["tasks"])
@@ -572,7 +590,9 @@ class PhylaxValidator:
     ) -> None:
         self._refresh_metagraph()
         try:
-            scores_by_track = self.run_round(start_block, seeds=seeds, participants=participants)
+            scores_by_track = self.run_round(
+                start_block, seeds=seeds, participants=participants, round_ids=round_ids
+            )
         except (AbstainRound, InfraFailure) as e:
             log.warning("abstaining this round: %s", e)
             return
@@ -642,10 +662,10 @@ class PhylaxValidator:
         return True
 
     def run(self) -> None:
-        corpus_sizes = {t: len(self.corpora.get(t) or []) for t in rounds.TRACKS}
         log.info(
-            "starting Phylax validator on netuid=%d hotkey=%s corpora=%s round_blocks=%d",
-            self.netuid, self.wallet.hotkey.ss58_address, corpus_sizes, self.round_blocks,
+            "starting Phylax validator on netuid=%d hotkey=%s tracks=%s round_blocks=%d",
+            self.netuid, self.wallet.hotkey.ss58_address,
+            ",".join(rounds.TRACKS), self.round_blocks,
         )
         self._register_with_server()
         while not self.should_exit:

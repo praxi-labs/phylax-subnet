@@ -78,6 +78,47 @@ def _ground_truth(track: str, label_doc: dict | None) -> dict | None:
     return buckets or None
 
 
+def pack_files(files: dict) -> str:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for rel in sorted(files):
+            name = str(rel).replace("\\", "/").lstrip("/")
+            if not name or ".." in name.split("/"):
+                continue
+            if name.rsplit("/", 1)[-1] in _SIDECAR_FILES:
+                continue
+            try:
+                zf.writestr(name, base64.b64decode(str(files[rel]), validate=True))
+            except (ValueError, TypeError):
+                continue
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def fetch_corpus(client, round_id: str, track: str) -> list[dict]:
+    listing = client.get_round_tasks(round_id) or {}
+    items: list[dict] = []
+    for entry in listing.get("tasks") or []:
+        source_id = str(entry.get("source_id") or "")
+        if not source_id:
+            continue
+        label = str(entry.get("label") or "")
+        artifact = client.get_round_artifact(round_id, source_id) or {}
+        files = artifact.get("files")
+        if not isinstance(files, dict) or not files:
+            continue
+        items.append(
+            {
+                "ref": f"{track}/{label}/{source_id}",
+                "label": label,
+                "artifact_b64": pack_files(files),
+                "ground_truth": None,
+                "expected_findings": [],
+                "expected_capabilities": [],
+            }
+        )
+    return items
+
+
 def load_corpus(track: str) -> list[dict]:
     root = _repo_root()
     if root is None:
