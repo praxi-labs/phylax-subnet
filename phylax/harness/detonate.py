@@ -155,6 +155,23 @@ def detonate_artifact_bytes(
         except zipfile.BadZipFile:
             return {"capabilities": [], "phases": {}, "track": track,
                     "detonated": False, "error": "artifact not a zip"}
+
+        image = os.getenv("PHYLAX_SANDBOX_IMAGE", "").strip()
+        if image:
+            from phylax.harness.executor import detonate_in_docker
+
+            result = detonate_in_docker(
+                str(target), track,
+                image=image,
+                digest=os.getenv("PHYLAX_SANDBOX_DIGEST", "").strip(),
+                cpu_budget_s=timeout_s,
+            )
+            result.setdefault("track", track)
+            return result
+        if os.getenv("PHYLAX_DEV_UNSAFE_EXECUTOR") != "1":
+            return {"capabilities": [], "phases": {}, "track": track,
+                    "detonated": False,
+                    "error": "PHYLAX_SANDBOX_IMAGE unset; refusing to detonate outside the jail"}
         result = detonate(track, str(target), timeout_s)
         result["detonated"] = True
         return result

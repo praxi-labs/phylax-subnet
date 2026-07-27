@@ -103,6 +103,87 @@ def _await_exit(cid: str, cpu_budget_s: int) -> dict | None:
         time.sleep(interval)
 
 
+_DETONATE_DRIVER = (
+    "import json,sys;"
+    "from phylax.harness.detonate import detonate;"
+    "json.dump(detonate(sys.argv[1], sys.argv[2], int(sys.argv[3])),"
+    "open('/task/detonation.json','w'))"
+)
+
+
+def detonate_in_docker(
+    artifact_dir: str,
+    track: str,
+    *,
+    image: str,
+    digest: str = "",
+    cpu_budget_s: int = 30,
+) -> dict:
+    ensure_jail_network()
+    ref = _pin(image, digest)
+    pull = _docker("pull", ref, timeout=300)
+    if pull.returncode != 0:
+        return {"capabilities": [], "phases": {}, "detonated": False,
+                "error": f"image pull failed: {pull.stderr[-200:]}"}
+
+    work = Path(tempfile.mkdtemp(prefix="phylax-det-"))
+    task_dir = work / "task"
+    task_dir.mkdir(parents=True)
+    cid = None
+    try:
+        shutil.copytree(artifact_dir, task_dir / "artifact", dirs_exist_ok=True)
+        create = _docker(
+            "create",
+            "--network", JAIL_NETWORK,
+            "--cap-drop=ALL",
+            "--security-opt", "no-new-privileges",
+            "--tmpfs", "/tmp:rw,size=64m",  # noqa: S108
+            "--memory", _MEMORY,
+            "--memory-swap", _MEMORY,
+            "--cpus", _CPUS,
+            "--pids-limit", _PIDS,
+            "--entrypoint", "python",
+            ref,
+            "-c", _DETONATE_DRIVER, track, "/task/artifact", str(cpu_budget_s),
+            timeout=30,
+        )
+        if create.returncode != 0:
+            return {"capabilities": [], "phases": {}, "detonated": False,
+                    "error": f"container create failed: {create.stderr[-200:]}"}
+        cid = create.stdout.strip()
+        cp_in = _docker("cp", f"{task_dir}/.", f"{cid}:/task", timeout=60)
+        if cp_in.returncode != 0:
+            return {"capabilities": [], "phases": {}, "detonated": False,
+                    "error": f"artifact copy-in failed: {cp_in.stderr[-200:]}"}
+        start = _docker("start", cid, timeout=30)
+        if start.returncode != 0:
+            return {"capabilities": [], "phases": {}, "detonated": False,
+                    "error": f"container start failed: {start.stderr[-200:]}"}
+        outcome = _await_exit(cid, cpu_budget_s)
+        if outcome is not None:
+            return {"capabilities": [], "phases": {}, "detonated": False,
+                    "error": outcome.get("error", "detonation halted")}
+        out = work / "detonation.json"
+        cp_out = _docker("cp", f"{cid}:/task/detonation.json", str(out), timeout=30)
+        if cp_out.returncode != 0 or not out.exists():
+            return {"capabilities": [], "phases": {}, "detonated": False,
+                    "error": "detonation produced no result"}
+        try:
+            result = json.loads(out.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            return {"capabilities": [], "phases": {}, "detonated": False,
+                    "error": "detonation result unreadable"}
+        result["detonated"] = True
+        return result
+    except subprocess.TimeoutExpired:
+        return {"capabilities": [], "phases": {}, "detonated": False,
+                "error": "docker command timed out"}
+    finally:
+        if cid:
+            _docker("rm", "-f", cid, timeout=30)
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def run_agent_in_docker(
     agent_code: str,
     context: dict,
