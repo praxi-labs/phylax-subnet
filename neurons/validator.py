@@ -65,6 +65,7 @@ class PhylaxValidator:
         self._round_seeds: dict[str, str] = {}
         self._round_tasks: dict[str, list[str]] = {}
         self._last_server_reject: str | None = None
+        self._registered_with_server = False
         if os.getenv("PHYLAX_DEV_UNSAFE_EXECUTOR") == "1":
             log.warning(
                 "PHYLAX_DEV_UNSAFE_EXECUTOR=1: agents run unjailed; never use outside development"
@@ -522,6 +523,18 @@ class PhylaxValidator:
         self._submit_results(round_ids, start_block)
         self.set_weights(scores_by_track)
 
+    def _register_with_server(self) -> None:
+        if self.server is None:
+            return
+        try:
+            self.server.register_validator(os.getenv("PHYLAX_VALIDATOR_LABEL", ""))
+        except (ServerUnreachable, ServerRejected) as e:
+            log.debug("validator self registration deferred: %s", e)
+            return
+        if not self._registered_with_server:
+            log.info("registered with the backend as a validator")
+            self._registered_with_server = True
+
     def _warn_once(self, message: str) -> None:
         if message != self._last_server_reject:
             log.warning("%s", message)
@@ -566,6 +579,7 @@ class PhylaxValidator:
                     seeds[track] = seed
                 participants[track] = spec.get("participants") or []
         self._last_server_reject = None
+        self._register_with_server()
         self._execute_round(
             round_ids, start_block, seeds=seeds or None, participants=participants or None
         )
@@ -577,6 +591,7 @@ class PhylaxValidator:
             "starting Phylax validator on netuid=%d hotkey=%s corpora=%s round_blocks=%d",
             self.netuid, self.wallet.hotkey.ss58_address, corpus_sizes, self.round_blocks,
         )
+        self._register_with_server()
         while not self.should_exit:
             try:
                 block = self.subtensor.block

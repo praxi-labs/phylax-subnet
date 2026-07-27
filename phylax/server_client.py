@@ -117,6 +117,15 @@ class PhylaxServerClient:
             },
         )
 
+    def register_validator(self, label: str = "") -> dict:
+        if self._server_hotkey is None:
+            self.fetch_server_identity()
+        return self._request(
+            "POST",
+            "/v1/validators/register",
+            json_body={"label": label},
+        )
+
     def next_round(self, track: str, hotkey: str) -> dict | None:
         """Ask the server whether a round should run for this track now.
 
