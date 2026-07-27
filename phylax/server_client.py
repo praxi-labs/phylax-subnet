@@ -135,11 +135,7 @@ class PhylaxServerClient:
         """
         if self._server_hotkey is None:
             self.fetch_server_identity()
-        data = self._request(
-            "GET",
-            "/v1/rounds/next",
-            params={"track": track, "hotkey": hotkey},
-        )
+        data = self._request("GET", f"/v1/rounds/next/{track}")
         if not data or not data.get("round_id"):
             return None
         return data
