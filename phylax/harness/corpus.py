@@ -93,6 +93,10 @@ def load_corpus(track: str) -> list[dict]:
                     "label": label,
                     "artifact_b64": _zip_dir_b64(entry),
                     "ground_truth": _ground_truth(track, label_doc),
+                    "expected_findings": [
+                        f for f in (label_doc or {}).get("expected_findings", [])
+                        if isinstance(f, dict)
+                    ],
                     "expected_capabilities": [
                         str(c.get("capability", ""))
                         for c in (label_doc or {}).get("expected_capabilities", [])

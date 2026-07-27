@@ -12,7 +12,7 @@ from pathlib import Path
 import bittensor as bt
 
 from phylax import rounds, screening
-from phylax.analysis import common, scoring, tracks
+from phylax.analysis import common, quality, scoring, tracks
 from phylax.analysis import proof as proofmod
 from phylax.harness.corpus import load_corpus
 from phylax.harness.detonate import detonate_artifact_bytes
@@ -313,11 +313,12 @@ class PhylaxValidator:
                 total += score
             return total / len(task_set)
         tp = tn = fp = fn = 0
+        quality_scores: list[float] = []
         for item in task_set:
             target = common.label_risk(item["label"])
             if target is None:
                 continue
-            verdict, wall_used = self._task_verdict(
+            verdict, wall_used, findings = self._task_verdict(
                 track, hotkey, runnable, item, seed, budgets, wall_used, wall_cap
             )
             malicious = target >= 0.5
@@ -330,9 +331,23 @@ class PhylaxValidator:
                 tn += 1
             else:
                 fp += 1
+            expected = item.get("expected_findings") or []
+            if expected:
+                trace = self._traces.get(item["ref"]) or {}
+                quality_scores.append(
+                    quality.finding_quality(
+                        expected, findings, trace.get("capabilities")
+                    )
+                )
         if tp + tn + fp + fn == 0:
             return 0.0
-        return scoring.clamped_mcc(tp, tn, fp, fn)
+        correctness = scoring.clamped_mcc(tp, tn, fp, fn)
+        if not quality_scores:
+            return correctness
+        q = sum(quality_scores) / len(quality_scores)
+        return scoring.clip01(
+            scoring.RUN_W_CORRECTNESS * correctness + scoring.RUN_W_QUALITY * q
+        )
 
     def _task_verdict(
         self,
@@ -344,7 +359,7 @@ class PhylaxValidator:
         budgets: dict[str, int],
         wall_used: float,
         wall_cap: float,
-    ) -> tuple[str | None, float]:
+    ) -> tuple[str | None, float, list]:
         nonce = rounds.task_nonce(seed, item["ref"], hotkey)
         probe = proofmod.derive_probe(nonce)
         ordinals: list[int] = []
@@ -360,12 +375,14 @@ class PhylaxValidator:
             ordinals.append(ordinal)
             last_result = result
         if not ordinals:
-            return None, wall_used
+            return None, wall_used, []
         ordinals.sort()
         decision = _ORDINAL_VERDICT[ordinals[(len(ordinals) - 1) // 2]]
+        findings = []
         if last_result is not None:
+            findings = last_result.get("findings") or []
             self._attest(track, hotkey, runnable, item, nonce, last_result)
-        return decision, wall_used
+        return decision, wall_used, findings
 
     def _run_rep(
         self, track: str, runnable: dict, item: dict, nonce: str, probe, cpu_s: int
