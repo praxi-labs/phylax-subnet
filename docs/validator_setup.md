@@ -19,11 +19,23 @@ vector spanning all tracks on chain. The full rules live in
 - Capacity for a full four track pass per round. Each sandbox run is pinned at
   2 GB memory and 1 CPU, so N agents in parallel need roughly N × 2 GB RAM. The
   floor specification is **16 vCPU / 32 GB RAM / 100 GB disk**.
-- Outbound access to `ghcr.io`. The host pulls four public images —
+- Outbound access to `ghcr.io`. The host pulls the public images
   `phylax-validator`, `phylax-proxy`, `phylax-agent` (the sandbox), and
-  `containrrr/watchtower` — so no registry login is needed. If your evaluations
-  fail with `image pull failed`, the sandbox image is not reachable: confirm
-  `phylax-agent` and `phylax-proxy` are Public on GHCR, or log in with a token.
+  `containrrr/watchtower`, so no registry login is needed. If your evaluations
+  fail with `image pull failed`, the sandbox image is not reachable.
+- Outbound access to `api.phyi.dev` (round scheduling, agent fetch, results)
+  and to the chain endpoint `wss://entrypoint-finney.opentensor.ai:443`.
+- An accurate system clock (NTP): every request to the backend is signed with a
+  timestamp the server verifies, so a drifting clock fails authentication.
+- The four labelled corpora ship inside the validator image; nothing to
+  download. A validator abstains from any round where a track's corpus is
+  missing rather than submit a partial result.
+
+How authorization works: the chain grants the validator permit purely by stake
+(the top hotkeys by stake on the subnet, recomputed every epoch, about 72
+minutes), and vtrust accrues from actually setting weights each round. The
+backend independently verifies your request signature and your permit, and may
+additionally enforce an IP allowlist managed by the Phylax operators.
 
 ## 1. Create and fund a wallet
 
@@ -137,7 +149,7 @@ still submitting, or task execution once the window closes. Quick checks:
 - `btcli wallet overview --wallet.name validator --network finney` confirms your hotkey is on netuid 76 with a validator permit, and shows your vtrust once you set weights.
 - `curl -s https://api.phyi.dev/v1/server-identity` returns the same hotkey you put in `PHYLAX_SERVER_HOTKEY`.
 
-Common failures and their cause: `image pull failed` means the sandbox image is not reachable (see Requirements), and the validator abstains rather than evaluate outside the jail. A docker socket permission error means a wrong `DOCKER_GID`.
+Common failures and their cause: `image pull failed` means the sandbox image is not reachable (see Requirements), and the validator abstains rather than evaluate outside the jail. A docker socket permission error means a wrong `DOCKER_GID`. A single warning that the server declined the round poll (HTTP 403) means the hotkey does not yet hold a validator permit (stake, then wait an epoch) or your IP is not on the operator managed allowlist; the validator keeps retrying and recovers on its own once authorized.
 
 ## Staying current (auto-updates)
 
