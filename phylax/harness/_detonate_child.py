@@ -64,6 +64,14 @@ def _record(kind: str, detail: dict) -> None:
     _EVENTS.append({"kind": kind, "origin": _origin(), **detail})
 
 
+class DetonationDenied(Exception):
+    pass
+
+
+def _deny(what: str) -> None:
+    raise DetonationDenied(f"phylax detonation: {what} denied")
+
+
 def _classify_path(path: str) -> list[str]:
     low = path.replace("\\", "/").lower()
     caps: list[str] = []
@@ -92,8 +100,10 @@ def _hook(event: str, args) -> None:
             _record("file", {"path": path, "mode": mode, "caps": caps})
         elif event == "socket.connect":
             _record("network", {"detail": str(args[1])[:200], "caps": ["OPEN_SOCKET"]})
+            _deny("socket.connect")
         elif event == "socket.getaddrinfo":
             _record("dns", {"host": str(args[0])[:200], "caps": ["RESOLVE_DNS"]})
+            _deny("socket.getaddrinfo")
         elif event == "urllib.Request":
             url = str(args[0])[:300]
             has_body = len(args) > 1 and args[1] is not None
@@ -114,6 +124,8 @@ def _hook(event: str, args) -> None:
             _record("file", {"path": str(args[0])[:200], "caps": ["LIST_DIRECTORY"]})
         elif event in ("os.remove", "os.unlink"):
             _record("file", {"path": str(args[0])[:200], "caps": ["DELETE_FILE"]})
+    except DetonationDenied:
+        raise
     except Exception:
         return
 
