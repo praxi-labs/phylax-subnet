@@ -24,6 +24,7 @@ POLL_INTERVAL_S: int = int(os.getenv("PHYLAX_POLL_INTERVAL", "30"))
 MAX_AGENT_BYTES: int = 512 * 1024
 DEADLINE_MARGIN_BLOCKS: int = 20
 EMA_ALPHA: float = 0.3
+WEIGHT_REFRESH_S: int = 1200
 
 _VERDICT_ORDINAL = {"ALLOW": 0, "WARN": 1, "BLOCK": 2}
 _ORDINAL_VERDICT = {v: k for k, v in _VERDICT_ORDINAL.items()}
@@ -68,6 +69,7 @@ class PhylaxValidator:
         self._traces: dict[str, dict] = {}
         self._last_server_reject: str | None = None
         self._registered_with_server = False
+        self._last_weight_set: float = 0.0
         if os.getenv("PHYLAX_DEV_UNSAFE_EXECUTOR") == "1":
             log.warning(
                 "PHYLAX_DEV_UNSAFE_EXECUTOR=1: agents run unjailed; never use outside development"
@@ -546,24 +548,30 @@ class PhylaxValidator:
         self._round_attestations.append(sssa)
         log.debug("attested agent=%s artifact=%s hash=%s", hotkey[:10], item["ref"], digest.hex()[:16])
 
-    def set_weights(self, scores_by_track: dict[str, list[tuple[str, float]]]) -> None:
-        weight_map = scoring.compute_emission_weights(
-            scores_by_track,
-            contributor_hotkeys=self._load_contributors(),
-            thresholds=scoring.TRACK_THRESHOLDS,
-        )
+    def set_weights(
+        self, scores_by_track: dict[str, list[tuple[str, float]]] | None
+    ) -> None:
         prior = self._load_prior_weights()
-        blended = {
-            hk: EMA_ALPHA * w + (1.0 - EMA_ALPHA) * prior.get(hk, 0.0)
-            for hk, w in weight_map.items()
-        }
-        blended = {hk: w for hk, w in blended.items() if w > 1e-9}
-        competitive = sum(blended.values())
-        if competitive > 0.0:
-            blended = {hk: w / competitive for hk, w in blended.items()}
-        self._save_prior_weights(blended)
+        if scores_by_track is None:
+            blended = dict(prior)
+        else:
+            weight_map = scoring.compute_emission_weights(
+                scores_by_track,
+                contributor_hotkeys=self._load_contributors(),
+                thresholds=scoring.TRACK_THRESHOLDS,
+            )
+            blended = {
+                hk: EMA_ALPHA * w + (1.0 - EMA_ALPHA) * prior.get(hk, 0.0)
+                for hk, w in weight_map.items()
+            }
+            blended = {hk: w for hk, w in blended.items() if w > 1e-9}
+            competitive = sum(blended.values())
+            if competitive > 0.0:
+                blended = {hk: w / competitive for hk, w in blended.items()}
+            self._save_prior_weights(blended)
 
         blended = scoring.apply_reserved_share(blended)
+        self._last_weight_set = time.monotonic()
         if not blended:
             log.info("set_weights: no agent cleared the quality threshold; skipping")
             return
@@ -641,6 +649,7 @@ class PhylaxValidator:
             )
         except (AbstainRound, InfraFailure) as e:
             log.warning("abstaining this round: %s", e)
+            self.set_weights(None)
             return
         self._submit_results(round_ids, start_block)
         self.set_weights(scores_by_track)
@@ -722,6 +731,8 @@ class PhylaxValidator:
                 start = rounds.round_start(block, self.round_blocks)
                 if start > self.last_round_start and self._begin_round(start):
                     self.last_round_start = start
+                if time.monotonic() - self._last_weight_set >= WEIGHT_REFRESH_S:
+                    self.set_weights(None)
                 time.sleep(POLL_INTERVAL_S)
             except KeyboardInterrupt:
                 log.info("validator stopped by KeyboardInterrupt")
