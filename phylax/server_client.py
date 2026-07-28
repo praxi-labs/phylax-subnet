@@ -174,6 +174,39 @@ class PhylaxServerClient:
             self.fetch_server_identity()
         return self._request("GET", f"/v1/rounds/{round_id}/artifact/{source_id}")
 
+    def submit_round_progress(
+        self,
+        *,
+        round_id: str,
+        track: str,
+        phase: str = "evaluating",
+        agents_done: int = 0,
+        agents_total: int = 0,
+        current_agent: str = "",
+        tasks_total: int = 0,
+        note: str = "",
+    ) -> dict:
+        """Heartbeat so operators can see how far a round has actually got.
+
+        Best effort: a failure here never interrupts evaluation.
+        """
+        if self._server_hotkey is None:
+            self.fetch_server_identity()
+        return self._request(
+            "POST",
+            "/v1/rounds/progress",
+            json_body={
+                "round_id": round_id,
+                "track": track,
+                "phase": phase,
+                "agents_done": agents_done,
+                "agents_total": agents_total,
+                "current_agent": current_agent,
+                "tasks_total": tasks_total,
+                "note": note,
+            },
+        )
+
     def submit_round_results(
         self,
         *,

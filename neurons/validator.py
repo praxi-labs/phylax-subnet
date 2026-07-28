@@ -247,11 +247,20 @@ class PhylaxValidator:
                 start_block, end_block, track, len(task_set), len(agents),
             )
             track_scores: list[tuple[str, float]] = []
-            for hotkey, runnable in agents.items():
+            round_id = str((round_ids or {}).get(track) or "")
+            for index, (hotkey, runnable) in enumerate(agents.items()):
                 if self._out_of_window(end_block):
+                    self._report_progress(
+                        round_id, track, "abstained", index, len(agents), "",
+                        len(task_set), "window closing",
+                    )
                     raise AbstainRound(
                         f"window closing at block {end_block} with track {track} incomplete"
                     )
+                self._report_progress(
+                    round_id, track, "evaluating", index, len(agents), hotkey,
+                    len(task_set), "",
+                )
                 score = self._score_agent(track, hotkey, runnable, task_set, seed, budgets)
                 track_scores.append((hotkey, score))
                 self._round_scores.setdefault(track, {})[hotkey] = {
@@ -259,11 +268,28 @@ class PhylaxValidator:
                     "score": round(score, 6),
                 }
                 log.info("round score track=%s agent=%s S=%.3f", track, hotkey[:10], score)
+            self._report_progress(
+                round_id, track, "scored", len(agents), len(agents), "",
+                len(task_set), "",
+            )
             scores_by_track[track] = track_scores
         if not scores_by_track:
             raise AbstainRound("no track had a task set this round")
         self._write_round_record(start_block, scores_by_track)
         return scores_by_track
+
+    def _report_progress(self, round_id: str, track: str, phase: str, done: int,
+                         total: int, current: str, tasks: int, note: str) -> None:
+        if self.server is None or not round_id:
+            return
+        try:
+            self.server.submit_round_progress(
+                round_id=round_id, track=track, phase=phase,
+                agents_done=done, agents_total=total, current_agent=current,
+                tasks_total=tasks, note=note,
+            )
+        except Exception as e:  # noqa: BLE001
+            log.debug("progress heartbeat failed: %s", e)
 
     def _detonate_task_set(self, track: str, task_set: list[dict], budgets: dict) -> None:
         if track == "repositories":
