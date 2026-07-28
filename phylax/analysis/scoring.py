@@ -130,7 +130,7 @@ def compute_emission_weights(
     total = sum(weights.values())
     if total > 0.0:
         weights = {hk: w / total for hk, w in weights.items()}
-    return apply_reserved_share(weights)
+    return weights
 
 
 def apply_reserved_share(

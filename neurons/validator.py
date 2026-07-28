@@ -268,6 +268,7 @@ class PhylaxValidator:
                     "score": round(score, 6),
                 }
                 log.info("round score track=%s agent=%s S=%.3f", track, hotkey[:10], score)
+                self._submit_track_results(round_ids or {}, start_block, track)
             self._report_progress(
                 round_id, track, "scored", len(agents), len(agents), "",
                 len(task_set), "",
@@ -553,14 +554,19 @@ class PhylaxValidator:
         )
         prior = self._load_prior_weights()
         blended = {
-            hk: EMA_ALPHA * weight_map.get(hk, 0.0) + (1.0 - EMA_ALPHA) * prior.get(hk, 0.0)
-            for hk in set(weight_map) | set(prior)
+            hk: EMA_ALPHA * w + (1.0 - EMA_ALPHA) * prior.get(hk, 0.0)
+            for hk, w in weight_map.items()
         }
         blended = {hk: w for hk, w in blended.items() if w > 1e-9}
+        competitive = sum(blended.values())
+        if competitive > 0.0:
+            blended = {hk: w / competitive for hk, w in blended.items()}
+        self._save_prior_weights(blended)
+
+        blended = scoring.apply_reserved_share(blended)
         if not blended:
             log.info("set_weights: no agent cleared the quality threshold; skipping")
             return
-        self._save_prior_weights(blended)
 
         uid_by_hotkey = {n.hotkey: n.uid for n in self.metagraph.neurons}
         if scoring.RESERVED_HOTKEY and scoring.RESERVED_HOTKEY not in uid_by_hotkey:
@@ -588,9 +594,16 @@ class PhylaxValidator:
         log.info("weights set | matched %d agents", len(uid_weights))
 
     def _submit_results(self, round_ids: dict[str, str], start_block: int) -> None:
+        for track in list(self._round_scores):
+            self._submit_track_results(round_ids, start_block, track)
+
+    def _submit_track_results(
+        self, round_ids: dict[str, str], start_block: int, track: str
+    ) -> None:
         if self.server is None:
             return
-        for track, per_agent in self._round_scores.items():
+        per_agent = self._round_scores.get(track) or {}
+        if per_agent:
             results = [
                 {"miner_hotkey": hk, **detail} for hk, detail in per_agent.items()
             ]
@@ -605,7 +618,7 @@ class PhylaxValidator:
                     results=results,
                     attestations=attestations,
                 )
-                log.info(
+                log.debug(
                     "submitted %s results: %d agents, %d attestations",
                     track, len(results), len(attestations),
                 )
