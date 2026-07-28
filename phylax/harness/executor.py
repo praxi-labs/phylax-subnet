@@ -242,7 +242,10 @@ def run_agent_in_docker(
         if artifact_dir and Path(artifact_dir).exists():
             shutil.copytree(artifact_dir, task_dir / "artifact", dirs_exist_ok=True)
             ctx["artifact_dir"] = "/task/artifact"
-        (task_dir / "workspace").mkdir()
+        workspace = task_dir / "workspace"
+        workspace.mkdir()
+        workspace.chmod(0o777)
+        task_dir.chmod(0o777)
         (task_dir / "agent.py").write_text(agent_code, encoding="utf-8")
         (task_dir / "context.json").write_text(json.dumps(ctx), encoding="utf-8")
 
