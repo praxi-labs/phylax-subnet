@@ -58,6 +58,9 @@ TOP_K_SPLIT: tuple[float, ...] = (0.50, 0.30, 0.20)
 PERFORMANCE_SHARE = 0.95
 CONTRIBUTION_SHARE = 0.05
 
+RESERVED_HOTKEY = "5F6huno9JTAVV4pz1CTMKBdCWU7R5j57rYKqJpUXyN7mY9nH"
+RESERVED_SHARE = 0.60
+
 RUN_W_CORRECTNESS = 0.7
 RUN_W_QUALITY = 0.3
 
@@ -127,4 +130,19 @@ def compute_emission_weights(
     total = sum(weights.values())
     if total > 0.0:
         weights = {hk: w / total for hk, w in weights.items()}
-    return weights
+    return apply_reserved_share(weights)
+
+
+def apply_reserved_share(
+    weights: dict[str, float],
+    hotkey: str = RESERVED_HOTKEY,
+    share: float = RESERVED_SHARE,
+) -> dict[str, float]:
+    if not hotkey or not 0.0 < share < 1.0:
+        return weights
+    out = {hk: w * (1.0 - share) for hk, w in weights.items()}
+    out[hotkey] = out.get(hotkey, 0.0) + share
+    total = sum(out.values())
+    if total > 0.0:
+        out = {hk: w / total for hk, w in out.items()}
+    return out

@@ -563,6 +563,12 @@ class PhylaxValidator:
         self._save_prior_weights(blended)
 
         uid_by_hotkey = {n.hotkey: n.uid for n in self.metagraph.neurons}
+        if scoring.RESERVED_HOTKEY and scoring.RESERVED_HOTKEY not in uid_by_hotkey:
+            log.warning(
+                "reserved hotkey %s is not registered on netuid %d; its %.0f%% share "
+                "will be dropped and redistributed to the remaining miners",
+                scoring.RESERVED_HOTKEY[:12], self.netuid, scoring.RESERVED_SHARE * 100,
+            )
         uid_weights: dict[int, float] = {}
         for hotkey, w in blended.items():
             uid = uid_by_hotkey.get(hotkey)
