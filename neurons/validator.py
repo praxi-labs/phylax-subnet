@@ -25,6 +25,7 @@ MAX_AGENT_BYTES: int = 512 * 1024
 DEADLINE_MARGIN_BLOCKS: int = 20
 EMA_ALPHA: float = 0.3
 WEIGHT_REFRESH_S: int = 1200
+MIN_SCORED_FRACTION: float = 0.5
 
 _VERDICT_ORDINAL = {"ALLOW": 0, "WARN": 1, "BLOCK": 2}
 _ORDINAL_VERDICT = {v: k for k, v in _VERDICT_ORDINAL.items()}
@@ -70,6 +71,9 @@ class PhylaxValidator:
         self._last_server_reject: str | None = None
         self._registered_with_server = False
         self._last_weight_set: float = 0.0
+        self._rejections: dict[str, int] = {}
+        self._track_attempted = 0
+        self._track_scored = 0
         if os.getenv("PHYLAX_DEV_UNSAFE_EXECUTOR") == "1":
             log.warning(
                 "PHYLAX_DEV_UNSAFE_EXECUTOR=1: agents run unjailed; never use outside development"
@@ -250,6 +254,8 @@ class PhylaxValidator:
             )
             track_scores: list[tuple[str, float]] = []
             round_id = str((round_ids or {}).get(track) or "")
+            self._track_attempted = 0
+            self._track_scored = 0
             for index, (hotkey, runnable) in enumerate(agents.items()):
                 if self._out_of_window(end_block):
                     self._report_progress(
@@ -271,6 +277,17 @@ class PhylaxValidator:
                 }
                 log.info("round score track=%s agent=%s S=%.3f", track, hotkey[:10], score)
                 self._submit_track_results(round_ids or {}, start_block, track)
+            if self._track_attempted and (
+                self._track_scored / self._track_attempted < MIN_SCORED_FRACTION
+            ):
+                self._report_progress(
+                    round_id, track, "abstained", len(agents), len(agents), "",
+                    len(task_set), "too few verdicts",
+                )
+                raise AbstainRound(
+                    f"only {self._track_scored}/{self._track_attempted} {track} tasks produced "
+                    "a verdict; this validator cannot evaluate reliably"
+                )
             self._report_progress(
                 round_id, track, "scored", len(agents), len(agents), "",
                 len(task_set), "",
@@ -364,14 +381,18 @@ class PhylaxValidator:
                 total += score
             return total / len(task_set)
         tp = tn = fp = fn = 0
+        attempted = 0
         quality_scores: list[float] = []
         for item in task_set:
             target = common.label_risk(item["label"])
             if target is None:
                 continue
+            attempted += 1
             verdict, wall_used, findings = self._task_verdict(
                 track, hotkey, runnable, item, seed, budgets, wall_used, wall_cap
             )
+            if verdict is None:
+                continue
             malicious = target >= 0.5
             flagged = verdict in ("BLOCK", "WARN")
             if malicious and flagged:
@@ -390,8 +411,20 @@ class PhylaxValidator:
                         expected, findings, trace.get("capabilities")
                     )
                 )
-        if tp + tn + fp + fn == 0:
+        scored = tp + tn + fp + fn
+        self._track_attempted += attempted
+        self._track_scored += scored
+        if scored == 0:
+            log.warning(
+                "agent %s produced no verdict on any of %d %s tasks; scoring 0",
+                hotkey[:10], attempted, track,
+            )
             return 0.0
+        if scored < attempted:
+            log.info(
+                "agent %s produced verdicts on %d/%d %s tasks",
+                hotkey[:10], scored, attempted, track,
+            )
         correctness = scoring.clamped_mcc(tp, tn, fp, fn)
         if not quality_scores:
             return correctness
@@ -435,6 +468,13 @@ class PhylaxValidator:
             self._attest(track, hotkey, runnable, item, nonce, last_result)
         return decision, wall_used, findings
 
+    def _note_rejection(self, reason: str) -> None:
+        self._rejections[reason] = self._rejections.get(reason, 0) + 1
+        if self._rejections[reason] in (1, 10, 100) or self._rejections[reason] % 500 == 0:
+            log.warning(
+                "repetition rejected (%dx): %s", self._rejections[reason], reason
+            )
+
     def _run_rep(
         self, track: str, runnable: dict, item: dict, nonce: str, probe, cpu_s: int
     ) -> tuple[int | None, dict | None]:
@@ -448,12 +488,16 @@ class PhylaxValidator:
         }
         result = run_task(dispatch, runnable, log=log.warning, cpu_budget_s=cpu_s)
         if result is None:
+            self._note_rejection("run produced no result")
             return None, None
         if result.get("observed_probe_file") is not True:
+            self._note_rejection(
+                f"probe file not observed (error={str(result.get('error', ''))[:120]})"
+            )
             return None, result
         poe = proofmod.verify_validator_trace(result.get("validator_trace"), probe)
         if not poe.passed:
-            log.debug("rep rejected: %s", poe.reason)
+            self._note_rejection(f"trace verification failed: {poe.reason}")
             return None, result
         verdict = result["verdict"] if isinstance(result["verdict"], dict) else {}
         decision = str(verdict.get("decision", "")).upper()
