@@ -106,14 +106,21 @@ def fetch_corpus(client, round_id: str, track: str) -> list[dict]:
         files = artifact.get("files")
         if not isinstance(files, dict) or not files:
             continue
+        truth = artifact.get("ground_truth")
+        truth = truth if isinstance(truth, dict) else {}
+        expected = [f for f in (truth.get("expected_findings") or []) if isinstance(f, dict)]
         items.append(
             {
                 "ref": f"{track}/{label}/{source_id}",
                 "label": label,
                 "artifact_b64": pack_files(files),
-                "ground_truth": None,
-                "expected_findings": [],
-                "expected_capabilities": [],
+                "ground_truth": _ground_truth(track, truth) if expected else None,
+                "expected_findings": expected,
+                "expected_capabilities": [
+                    str(c.get("capability", ""))
+                    for c in (truth.get("expected_capabilities") or [])
+                    if isinstance(c, dict) and c.get("capability")
+                ],
             }
         )
     return items
