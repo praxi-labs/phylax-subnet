@@ -449,10 +449,13 @@ class PhylaxValidator:
         ordinals: list[int] = []
         last_result = None
         for _ in range(budgets["repetitions"]):
-            if wall_used >= wall_cap:
+            remaining = wall_cap - wall_used
+            if remaining <= 0:
                 break
             started = time.monotonic()
-            ordinal, result = self._run_rep(track, runnable, item, nonce, probe, budgets["cpu_s"])
+            ordinal, result = self._run_rep(
+                track, runnable, item, nonce, probe, budgets["cpu_s"], remaining
+            )
             wall_used += time.monotonic() - started
             if ordinal is None:
                 continue
@@ -476,7 +479,8 @@ class PhylaxValidator:
             )
 
     def _run_rep(
-        self, track: str, runnable: dict, item: dict, nonce: str, probe, cpu_s: int
+        self, track: str, runnable: dict, item: dict, nonce: str, probe, cpu_s: int,
+        wall_budget_s: float | None = None,
     ) -> tuple[int | None, dict | None]:
         dispatch = {
             "track": track,
@@ -486,7 +490,10 @@ class PhylaxValidator:
             "artifact_b64": item["artifact_b64"],
             "observed": self._traces.get(item["ref"]),
         }
-        result = run_task(dispatch, runnable, log=log.warning, cpu_budget_s=cpu_s)
+        result = run_task(
+            dispatch, runnable, log=log.warning, cpu_budget_s=cpu_s,
+            wall_budget_s=wall_budget_s,
+        )
         if result is None:
             self._note_rejection("run produced no result")
             return None, None
@@ -530,10 +537,14 @@ class PhylaxValidator:
             "artifact_b64": item["artifact_b64"],
         }
         for _ in range(budgets["repetitions"]):
-            if wall_used >= wall_cap:
+            remaining = wall_cap - wall_used
+            if remaining <= 0:
                 break
             started = time.monotonic()
-            result = run_task(dispatch, runnable, log=log.warning, cpu_budget_s=budgets["cpu_s"])
+            result = run_task(
+                dispatch, runnable, log=log.warning, cpu_budget_s=budgets["cpu_s"],
+                wall_budget_s=remaining,
+            )
             wall_used += time.monotonic() - started
             if result is None:
                 continue

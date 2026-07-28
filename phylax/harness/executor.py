@@ -40,6 +40,19 @@ def ensure_jail_network() -> None:
     _docker("network", "create", "--internal", JAIL_NETWORK, timeout=30)
 
 
+_PULLED: set[str] = set()
+
+
+def _ensure_image(ref: str, timeout: int = 300) -> str:
+    if ref in _PULLED:
+        return ""
+    pull = _docker("pull", ref, timeout=timeout)
+    if pull.returncode != 0:
+        return pull.stderr[-400:]
+    _PULLED.add(ref)
+    return ""
+
+
 def _pin(image: str, digest: str) -> str:
     if not digest:
         return image
@@ -87,16 +100,23 @@ def _cpu_seconds(cid: str) -> float | None:
     return None
 
 
-def _await_exit(cid: str, cpu_budget_s: int) -> dict | None:
-    deadline = time.monotonic() + WALL_BACKSTOP_FACTOR * cpu_budget_s
+def _await_exit(cid: str, cpu_budget_s: int, wall_budget_s: float | None = None) -> dict | None:
+    wall = WALL_BACKSTOP_FACTOR * cpu_budget_s
+    if wall_budget_s is not None:
+        wall = min(wall, max(1.0, wall_budget_s))
+    deadline = time.monotonic() + wall
     interval = max(0.5, min(2.0, cpu_budget_s / 4))
+    base: float | None = None
     while True:
         if not _running(cid):
             return None
         cpu = _cpu_seconds(cid)
-        if cpu is not None and cpu > cpu_budget_s:
-            _docker("kill", cid, timeout=15)
-            return {"success": False, "error": "cpu budget exceeded"}
+        if cpu is not None:
+            if base is None:
+                base = cpu
+            elif cpu - base > cpu_budget_s:
+                _docker("kill", cid, timeout=15)
+                return {"success": False, "error": "cpu budget exceeded"}
         if time.monotonic() > deadline:
             _docker("kill", cid, timeout=15)
             return {"success": False, "error": "wall backstop exceeded"}
@@ -121,10 +141,10 @@ def detonate_in_docker(
 ) -> dict:
     ensure_jail_network()
     ref = _pin(image, digest)
-    pull = _docker("pull", ref, timeout=300)
-    if pull.returncode != 0:
+    pull_err = _ensure_image(ref)
+    if pull_err:
         return {"capabilities": [], "phases": {}, "detonated": False,
-                "error": f"image pull failed: {pull.stderr[-200:]}"}
+                "error": f"image pull failed: {pull_err[-200:]}"}
 
     work = Path(tempfile.mkdtemp(prefix="phylax-det-"))
     task_dir = work / "task"
@@ -135,6 +155,7 @@ def detonate_in_docker(
         create = _docker(
             "create",
             "--network", JAIL_NETWORK,
+            "--cgroupns", "private",
             "--cap-drop=ALL",
             "--security-opt", "no-new-privileges",
             "--tmpfs", "/tmp:rw,size=64m",  # noqa: S108
@@ -193,13 +214,23 @@ def run_agent_in_docker(
     entrypoint: str = "agent_main",
     cpu_budget_s: int = 120,
     artifact_dir: str | None = None,
+    wall_budget_s: float | None = None,
 ) -> dict:
+    began = time.monotonic()
+
+    def left(cap: int) -> int:
+        if wall_budget_s is None:
+            return cap
+        return int(min(float(cap), wall_budget_s - (time.monotonic() - began)))
+
+    if left(1) <= 0:
+        return {"success": False, "error": "wall budget exhausted"}
     ensure_jail_network()
     ref = _pin(image, digest)
 
-    pull = _docker("pull", ref, timeout=300)
-    if pull.returncode != 0:
-        return {"success": False, "error": f"image pull failed: {pull.stderr[-400:]}"}
+    pull_err = _ensure_image(ref, timeout=max(1, left(300)))
+    if pull_err:
+        return {"success": False, "error": f"image pull failed: {pull_err}"}
 
     work = Path(tempfile.mkdtemp(prefix="phylax-exec-"))
     task_dir = work / "task"
@@ -219,6 +250,7 @@ def run_agent_in_docker(
         create = _docker(
             "create",
             "--network", JAIL_NETWORK,
+            "--cgroupns", "private",
             "--cap-drop=ALL",
             "--security-opt", "no-new-privileges",
             "--tmpfs", "/tmp:rw,size=64m",  # noqa: S108
@@ -236,22 +268,22 @@ def run_agent_in_docker(
             return {"success": False, "error": f"container create failed: {create.stderr[-400:]}"}
         cid = create.stdout.strip()
 
-        cp_in = _docker("cp", f"{task_dir}/.", f"{cid}:/task", timeout=60)
+        cp_in = _docker("cp", f"{task_dir}/.", f"{cid}:/task", timeout=max(1, left(60)))
         if cp_in.returncode != 0:
             return {"success": False, "error": f"task copy-in failed: {cp_in.stderr[-400:]}"}
 
-        start = _docker("start", cid, timeout=30)
+        start = _docker("start", cid, timeout=max(1, left(30)))
         if start.returncode != 0:
             return {"success": False, "error": f"container start failed: {start.stderr[-400:]}"}
 
-        outcome = _await_exit(cid, cpu_budget_s)
+        outcome = _await_exit(cid, cpu_budget_s, left(10_000))
         if outcome is not None:
             return outcome
 
         out = work / "result.json"
-        cp_out = _docker("cp", f"{cid}:/task/result.json", str(out), timeout=30)
+        cp_out = _docker("cp", f"{cid}:/task/result.json", str(out), timeout=max(1, left(30)))
         if cp_out.returncode != 0 or not out.exists():
-            logs = _docker("logs", "--tail", "50", cid, timeout=15)
+            logs = _docker("logs", "--tail", "50", cid, timeout=max(1, left(15)))
             return {
                 "success": False,
                 "error": f"no result.json (rc={_exit_code(cid)})",
@@ -269,5 +301,5 @@ def run_agent_in_docker(
         return {"success": False, "error": "docker command timed out"}
     finally:
         if cid:
-            _docker("rm", "-f", cid, timeout=30)
+            _docker("rm", "-f", cid, timeout=max(1, left(30)))
         shutil.rmtree(work, ignore_errors=True)

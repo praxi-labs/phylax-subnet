@@ -89,6 +89,7 @@ def run_task(
     *,
     log: Callable[[str], None] | None = None,
     cpu_budget_s: int = 120,
+    wall_budget_s: float | None = None,
 ) -> dict | None:
     work_dir = Path(tempfile.mkdtemp(prefix="phylax-run-"))
     try:
@@ -135,6 +136,7 @@ def run_task(
                 entrypoint=entrypoint,
                 cpu_budget_s=cpu_budget_s,
                 artifact_dir=str(artifact_dir),
+                wall_budget_s=wall_budget_s,
             )
 
         if not report.get("success"):
