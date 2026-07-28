@@ -18,10 +18,8 @@ services:
       PHYLAX_VALIDATOR_LABEL: "${PHYLAX_VALIDATOR_LABEL:-}"
       PHYLAX_JAIL_NETWORK: "phylax-jail"
       PHYLAX_INFERENCE_PROXY_URL: "${PHYLAX_INFERENCE_PROXY_URL:-http://phylax-proxy:8900}"
-      # Validator-owned sandbox image: miner code runs inside THIS, never a miner image.
       PHYLAX_SANDBOX_IMAGE: "${PHYLAX_SANDBOX_IMAGE:-ghcr.io/praxi-labs/phylax-agent:${PHYLAX_IMAGE_TAG:-latest}}"
       PHYLAX_SANDBOX_DIGEST: "${PHYLAX_SANDBOX_DIGEST:-}"
-      # Shared with the proxy so the validator can read per-task inference liveness.
       PHYLAX_PROXY_ADMIN_TOKEN: "${PHYLAX_PROXY_ADMIN_TOKEN:-}"
     env_file:
       - .env
@@ -54,13 +52,15 @@ services:
       - phylax-jail
       - egress
 
-  # Mandatory for validators: keeps the validator and inference-proxy containers
-  # on the latest published image so the whole set of validators stays in lockstep
-  # when we push an update. It only acts on containers labelled
-  # com.centurylinklabs.watchtower.enable=true, and restarts one at a time.
-  # The sandbox image (phylax-agent) needs no entry here: it never runs as a
-  # long-lived container, and the executor docker-pulls it before every agent run
-  # and every detonation, so it is newer than a poll interval could make it.
+  phylax-agent-image:
+    image: ghcr.io/praxi-labs/phylax-agent:${PHYLAX_IMAGE_TAG:-latest}
+    container_name: phylax-agent-image
+    restart: unless-stopped
+    network_mode: none
+    entrypoint: ["sleep", "infinity"]
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
   watchtower:
     image: containrrr/watchtower:latest
     container_name: phylax-watchtower
