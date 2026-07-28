@@ -210,9 +210,7 @@ class PhylaxValidator:
                 raise AbstainRound(
                     f"backend declined the {track} task set (HTTP {e.status_code}: {e.detail})"
                 ) from e
-            if items:
-                return items
-            raise AbstainRound(f"backend served no tasks for track {track}")
+            return items
         return self.corpora.get(track) or []
 
     def run_round(
@@ -235,7 +233,8 @@ class PhylaxValidator:
         for track in rounds.TRACKS:
             corpus = self._corpus_for(track, str((round_ids or {}).get(track) or ""))
             if not corpus:
-                raise AbstainRound(f"no task set available for track {track}")
+                log.info("track %s has no task set this round; skipping it", track)
+                continue
             seed = (seeds or {}).get(track) or rounds.round_seed(block_hash, track)
             budgets = rounds.budgets_for(track)
             task_set = rounds.select_tasks(corpus, seed, budgets["tasks"])
@@ -261,6 +260,8 @@ class PhylaxValidator:
                 }
                 log.info("round score track=%s agent=%s S=%.3f", track, hotkey[:10], score)
             scores_by_track[track] = track_scores
+        if not scores_by_track:
+            raise AbstainRound("no track had a task set this round")
         self._write_round_record(start_block, scores_by_track)
         return scores_by_track
 
