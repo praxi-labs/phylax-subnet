@@ -649,6 +649,8 @@ class PhylaxValidator:
         round_ids: dict[str, str] = {}
         seeds: dict[str, str] = {}
         participants: dict[str, list[dict]] = {}
+        if not self._registered_with_server:
+            self._register_with_server()
         if self.server is not None:
             for track in rounds.TRACKS:
                 try:
