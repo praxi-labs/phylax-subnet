@@ -64,6 +64,7 @@ class PhylaxValidator:
         self.last_round_start = -1
         self.should_exit = False
         self.server = self._init_server()
+        self._done_rounds: set[str] = set()
         self._round_attestations: list[dict] = []
         self._round_scores: dict[str, dict[str, dict]] = {}
         self._round_seeds: dict[str, str] = {}
@@ -789,16 +790,23 @@ class PhylaxValidator:
                         track, spec.get("submission_closes_at", "?"),
                     )
                     return False
-                round_ids[track] = str(spec.get("round_id") or f"block-{start_block}")
+                round_id = str(spec.get("round_id") or f"block-{start_block}")
+                if round_id in self._done_rounds:
+                    continue
+                round_ids[track] = round_id
                 seed = str(spec.get("seed") or "")
                 if seed:
                     seeds[track] = seed
                 participants[track] = spec.get("participants") or []
+        if self.server is not None and not round_ids:
+            log.debug("no unevaluated open round on any track; polling")
+            return False
         self._last_server_reject = None
         self._register_with_server()
         self._execute_round(
             round_ids, start_block, seeds=seeds or None, participants=participants or None
         )
+        self._done_rounds.update(round_ids.values())
         return True
 
     def run(self) -> None:
@@ -813,7 +821,10 @@ class PhylaxValidator:
             try:
                 block = self.subtensor.block
                 start = rounds.round_start(block, self.round_blocks)
-                if start > self.last_round_start and self._begin_round(start):
+                if self.server is not None:
+                    if self._begin_round(start):
+                        self.last_round_start = start
+                elif start > self.last_round_start and self._begin_round(start):
                     self.last_round_start = start
                 if time.monotonic() - self._last_weight_set >= WEIGHT_REFRESH_S:
                     self.set_weights(self._scores_from_server())
