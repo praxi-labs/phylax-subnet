@@ -627,6 +627,13 @@ class PhylaxValidator:
     ) -> None:
         prior = self._load_prior_weights()
         if scores_by_track is None:
+            if not prior:
+                log.warning(
+                    "no scores and no prior weights; leaving the previous on chain "
+                    "vector alone rather than voting the reserved share alone"
+                )
+                self._last_weight_set = time.monotonic()
+                return
             blended = dict(prior)
         else:
             weight_map = scoring.compute_emission_weights(

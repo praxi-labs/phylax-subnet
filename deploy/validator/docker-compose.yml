@@ -10,6 +10,7 @@ services:
       - "${DOCKER_GID:-999}"
     volumes:
       - ${BITTENSOR_DIR:-~/.bittensor}:/opt/phylax/.bittensor
+      - phylax-state:/opt/phylax/state
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       HOME: /opt/phylax
@@ -17,6 +18,7 @@ services:
       PHYLAX_SERVER_HOTKEY: "${PHYLAX_SERVER_HOTKEY:-}"
       PHYLAX_VALIDATOR_LABEL: "${PHYLAX_VALIDATOR_LABEL:-}"
       PHYLAX_JAIL_NETWORK: "phylax-jail"
+      PHYLAX_STATE_DIR: "/opt/phylax/state"
       PHYLAX_INFERENCE_PROXY_URL: "${PHYLAX_INFERENCE_PROXY_URL:-http://phylax-proxy:8900}"
       PHYLAX_SANDBOX_IMAGE: "${PHYLAX_SANDBOX_IMAGE:-ghcr.io/praxi-labs/phylax-agent:${PHYLAX_IMAGE_TAG:-latest}}"
       PHYLAX_SANDBOX_DIGEST: "${PHYLAX_SANDBOX_DIGEST:-}"
@@ -75,6 +77,9 @@ services:
       WATCHTOWER_POLL_INTERVAL: "${WATCHTOWER_POLL_INTERVAL:-120}"
       DOCKER_API_VERSION: "${DOCKER_API_VERSION:-1.41}"
       TZ: "UTC"
+
+volumes:
+  phylax-state:
 
 networks:
   egress:
