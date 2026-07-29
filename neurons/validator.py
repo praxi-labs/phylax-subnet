@@ -65,6 +65,7 @@ class PhylaxValidator:
         self.should_exit = False
         self.server = self._init_server()
         self._done_rounds: set[str] = set()
+        self._retry_at: float = 0.0
         self._round_attestations: list[dict] = []
         self._round_scores: dict[str, dict[str, dict]] = {}
         self._round_seeds: dict[str, str] = {}
@@ -256,10 +257,21 @@ class PhylaxValidator:
             )
             track_scores: list[tuple[str, float]] = []
             round_id = str((round_ids or {}).get(track) or "")
+            resumed = self._prior_round_results(round_id, agents)
+            for done_hotkey, detail in resumed.items():
+                track_scores.append((done_hotkey, float(detail["score"])))
+                self._round_scores.setdefault(track, {})[done_hotkey] = detail
+            if resumed:
+                log.info(
+                    "resuming %s round %s: %d agents already scored",
+                    track, round_id[:8], len(resumed),
+                )
             self._track_attempted = 0
             self._track_scored = 0
             for index, (hotkey, runnable) in enumerate(agents.items()):
-                if self._out_of_window(end_block):
+                if hotkey in resumed:
+                    continue
+                if self.server is None and self._out_of_window(end_block):
                     self._report_progress(
                         round_id, track, "abstained", index, len(agents), "",
                         len(task_set), "window closing",
@@ -300,6 +312,24 @@ class PhylaxValidator:
         self._write_round_record(start_block, scores_by_track)
         return scores_by_track
 
+    def _prior_round_results(self, round_id: str, agents: dict) -> dict[str, dict]:
+        if self.server is None or not round_id:
+            return {}
+        try:
+            payload = self.server.get_round_results(round_id) or {}
+        except Exception as e:  # noqa: BLE001
+            log.debug("no prior results to resume from: %s", e)
+            return {}
+        out: dict[str, dict] = {}
+        for row in payload.get("results") or []:
+            hotkey = str(row.get("miner_hotkey") or "")
+            if hotkey and hotkey in agents:
+                out[hotkey] = {
+                    "agent_hash": str(row.get("agent_hash") or ""),
+                    "score": float(row.get("score") or 0.0),
+                }
+        return out
+
     def _scores_from_server(self) -> dict[str, list[tuple[str, float]]] | None:
         if self.server is None:
             return None
@@ -317,7 +347,7 @@ class PhylaxValidator:
             ]
             if ranked:
                 out[track] = ranked
-        return out or None
+        return out
 
     def _report_progress(self, round_id: str, track: str, phase: str, done: int,
                          total: int, current: str, tasks: int, note: str) -> None:
@@ -725,7 +755,7 @@ class PhylaxValidator:
         start_block: int,
         seeds: dict[str, str] | None = None,
         participants: dict[str, list[dict]] | None = None,
-    ) -> None:
+    ) -> bool:
         self._refresh_metagraph()
         try:
             scores_by_track = self.run_round(
@@ -734,9 +764,10 @@ class PhylaxValidator:
         except (AbstainRound, InfraFailure) as e:
             log.warning("abstaining this round: %s", e)
             self.set_weights(None)
-            return
+            return False
         self._submit_results(round_ids, start_block)
         self.set_weights(scores_by_track)
+        return True
 
     def _register_with_server(self) -> None:
         if self.server is None:
@@ -758,6 +789,8 @@ class PhylaxValidator:
             log.debug("%s", message)
 
     def _begin_round(self, start_block: int) -> bool:
+        if time.monotonic() < self._retry_at:
+            return False
         round_ids: dict[str, str] = {}
         seeds: dict[str, str] = {}
         participants: dict[str, list[dict]] = {}
@@ -803,9 +836,11 @@ class PhylaxValidator:
             return False
         self._last_server_reject = None
         self._register_with_server()
-        self._execute_round(
+        if not self._execute_round(
             round_ids, start_block, seeds=seeds or None, participants=participants or None
-        )
+        ):
+            self._retry_at = time.monotonic() + 300.0
+            return False
         self._done_rounds.update(round_ids.values())
         return True
 

@@ -180,6 +180,12 @@ class PhylaxServerClient:
             self.fetch_server_identity()
         return self._request("GET", "/v1/rounds/my-results")
 
+    def get_round_results(self, round_id: str) -> dict:
+        """Read back this validator's own submitted scores for one round."""
+        if self._server_hotkey is None:
+            self.fetch_server_identity()
+        return self._request("GET", f"/v1/rounds/{round_id}/my-results")
+
     def submit_round_progress(
         self,
         *,
