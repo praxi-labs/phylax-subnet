@@ -298,6 +298,25 @@ class PhylaxValidator:
         self._write_round_record(start_block, scores_by_track)
         return scores_by_track
 
+    def _scores_from_server(self) -> dict[str, list[tuple[str, float]]] | None:
+        if self.server is None:
+            return None
+        try:
+            payload = self.server.get_my_results() or {}
+        except Exception as e:  # noqa: BLE001
+            log.debug("could not read back previous results: %s", e)
+            return None
+        out: dict[str, list[tuple[str, float]]] = {}
+        for track, rows in (payload.get("tracks") or {}).items():
+            ranked = [
+                (str(r.get("miner_hotkey") or ""), float(r.get("score") or 0.0))
+                for r in rows
+                if isinstance(r, dict) and r.get("miner_hotkey")
+            ]
+            if ranked:
+                out[track] = ranked
+        return out or None
+
     def _report_progress(self, round_id: str, track: str, phase: str, done: int,
                          total: int, current: str, tasks: int, note: str) -> None:
         if self.server is None or not round_id:
@@ -780,6 +799,7 @@ class PhylaxValidator:
             ",".join(rounds.TRACKS), self.round_blocks,
         )
         self._register_with_server()
+        self.set_weights(self._scores_from_server())
         while not self.should_exit:
             try:
                 block = self.subtensor.block
@@ -787,7 +807,7 @@ class PhylaxValidator:
                 if start > self.last_round_start and self._begin_round(start):
                     self.last_round_start = start
                 if time.monotonic() - self._last_weight_set >= WEIGHT_REFRESH_S:
-                    self.set_weights(None)
+                    self.set_weights(self._scores_from_server())
                 time.sleep(POLL_INTERVAL_S)
             except KeyboardInterrupt:
                 log.info("validator stopped by KeyboardInterrupt")
