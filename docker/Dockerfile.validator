@@ -21,6 +21,7 @@ RUN install -m 0755 -d /etc/apt/keyrings \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR ${PHYLAX_HOME}
+RUN mkdir -p ${PHYLAX_HOME}/state && chmod 0777 ${PHYLAX_HOME} ${PHYLAX_HOME}/state
 COPY requirements.txt ./
 RUN pip install --upgrade pip && pip install -r requirements.txt
 
