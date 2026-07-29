@@ -25,6 +25,7 @@ MAX_AGENT_BYTES: int = 512 * 1024
 DEADLINE_MARGIN_BLOCKS: int = 20
 EMA_ALPHA: float = 0.3
 WEIGHT_REFRESH_S: int = 1200
+WEIGHT_RETRY_S: int = 180
 MIN_SCORED_FRACTION: float = 0.5
 
 _VERDICT_ORDINAL = {"ALLOW": 0, "WARN": 1, "BLOCK": 2}
@@ -679,6 +680,7 @@ class PhylaxValidator:
             )
         except Exception as e:  # noqa: BLE001
             log.warning("set_weights failed: %s", e)
+            self._last_weight_set = time.monotonic() - WEIGHT_REFRESH_S + WEIGHT_RETRY_S
             return
         log.info("weights set | matched %d agents", len(uid_weights))
 
