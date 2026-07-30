@@ -64,7 +64,12 @@ def _ground_truth(track: str, label_doc: dict | None) -> dict | None:
         return None
     findings = label_doc.get("expected_findings")
     if not isinstance(findings, list):
-        return None
+        bucketed = {
+            key: [i for i in (label_doc.get(key) or []) if isinstance(i, dict)]
+            for key in ("vulnerabilities", "supply_chain", "secrets")
+            if isinstance(label_doc.get(key), list)
+        }
+        return bucketed or None
     buckets: dict[str, list] = {}
     if track == "repositories":
         buckets["vulnerabilities"] = []
@@ -108,13 +113,16 @@ def fetch_corpus(client, round_id: str, track: str) -> list[dict]:
             continue
         truth = artifact.get("ground_truth")
         truth = truth if isinstance(truth, dict) else {}
+        ground_truth = _ground_truth(track, truth)
         expected = [f for f in (truth.get("expected_findings") or []) if isinstance(f, dict)]
+        if not expected and ground_truth:
+            expected = [f for bucket in ground_truth.values() for f in bucket]
         items.append(
             {
                 "ref": f"{track}/{label}/{source_id}",
                 "label": label,
                 "artifact_b64": pack_files(files),
-                "ground_truth": _ground_truth(track, truth) if expected else None,
+                "ground_truth": ground_truth,
                 "expected_findings": expected,
                 "expected_capabilities": [
                     str(c.get("capability", ""))
