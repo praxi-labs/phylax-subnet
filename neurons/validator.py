@@ -24,6 +24,7 @@ POLL_INTERVAL_S: int = int(os.getenv("PHYLAX_POLL_INTERVAL", "30"))
 MAX_AGENT_BYTES: int = 512 * 1024
 DEADLINE_MARGIN_BLOCKS: int = 20
 EMA_ALPHA: float = 0.3
+TRACK_EVAL_ORDER: tuple[str, ...] = ("repositories", "packages", "mcp_servers", "skills")
 WEIGHT_REFRESH_S: int = 1200
 WEIGHT_RETRY_S: int = 180
 MIN_SCORED_FRACTION: float = 0.5
@@ -239,7 +240,7 @@ class PhylaxValidator:
             raise AbstainRound(f"block info unavailable for block {start_block}")
         block_hash = str(info.hash)
         scores_by_track: dict[str, list[tuple[str, float]]] = {}
-        for track in rounds.TRACKS:
+        for track in TRACK_EVAL_ORDER:
             corpus = self._corpus_for(track, str((round_ids or {}).get(track) or ""))
             if not corpus:
                 log.info("track %s has no task set this round; skipping it", track)
