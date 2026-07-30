@@ -67,6 +67,7 @@ class PhylaxValidator:
         self.server = self._init_server()
         self._done_rounds: set[str] = set()
         self._retry_at: float = 0.0
+        self._failed_tracks: set[str] = set()
         self._round_attestations: list[dict] = []
         self._round_scores: dict[str, dict[str, dict]] = {}
         self._round_seeds: dict[str, str] = {}
@@ -240,78 +241,106 @@ class PhylaxValidator:
             raise AbstainRound(f"block info unavailable for block {start_block}")
         block_hash = str(info.hash)
         scores_by_track: dict[str, list[tuple[str, float]]] = {}
+        self._failed_tracks = set()
         for track in TRACK_EVAL_ORDER:
-            corpus = self._corpus_for(track, str((round_ids or {}).get(track) or ""))
-            if not corpus:
-                log.info("track %s has no task set this round; skipping it", track)
+            try:
+                track_scores = self._run_track(
+                    track, round_ids or {}, seeds or {}, participants or {},
+                    block_hash, start_block, end_block,
+                )
+            except (AbstainRound, InfraFailure) as e:
+                log.warning("track %s failed this pass; retrying later: %s", track, e)
+                self._failed_tracks.add(track)
                 continue
-            seed = (seeds or {}).get(track) or rounds.round_seed(block_hash, track)
-            budgets = rounds.budgets_for(track)
-            task_set = rounds.select_tasks(corpus, seed, budgets["tasks"])
-            self._detonate_task_set(track, task_set, budgets)
-            agents = self._fetch_agents(track, (participants or {}).get(track))
-            self._round_seeds[track] = seed
-            self._round_tasks[track] = [item["ref"] for item in task_set]
-            log.info(
-                "round start=%d end=%d track=%s tasks=%d agents=%d",
-                start_block, end_block, track, len(task_set), len(agents),
-            )
-            track_scores: list[tuple[str, float]] = []
-            round_id = str((round_ids or {}).get(track) or "")
-            resumed = self._prior_round_results(round_id, agents)
-            for done_hotkey, detail in resumed.items():
-                track_scores.append((done_hotkey, float(detail["score"])))
-                self._round_scores.setdefault(track, {})[done_hotkey] = detail
-            if resumed:
-                log.info(
-                    "resuming %s round %s: %d agents already scored",
-                    track, round_id[:8], len(resumed),
-                )
-            self._track_attempted = 0
-            self._track_scored = 0
-            for index, (hotkey, runnable) in enumerate(agents.items()):
-                if hotkey in resumed:
-                    continue
-                if self.server is None and self._out_of_window(end_block):
-                    self._report_progress(
-                        round_id, track, "abstained", index, len(agents), "",
-                        len(task_set), "window closing",
-                    )
-                    raise AbstainRound(
-                        f"window closing at block {end_block} with track {track} incomplete"
-                    )
-                self._report_progress(
-                    round_id, track, "evaluating", index, len(agents), hotkey,
-                    len(task_set), "",
-                )
-                score = self._score_agent(track, hotkey, runnable, task_set, seed, budgets)
-                track_scores.append((hotkey, score))
-                self._round_scores.setdefault(track, {})[hotkey] = {
-                    "agent_hash": runnable["agent_hash"],
-                    "score": round(score, 6),
-                }
-                log.info("round score track=%s agent=%s S=%.3f", track, hotkey[:10], score)
-                self._submit_track_results(round_ids or {}, start_block, track)
-            if self._track_attempted and (
-                self._track_scored / self._track_attempted < MIN_SCORED_FRACTION
-            ):
-                self._report_progress(
-                    round_id, track, "abstained", len(agents), len(agents), "",
-                    len(task_set), "too few verdicts",
-                )
-                raise AbstainRound(
-                    f"only {self._track_scored}/{self._track_attempted} {track} tasks produced "
-                    "a verdict; this validator cannot evaluate reliably"
-                )
-            self._report_progress(
-                round_id, track, "scored", len(agents), len(agents), "",
-                len(task_set), "",
-            )
+            if track_scores is None:
+                continue
             scores_by_track[track] = track_scores
         if not scores_by_track:
+            if self._failed_tracks:
+                raise AbstainRound(
+                    "every attempted track failed: " + ", ".join(sorted(self._failed_tracks))
+                )
             raise AbstainRound("no track had a task set this round")
         self._write_round_record(start_block, scores_by_track)
         return scores_by_track
+
+    def _run_track(
+        self,
+        track: str,
+        round_ids: dict[str, str],
+        seeds: dict[str, str],
+        participants: dict[str, list[dict]],
+        block_hash: str,
+        start_block: int,
+        end_block: int,
+    ) -> list[tuple[str, float]] | None:
+        corpus = self._corpus_for(track, str(round_ids.get(track) or ""))
+        if not corpus:
+            log.info("track %s has no task set this round; skipping it", track)
+            return None
+        seed = seeds.get(track) or rounds.round_seed(block_hash, track)
+        budgets = rounds.budgets_for(track)
+        task_set = rounds.select_tasks(corpus, seed, budgets["tasks"])
+        self._detonate_task_set(track, task_set, budgets)
+        agents = self._fetch_agents(track, participants.get(track))
+        self._round_seeds[track] = seed
+        self._round_tasks[track] = [item["ref"] for item in task_set]
+        log.info(
+            "round start=%d end=%d track=%s tasks=%d agents=%d",
+            start_block, end_block, track, len(task_set), len(agents),
+        )
+        track_scores: list[tuple[str, float]] = []
+        round_id = str(round_ids.get(track) or "")
+        resumed = self._prior_round_results(round_id, agents)
+        for done_hotkey, detail in resumed.items():
+            track_scores.append((done_hotkey, float(detail["score"])))
+            self._round_scores.setdefault(track, {})[done_hotkey] = detail
+        if resumed:
+            log.info(
+                "resuming %s round %s: %d agents already scored",
+                track, round_id[:8], len(resumed),
+            )
+        self._track_attempted = 0
+        self._track_scored = 0
+        for index, (hotkey, runnable) in enumerate(agents.items()):
+            if hotkey in resumed:
+                continue
+            if self.server is None and self._out_of_window(end_block):
+                self._report_progress(
+                    round_id, track, "abstained", index, len(agents), "",
+                    len(task_set), "window closing",
+                )
+                raise AbstainRound(
+                    f"window closing at block {end_block} with track {track} incomplete"
+                )
+            self._report_progress(
+                round_id, track, "evaluating", index, len(agents), hotkey,
+                len(task_set), "",
+            )
+            score = self._score_agent(track, hotkey, runnable, task_set, seed, budgets)
+            track_scores.append((hotkey, score))
+            self._round_scores.setdefault(track, {})[hotkey] = {
+                "agent_hash": runnable["agent_hash"],
+                "score": round(score, 6),
+            }
+            log.info("round score track=%s agent=%s S=%.3f", track, hotkey[:10], score)
+            self._submit_track_results(round_ids, start_block, track)
+        if self._track_attempted and (
+            self._track_scored / self._track_attempted < MIN_SCORED_FRACTION
+        ):
+            self._report_progress(
+                round_id, track, "abstained", len(agents), len(agents), "",
+                len(task_set), "too few verdicts",
+            )
+            raise AbstainRound(
+                f"only {self._track_scored}/{self._track_attempted} {track} tasks produced "
+                "a verdict; this validator cannot evaluate reliably"
+            )
+        self._report_progress(
+            round_id, track, "scored", len(agents), len(agents), "",
+            len(task_set), "",
+        )
+        return track_scores
 
     def _prior_round_results(self, round_id: str, agents: dict) -> dict[str, dict]:
         if self.server is None or not round_id:
@@ -842,7 +871,11 @@ class PhylaxValidator:
         ):
             self._retry_at = time.monotonic() + 300.0
             return False
-        self._done_rounds.update(round_ids.values())
+        self._done_rounds.update(
+            rid for trk, rid in round_ids.items() if trk not in self._failed_tracks
+        )
+        if self._failed_tracks:
+            self._retry_at = time.monotonic() + 300.0
         return True
 
     def run(self) -> None:
