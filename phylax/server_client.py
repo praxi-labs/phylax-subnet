@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import os
 
 
 def _signing_bytes(method: str, path: str, timestamp: str, body: bytes) -> bytes:
@@ -15,6 +16,9 @@ def _signing_bytes(method: str, path: str, timestamp: str, body: bytes) -> bytes
     h.update(b"\n")
     h.update(body or b"")
     return h.digest()
+
+
+ARTIFACT_TIMEOUT_S: float = float(os.getenv("PHYLAX_ARTIFACT_TIMEOUT", "300"))
 
 
 class ServerUnreachable(Exception):
@@ -61,7 +65,8 @@ class PhylaxServerClient:
         }
 
     def _request(self, method: str, path: str, *, json_body: dict | None = None,
-                 params: dict | None = None, signed: bool = True) -> dict:
+                 params: dict | None = None, signed: bool = True,
+                 timeout: float | None = None) -> dict:
         import httpx
 
         body = (
@@ -76,7 +81,7 @@ class PhylaxServerClient:
         try:
             r = httpx.request(
                 method, url, headers=headers, content=body,
-                params=params, timeout=self.timeout,
+                params=params, timeout=timeout or self.timeout,
             )
         except (httpx.ConnectError, httpx.ReadTimeout, httpx.TransportError) as exc:
             raise ServerUnreachable(f"{method} {path}: {exc}") from exc
@@ -170,9 +175,15 @@ class PhylaxServerClient:
         return self._request("GET", f"/v1/rounds/{round_id}/tasks")
 
     def get_round_artifact(self, round_id: str, source_id: str) -> dict:
+        """Artifacts are whole source trees, base64 encoded. A repository can be
+        tens of megabytes, so this hop gets its own generous timeout rather than
+        the short one used for control-plane calls."""
         if self._server_hotkey is None:
             self.fetch_server_identity()
-        return self._request("GET", f"/v1/rounds/{round_id}/artifact/{source_id}")
+        return self._request(
+            "GET", f"/v1/rounds/{round_id}/artifact/{source_id}",
+            timeout=ARTIFACT_TIMEOUT_S,
+        )
 
     def get_my_results(self) -> dict:
         """Read back this validator's own most recent scores per track."""
