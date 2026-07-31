@@ -19,7 +19,13 @@ import re
 import socket
 import subprocess
 import unicodedata
+import urllib.error
+import urllib.request
 from pathlib import Path
+
+_INFERENCE_TIMEOUT_S = 120
+_INFERENCE_MAX_TOKENS = 1500
+_REVIEW_CHARS = 24_000
 
 _SCAN_BYTE_CAP = 2_000_000
 _TEXT_SUFFIXES = (
@@ -611,6 +617,161 @@ def _analyse_repositories(files: list[tuple[str, str]]) -> dict:
     }
 
 
+def call_inference(
+    context: dict,
+    messages: list[dict],
+    temperature: float = 0.0,
+    max_tokens: int = _INFERENCE_MAX_TOKENS,
+) -> str | None:
+    """Send a chat completion through the validator's inference proxy.
+
+    The proxy is the only route out of the sandbox: it attaches the miner's
+    provider credentials, meters the call against ``context['nonce']``, and
+    forwards to Chutes or OpenRouter. Returns the assistant message, or None
+    when inference is unavailable so a caller can fall back to static analysis.
+    """
+    config = (context or {}).get("inference") or {}
+    api = str(config.get("api") or "").rstrip("/")
+    api_key = str(config.get("api_key") or "")
+    model = str(config.get("model") or "")
+    if not api or not api_key or not model:
+        return None
+
+    body = json.dumps(
+        {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(  # noqa: S310
+        f"{api}/v1/chat/completions",
+        data=body,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+            "X-Phylax-Provider": str(config.get("provider") or ""),
+            "X-Phylax-Nonce": str((context or {}).get("nonce") or ""),
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=_INFERENCE_TIMEOUT_S) as response:  # noqa: S310
+            payload = json.loads(response.read().decode("utf-8", "replace"))
+    except (urllib.error.URLError, OSError, ValueError, TimeoutError):
+        return None
+
+    choices = payload.get("choices") or []
+    if not choices:
+        return None
+    message = (choices[0] or {}).get("message") or {}
+    return str(message.get("content") or "").strip() or None
+
+
+def _declared_intent(files: list[tuple[str, str]]) -> str:
+    wanted = ("readme", "skill.md", "manifest.json", "package.json", "pyproject.toml",
+              "setup.py", "mcp.json", "description")
+    for rel, text in files:
+        name = rel.replace("\\", "/").rsplit("/", 1)[-1].lower()
+        if any(w in name for w in wanted):
+            return f"--- {rel} ---\n{text[:4000]}"
+    return "no manifest or description found"
+
+
+def _observed_summary(observed: dict) -> str:
+    if not observed:
+        return "artifact was not detonated for this track"
+    capabilities = observed.get("capabilities") or []
+    phases = observed.get("phases") or {}
+    lines = [f"capabilities exercised at runtime: {', '.join(map(str, capabilities)) or 'none'}"]
+    for phase, detail in phases.items():
+        if not isinstance(detail, dict):
+            continue
+        seen = detail.get("capabilities") or []
+        lines.append(f"{phase}: {', '.join(map(str, seen)) or 'no observable effect'}")
+    if observed.get("error"):
+        lines.append(f"detonation error: {observed['error']}")
+    return "\n".join(lines)
+
+
+def _review_prompt(
+    track: str, files: list[tuple[str, str]], result: dict, observed: dict
+) -> list[dict]:
+    corpus = []
+    budget = _REVIEW_CHARS
+    for rel, text in files:
+        if budget <= 0:
+            break
+        chunk = text[:budget]
+        corpus.append(f"--- {rel} ---\n{chunk}")
+        budget -= len(chunk)
+    findings = json.dumps(result.get("findings") or [], indent=2)[:4000]
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You audit AI supply chain artifacts. The artifact was executed in an "
+                "isolated sandbox and its runtime behaviour was recorded, so judge what "
+                "it DID against what it CLAIMS to do. A capability the artifact never "
+                "declares is the strongest signal; a declared capability is not a "
+                "finding on its own. Reply with JSON only: "
+                '{"decision": "ALLOW|WARN|BLOCK", "findings": '
+                '[{"category": str, "severity": str, "title": str}]}.'
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Track: {track}\n\n"
+                f"What the artifact declares:\n{_declared_intent(files)}\n\n"
+                f"What it did when executed:\n{_observed_summary(observed)}\n\n"
+                f"Static analysis found:\n{findings}\n\n"
+                f"Source:\n{chr(10).join(corpus)}"
+            ),
+        },
+    ]
+
+
+def _merge_review(result: dict, raw: str) -> dict:
+    text = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```")
+    try:
+        review = json.loads(text)
+    except ValueError:
+        return result
+    if not isinstance(review, dict):
+        return result
+
+    decision = str(review.get("decision") or "").upper()
+    if decision in ("ALLOW", "WARN", "BLOCK"):
+        verdict = result.setdefault("verdict", {})
+        rank = {"ALLOW": 0, "WARN": 1, "BLOCK": 2}
+        if rank.get(decision, 0) > rank.get(str(verdict.get("decision", "ALLOW")).upper(), 0):
+            verdict["decision"] = decision
+            verdict["risk_score"] = max(int(verdict.get("risk_score", 0) or 0), 70)
+
+    seen = {
+        (str(f.get("category", "")).lower(), str(f.get("title", "")).lower())
+        for f in result.get("findings") or []
+        if isinstance(f, dict)
+    }
+    for item in review.get("findings") or []:
+        if not isinstance(item, dict) or not item.get("title"):
+            continue
+        key = (str(item.get("category", "")).lower(), str(item.get("title", "")).lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        result.setdefault("findings", []).append(
+            {
+                "category": str(item.get("category") or "llm_review"),
+                "severity": str(item.get("severity") or "MEDIUM").upper(),
+                "title": str(item["title"])[:160],
+            }
+        )
+    return result
+
+
 def agent_main(context: dict | None = None) -> dict:
     context = context or {}
     track = context.get("track", "skills")
@@ -619,9 +780,16 @@ def agent_main(context: dict | None = None) -> dict:
     files = _read_files(artifact_dir)
 
     if track == "mcp_servers":
-        return _analyse_mcp(files, probe)
-    if track == "packages":
-        return _analyse_packages(files, probe)
-    if track == "repositories":
-        return _analyse_repositories(files)
-    return _analyse_skills(files, probe)
+        result = _analyse_mcp(files, probe)
+    elif track == "packages":
+        result = _analyse_packages(files, probe)
+    elif track == "repositories":
+        result = _analyse_repositories(files)
+    else:
+        result = _analyse_skills(files, probe)
+
+    observed = context.get("observed") or {}
+    reviewed = call_inference(context, _review_prompt(track, files, result, observed))
+    if reviewed:
+        result = _merge_review(result, reviewed)
+    return result
