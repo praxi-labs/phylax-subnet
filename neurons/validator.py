@@ -5,8 +5,10 @@ import hashlib
 import json
 import logging
 import os
+import threading
 import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import bittensor as bt
@@ -25,6 +27,7 @@ MAX_AGENT_BYTES: int = 512 * 1024
 DEADLINE_MARGIN_BLOCKS: int = 20
 EMA_ALPHA: float = 0.3
 TRACK_EVAL_ORDER: tuple[str, ...] = ("repositories", "packages", "mcp_servers", "skills")
+AGENT_CONCURRENCY: int = max(1, int(os.getenv("PHYLAX_AGENT_CONCURRENCY", "2")))
 WEIGHT_REFRESH_S: int = 1200
 WEIGHT_RETRY_S: int = 180
 MIN_SCORED_FRACTION: float = 0.5
@@ -68,6 +71,8 @@ class PhylaxValidator:
         self._done_rounds: set[str] = set()
         self._retry_at: float = 0.0
         self._failed_tracks: set[str] = set()
+        self._score_lock = threading.Lock()
+        self._submit_lock = threading.Lock()
         self._round_attestations: list[dict] = []
         self._round_scores: dict[str, dict[str, dict]] = {}
         self._round_seeds: dict[str, str] = {}
@@ -302,29 +307,52 @@ class PhylaxValidator:
             )
         self._track_attempted = 0
         self._track_scored = 0
-        for index, (hotkey, runnable) in enumerate(agents.items()):
-            if hotkey in resumed:
-                continue
-            if self.server is None and self._out_of_window(end_block):
-                self._report_progress(
-                    round_id, track, "abstained", index, len(agents), "",
-                    len(task_set), "window closing",
-                )
-                raise AbstainRound(
-                    f"window closing at block {end_block} with track {track} incomplete"
-                )
-            self._report_progress(
-                round_id, track, "evaluating", index, len(agents), hotkey,
-                len(task_set), "",
-            )
+        pending = [(hk, run) for hk, run in agents.items() if hk not in resumed]
+        done = len(resumed)
+
+        def evaluate(entry: tuple[str, dict]) -> tuple[str, dict, float]:
+            hotkey, runnable = entry
             score = self._score_agent(track, hotkey, runnable, task_set, seed, budgets)
-            track_scores.append((hotkey, score))
-            self._round_scores.setdefault(track, {})[hotkey] = {
-                "agent_hash": runnable["agent_hash"],
-                "score": round(score, 6),
-            }
-            log.info("round score track=%s agent=%s S=%.3f", track, hotkey[:10], score)
-            self._submit_track_results(round_ids, start_block, track)
+            return hotkey, runnable, score
+
+        workers = max(1, min(AGENT_CONCURRENCY, len(pending))) if pending else 1
+        if pending:
+            log.info(
+                "evaluating %d %s agents, %d at a time", len(pending), track, workers
+            )
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(evaluate, entry): entry[0] for entry in pending}
+            for future in as_completed(futures):
+                if self.server is None and self._out_of_window(end_block):
+                    for pendingfuture in futures:
+                        pendingfuture.cancel()
+                    self._report_progress(
+                        round_id, track, "abstained", done, len(agents), "",
+                        len(task_set), "window closing",
+                    )
+                    raise AbstainRound(
+                        f"window closing at block {end_block} with track {track} incomplete"
+                    )
+                try:
+                    hotkey, runnable, score = future.result()
+                except (AbstainRound, InfraFailure):
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("agent %s failed to score: %s", futures[future][:10], exc)
+                    continue
+                done += 1
+                with self._score_lock:
+                    track_scores.append((hotkey, score))
+                    self._round_scores.setdefault(track, {})[hotkey] = {
+                        "agent_hash": runnable["agent_hash"],
+                        "score": round(score, 6),
+                    }
+                log.info("round score track=%s agent=%s S=%.3f", track, hotkey[:10], score)
+                self._report_progress(
+                    round_id, track, "evaluating", done, len(agents), hotkey,
+                    len(task_set), "",
+                )
+                self._submit_track_results(round_ids, start_block, track)
         if self._track_attempted and (
             self._track_scored / self._track_attempted < MIN_SCORED_FRACTION
         ):
@@ -493,8 +521,9 @@ class PhylaxValidator:
                     )
                 )
         scored = tp + tn + fp + fn
-        self._track_attempted += attempted
-        self._track_scored += scored
+        with self._score_lock:
+            self._track_attempted += attempted
+            self._track_scored += scored
         if scored == 0:
             log.warning(
                 "agent %s produced no verdict on any of %d %s tasks; scoring 0",
@@ -681,7 +710,8 @@ class PhylaxValidator:
             },
         }
         self.last_sssa = sssa
-        self._round_attestations.append(sssa)
+        with self._score_lock:
+            self._round_attestations.append(sssa)
         log.debug("attested agent=%s artifact=%s hash=%s", hotkey[:10], item["ref"], digest.hex()[:16])
 
     def set_weights(
@@ -754,12 +784,21 @@ class PhylaxValidator:
     ) -> None:
         if self.server is None:
             return
-        per_agent = self._round_scores.get(track) or {}
+        with self._submit_lock:
+            self._submit_track_results_locked(round_ids, start_block, track)
+
+    def _submit_track_results_locked(
+        self, round_ids: dict[str, str], start_block: int, track: str
+    ) -> None:
+        with self._score_lock:
+            per_agent = dict(self._round_scores.get(track) or {})
+            attestations = [
+                a for a in self._round_attestations if a.get("track") == track
+            ]
         if per_agent:
             results = [
                 {"miner_hotkey": hk, **detail} for hk, detail in per_agent.items()
             ]
-            attestations = [a for a in self._round_attestations if a.get("track") == track]
             try:
                 self.server.submit_round_results(
                     round_id=round_ids.get(track, f"block-{start_block}"),
