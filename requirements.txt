@@ -6,7 +6,6 @@
 # cyscale in place of scalecodec). They must match between the two images.
 bittensor
 pydantic
-torch
 numpy
 
 # Static analysis (optional but recommended)
