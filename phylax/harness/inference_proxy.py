@@ -23,6 +23,29 @@ _MAX_RESPONSE = 4_000_000
 _METRICS: dict[str, dict[str, int]] = {}
 _LOCK = threading.Lock()
 
+# Credentials never enter the sandbox. The validator registers a session before
+# it runs an agent; the agent presents only its nonce and the proxy attaches the
+# key. Budget is enforced here so a looping agent cannot drain a miner balance.
+_SESSIONS: dict[str, dict[str, str]] = {}
+_MAX_TOKENS_PER_TASK = int(os.getenv("PHYLAX_MAX_TOKENS_PER_TASK", "400000"))
+_MAX_REQUESTS_PER_TASK = int(os.getenv("PHYLAX_MAX_REQUESTS_PER_TASK", "200"))
+
+
+def _usage(nonce: str) -> dict[str, int]:
+    with _LOCK:
+        row = _METRICS.get(nonce) or {}
+        return dict(row)
+
+
+def _over_budget(nonce: str) -> str:
+    row = _usage(nonce)
+    if row.get("requests", 0) >= _MAX_REQUESTS_PER_TASK:
+        return f"request budget exhausted ({_MAX_REQUESTS_PER_TASK} calls)"
+    spent = row.get("input_tokens", 0) + row.get("output_tokens", 0)
+    if spent >= _MAX_TOKENS_PER_TASK:
+        return f"token budget exhausted ({_MAX_TOKENS_PER_TASK} tokens)"
+    return ""
+
 
 def _provider_url(provider: str, api_key: str) -> str | None:
     if provider in _PROVIDERS:
@@ -97,9 +120,38 @@ class Handler(BaseHTTPRequestHandler):
             with _LOCK:
                 if nonce:
                     _METRICS.pop(nonce, None)
+                    _SESSIONS.pop(nonce, None)
                 else:
                     _METRICS.clear()
+                    _SESSIONS.clear()
             self._json(200, {"reset": nonce or "all"})
+            return
+
+        if parsed.path == "/session":
+            if not _admin_ok(self.headers):
+                self.send_error(401, "admin token required")
+                return
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            if length <= 0 or length > 8192:
+                self.send_error(400, "invalid session body")
+                return
+            try:
+                payload = json.loads(self.rfile.read(length))
+            except ValueError:
+                self.send_error(400, "invalid session body")
+                return
+            nonce = str(payload.get("nonce") or "").strip()
+            api_key = str(payload.get("api_key") or "").strip()
+            if not nonce or not api_key:
+                self.send_error(400, "nonce and api_key required")
+                return
+            with _LOCK:
+                _SESSIONS[nonce] = {
+                    "api_key": api_key,
+                    "provider": str(payload.get("provider") or "").strip(),
+                }
+                _METRICS.pop(nonce, None)
+            self._json(200, {"registered": nonce})
             return
 
         if not parsed.path.startswith("/v1/chat/completions"):
@@ -110,12 +162,20 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(413, "invalid body size")
             return
         body = self.rfile.read(length)
-        api_key = self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
-        provider = self.headers.get("X-Phylax-Provider", "").strip()
         nonce = self.headers.get("X-Phylax-Nonce", "").strip()
+        with _LOCK:
+            session = dict(_SESSIONS.get(nonce) or {})
+        api_key = session.get("api_key") or (
+            self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+        )
+        provider = session.get("provider") or self.headers.get("X-Phylax-Provider", "").strip()
         url = _provider_url(provider, api_key)
         if not url or not api_key:
             self.send_error(400, "missing provider or api key")
+            return
+        exhausted = _over_budget(nonce)
+        if exhausted:
+            self._json(429, {"error": exhausted, "nonce": nonce})
             return
 
         upstream = urllib.request.Request(url, data=body, method="POST")  # noqa: S310

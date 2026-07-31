@@ -28,6 +28,8 @@ DEADLINE_MARGIN_BLOCKS: int = 20
 EMA_ALPHA: float = 0.3
 TRACK_EVAL_ORDER: tuple[str, ...] = ("repositories", "packages", "mcp_servers", "skills")
 AGENT_CONCURRENCY: int = max(1, int(os.getenv("PHYLAX_AGENT_CONCURRENCY", "2")))
+REQUIRE_INFERENCE: bool = os.getenv("PHYLAX_REQUIRE_INFERENCE", "1") != "0"
+SCORING_POLICY_VERSION: str = os.getenv("PHYLAX_SCORING_POLICY", "2026.07.31")
 WEIGHT_REFRESH_S: int = 1200
 WEIGHT_RETRY_S: int = 180
 MIN_SCORED_FRACTION: float = 0.5
@@ -73,6 +75,7 @@ class PhylaxValidator:
         self._failed_tracks: set[str] = set()
         self._score_lock = threading.Lock()
         self._submit_lock = threading.Lock()
+        self._failure_reasons: dict[str, str] = {}
         self._round_attestations: list[dict] = []
         self._round_scores: dict[str, dict[str, dict]] = {}
         self._round_seeds: dict[str, str] = {}
@@ -543,6 +546,47 @@ class PhylaxValidator:
             scoring.RUN_W_CORRECTNESS * correctness + scoring.RUN_W_QUALITY * q
         )
 
+    def _proxy_admin(self, path: str, payload: dict | None = None) -> dict:
+        base = os.getenv("PHYLAX_INFERENCE_PROXY_URL", "").rstrip("/")
+        token = os.getenv("PHYLAX_PROXY_ADMIN_TOKEN", "")
+        if not base or not token:
+            return {}
+        import urllib.request
+
+        data = json.dumps(payload or {}).encode("utf-8") if payload is not None else None
+        request = urllib.request.Request(  # noqa: S310
+            f"{base}{path}",
+            data=data,
+            method="POST" if data is not None else "GET",
+            headers={"Content-Type": "application/json", "X-Phylax-Admin": token},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=15) as response:  # noqa: S310
+                return json.loads(response.read().decode("utf-8", "replace")) or {}
+        except Exception:  # noqa: BLE001
+            return {}
+
+    def _open_inference_session(self, nonce: str, runnable: dict) -> None:
+        key = str(runnable.get("execution_api_key") or "")
+        if not key:
+            return
+        self._proxy_admin(
+            "/session",
+            {
+                "nonce": nonce,
+                "api_key": key,
+                "provider": str(runnable.get("inference_provider") or ""),
+            },
+        )
+
+    def _inference_calls(self, nonce: str) -> int:
+        metrics = self._proxy_admin(f"/metrics?nonce={nonce}") or {}
+        row = metrics.get(nonce) if isinstance(metrics.get(nonce), dict) else metrics
+        try:
+            return int((row or {}).get("requests", 0) or 0)
+        except (TypeError, ValueError):
+            return 0
+
     def _task_verdict(
         self,
         track: str,
@@ -556,6 +600,7 @@ class PhylaxValidator:
     ) -> tuple[str | None, float, list]:
         nonce = rounds.task_nonce(seed, item["ref"], hotkey)
         probe = proofmod.derive_probe(nonce)
+        self._open_inference_session(nonce, runnable)
         ordinals: list[int] = []
         last_result = None
         for _ in range(budgets["repetitions"]):
@@ -572,6 +617,10 @@ class PhylaxValidator:
             ordinals.append(ordinal)
             last_result = result
         if not ordinals:
+            return None, wall_used, []
+        if REQUIRE_INFERENCE and self._inference_calls(nonce) == 0:
+            self._note_rejection("no inference call")
+            self._failure_reasons[hotkey] = "no_inference"
             return None, wall_used, []
         ordinals.sort()
         decision = _ORDINAL_VERDICT[ordinals[(len(ordinals) - 1) // 2]]
@@ -797,7 +846,17 @@ class PhylaxValidator:
             ]
         if per_agent:
             results = [
-                {"miner_hotkey": hk, **detail} for hk, detail in per_agent.items()
+                {
+                    "miner_hotkey": hk,
+                    **detail,
+                    "policy_version": SCORING_POLICY_VERSION,
+                    **(
+                        {"failure_reason": self._failure_reasons[hk]}
+                        if hk in self._failure_reasons
+                        else {}
+                    ),
+                }
+                for hk, detail in per_agent.items()
             ]
             try:
                 self.server.submit_round_results(
