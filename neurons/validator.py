@@ -580,12 +580,22 @@ class PhylaxValidator:
         )
 
     def _inference_calls(self, nonce: str) -> int:
-        metrics = self._proxy_admin(f"/metrics?nonce={nonce}") or {}
+        """Calls recorded for this task, or -1 when the meter cannot be read.
+
+        Returning -1 rather than 0 matters: without a proxy admin token the
+        validator cannot see usage at all, and treating that as zero would
+        refuse every agent instead of every agent that skipped inference.
+        """
+        if not os.getenv("PHYLAX_PROXY_ADMIN_TOKEN", ""):
+            return -1
+        metrics = self._proxy_admin(f"/metrics?nonce={nonce}")
+        if not metrics:
+            return -1
         row = metrics.get(nonce) if isinstance(metrics.get(nonce), dict) else metrics
         try:
             return int((row or {}).get("requests", 0) or 0)
         except (TypeError, ValueError):
-            return 0
+            return -1
 
     def _task_verdict(
         self,
@@ -618,7 +628,7 @@ class PhylaxValidator:
             last_result = result
         if not ordinals:
             return None, wall_used, []
-        if REQUIRE_INFERENCE and self._inference_calls(nonce) == 0:
+        if REQUIRE_INFERENCE and self._inference_calls(nonce) == 0:  # -1 means unreadable
             self._note_rejection("no inference call")
             self._failure_reasons[hotkey] = "no_inference"
             return None, wall_used, []
