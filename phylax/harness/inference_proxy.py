@@ -80,6 +80,20 @@ def _admin_ok(headers) -> bool:
 
 
 class Handler(BaseHTTPRequestHandler):
+    # Admin routes bind to their own port that is not attached to the jail
+    # network, so reaching them requires being the validator rather than
+    # holding a shared secret the sandbox could also learn.
+    admin_surface = False
+
+    def _admin_allowed(self) -> bool:
+        if not self.admin_surface:
+            self.send_error(404, "not found")
+            return False
+        if not _admin_ok(self.headers):
+            self.send_error(401, "admin token required")
+            return False
+        return True
+
     def _json(self, code: int, payload: dict) -> None:
         data = json.dumps(payload).encode("utf-8")
         self.send_response(code)
@@ -96,10 +110,7 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(b"ok")
             return
         if parsed.path == "/metrics":
-            # Liveness/metering read for the validator. Admin-authenticated so an
-            # agent on the internal network cannot read or forge usage.
-            if not _admin_ok(self.headers):
-                self.send_error(401, "admin token required")
+            if not self._admin_allowed():
                 return
             nonce = (parse_qs(parsed.query).get("nonce") or [""])[0]
             with _LOCK:
@@ -113,8 +124,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         if parsed.path == "/metrics/reset":
-            if not _admin_ok(self.headers):
-                self.send_error(401, "admin token required")
+            if not self._admin_allowed():
                 return
             nonce = (parse_qs(parsed.query).get("nonce") or [""])[0]
             with _LOCK:
@@ -128,8 +138,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/session":
-            if not _admin_ok(self.headers):
-                self.send_error(401, "admin token required")
+            if not self._admin_allowed():
                 return
             length = int(self.headers.get("Content-Length", 0) or 0)
             if length <= 0 or length > 8192:
@@ -207,10 +216,23 @@ class Handler(BaseHTTPRequestHandler):
         return
 
 
+class AgentHandler(Handler):
+    admin_surface = False
+
+
+class AdminHandler(Handler):
+    admin_surface = True
+
+
 def main() -> None:
     host = os.getenv("PHYLAX_PROXY_HOST", "0.0.0.0")  # noqa: S104
     port = int(os.getenv("PHYLAX_PROXY_PORT", "8900"))
-    ThreadingHTTPServer((host, port), Handler).serve_forever()
+    admin_host = os.getenv("PHYLAX_PROXY_ADMIN_HOST", "127.0.0.1")
+    admin_port = int(os.getenv("PHYLAX_PROXY_ADMIN_PORT", "8901"))
+
+    admin = ThreadingHTTPServer((admin_host, admin_port), AdminHandler)
+    threading.Thread(target=admin.serve_forever, daemon=True).start()
+    ThreadingHTTPServer((host, port), AgentHandler).serve_forever()
 
 
 if __name__ == "__main__":

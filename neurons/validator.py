@@ -547,7 +547,10 @@ class PhylaxValidator:
         )
 
     def _proxy_admin(self, path: str, payload: dict | None = None) -> dict:
-        base = os.getenv("PHYLAX_INFERENCE_PROXY_URL", "").rstrip("/")
+        base = (
+            os.getenv("PHYLAX_PROXY_ADMIN_URL", "")
+            or os.getenv("PHYLAX_INFERENCE_PROXY_URL", "")
+        ).rstrip("/")
         token = os.getenv("PHYLAX_PROXY_ADMIN_TOKEN", "")
         if not base or not token:
             return {}

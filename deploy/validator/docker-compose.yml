@@ -20,6 +20,7 @@ services:
       PHYLAX_JAIL_NETWORK: "phylax-jail"
       PHYLAX_STATE_DIR: "/opt/phylax/state"
       PHYLAX_INFERENCE_PROXY_URL: "${PHYLAX_INFERENCE_PROXY_URL:-http://phylax-proxy:8900}"
+      PHYLAX_PROXY_ADMIN_URL: "${PHYLAX_PROXY_ADMIN_URL:-http://phylax-proxy:8901}"
       PHYLAX_SANDBOX_IMAGE: "${PHYLAX_SANDBOX_IMAGE:-ghcr.io/praxi-labs/phylax-agent:${PHYLAX_IMAGE_TAG:-latest}}"
       PHYLAX_SANDBOX_DIGEST: "${PHYLAX_SANDBOX_DIGEST:-}"
       PHYLAX_PROXY_ADMIN_TOKEN: "${PHYLAX_PROXY_ADMIN_TOKEN:-}"
@@ -49,6 +50,8 @@ services:
     environment:
       PHYLAX_PROXY_HOST: "0.0.0.0"
       PHYLAX_PROXY_PORT: "8900"
+      PHYLAX_PROXY_ADMIN_HOST: "0.0.0.0"
+      PHYLAX_PROXY_ADMIN_PORT: "8901"
       PHYLAX_PROXY_ADMIN_TOKEN: "${PHYLAX_PROXY_ADMIN_TOKEN:-}"
     networks:
       - phylax-jail
