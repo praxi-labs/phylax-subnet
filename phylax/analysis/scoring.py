@@ -133,6 +133,16 @@ def compute_emission_weights(
     return weights
 
 
+def reserved_only_weights(hotkey: str = RESERVED_HOTKEY) -> dict[str, float]:
+    """The vector voted while a round is still being evaluated.
+
+    Nothing is known about this round's agents until their results land, so
+    the whole vector sits on the reserved hotkey. Miners earn once they have
+    been evaluated and placed.
+    """
+    return {hotkey: 1.0} if hotkey else {}
+
+
 def apply_reserved_share(
     weights: dict[str, float],
     hotkey: str = RESERVED_HOTKEY,
