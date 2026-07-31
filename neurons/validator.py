@@ -69,6 +69,7 @@ class PhylaxValidator:
         self.corpora = {track: load_corpus(track) for track in rounds.TRACKS}
         self.last_round_start = -1
         self.should_exit = False
+        self._round_running = False
         self.server = self._init_server()
         self._done_rounds: set[str] = set()
         self._retry_at: float = 0.0
@@ -108,6 +109,21 @@ class PhylaxValidator:
             self.metagraph = self._fetch_metagraph()
         except Exception as e:  # noqa: BLE001
             log.warning("metagraph refresh failed; using previous snapshot: %s", e)
+
+    def _is_registered(self, hotkey: str) -> bool:
+        """Whether the hotkey still holds a slot, assuming yes when unreadable.
+
+        A miner can deregister after the participant set freezes. Reading the
+        metagraph is best effort: an unreadable snapshot must not drop every
+        agent from the round.
+        """
+        hotkeys = getattr(self.metagraph, "hotkeys", None)
+        if hotkeys:
+            return hotkey in set(hotkeys)
+        try:
+            return self.metagraph.by_hotkey(hotkey) is not None
+        except Exception:  # noqa: BLE001
+            return True
 
     def _init_server(self) -> PhylaxServerClient | None:
         url = os.getenv("PHYLAX_SERVER_URL", "").strip()
@@ -172,6 +188,12 @@ class PhylaxValidator:
             hotkey = str(part.get("hotkey", "") or "")
             expected = str(part.get("agent_hash", "") or "")
             if not hotkey:
+                continue
+            if not self._is_registered(hotkey):
+                log.info(
+                    "skipping agent=%s: hotkey deregistered from netuid %d",
+                    hotkey[:10], self.netuid,
+                )
                 continue
             try:
                 data = self.server.get_runnable_agent(hotkey)
@@ -779,6 +801,17 @@ class PhylaxValidator:
     def set_weights(
         self, scores_by_track: dict[str, list[tuple[str, float]]] | None
     ) -> None:
+        if self._round_running:
+            reserved = scoring.reserved_only_weights()
+            if not reserved:
+                log.warning("no reserved hotkey set; leaving weights alone mid round")
+                self._last_weight_set = time.monotonic()
+                return
+            log.info("round in flight; voting the reserved hotkey until results land")
+            self._last_weight_set = time.monotonic()
+            self._push_weights(reserved)
+            return
+
         prior = self._load_prior_weights()
         if scores_by_track is None:
             if not prior:
@@ -807,6 +840,9 @@ class PhylaxValidator:
 
         blended = scoring.apply_reserved_share(blended)
         self._last_weight_set = time.monotonic()
+        self._push_weights(blended)
+
+    def _push_weights(self, blended: dict[str, float]) -> None:
         if not blended:
             log.info("set_weights: no agent cleared the quality threshold; skipping")
             return
@@ -898,14 +934,19 @@ class PhylaxValidator:
         participants: dict[str, list[dict]] | None = None,
     ) -> bool:
         self._refresh_metagraph()
+        self._round_running = True
+        self.set_weights(None)
         try:
             scores_by_track = self.run_round(
                 start_block, seeds=seeds, participants=participants, round_ids=round_ids
             )
         except (AbstainRound, InfraFailure) as e:
             log.warning("abstaining this round: %s", e)
+            self._round_running = False
             self.set_weights(None)
             return False
+        finally:
+            self._round_running = False
         self._submit_results(round_ids, start_block)
         self.set_weights(scores_by_track)
         return True
