@@ -177,6 +177,60 @@ class PhylaxValidator:
         except OSError as e:
             log.warning("could not persist EMA state: %s", e)
 
+    def _load_prior_scores(self) -> dict[str, list[tuple[str, float]]]:
+        try:
+            raw = json.loads((self._state_dir() / "track_scores.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError, AttributeError):
+            return {}
+        out: dict[str, list[tuple[str, float]]] = {}
+        if not isinstance(raw, dict):
+            return out
+        for track, rows in raw.items():
+            if not isinstance(rows, list):
+                continue
+            ranked = [
+                (str(row[0]), float(row[1]))
+                for row in rows
+                if isinstance(row, list | tuple) and len(row) == 2
+            ]
+            if ranked:
+                out[str(track)] = ranked
+        return out
+
+    def _save_prior_scores(self, scores: dict) -> None:
+        try:
+            (self._state_dir() / "track_scores.json").write_text(
+                json.dumps({t: [[hk, s] for hk, s in rows] for t, rows in scores.items()}, indent=2),
+                encoding="utf-8",
+            )
+        except OSError as e:
+            log.warning("could not persist track scores: %s", e)
+
+    def _all_track_scores(self, fresh: dict) -> dict:
+        """This pass's scores, over the last known scores for every other track.
+
+        A pass covers only the tracks with an open round, so a track evaluated
+        earlier is absent here. Absent must not read as "no winners": weights
+        are rebuilt from scratch every pass, and a track missing from the input
+        loses its emission share entirely and drops its miners to zero. The
+        backend keeps each track's last closed round, so tracks that did not
+        run this pass carry their standing forward and hold their share.
+        """
+        carried = self._load_prior_scores()
+        try:
+            from_server = self._scores_from_server()
+        except Exception as e:  # noqa: BLE001
+            log.debug("could not read back prior track scores: %s", e)
+            from_server = None
+        if from_server:
+            carried.update(from_server)
+        merged = {**carried, **fresh}
+        skipped = sorted(set(merged) - set(fresh))
+        if skipped:
+            log.info("carrying %s forward; not evaluated this pass", ", ".join(skipped))
+        self._save_prior_scores(merged)
+        return merged
+
     def _fetch_agents(self, track: str, participants: list[dict] | None = None) -> dict[str, dict]:
         if not participants or self.server is None:
             log.info("no frozen participants for track=%s; nothing to evaluate", track)
@@ -824,7 +878,7 @@ class PhylaxValidator:
             blended = dict(prior)
         else:
             weight_map = scoring.compute_emission_weights(
-                scores_by_track,
+                self._all_track_scores(scores_by_track),
                 contributor_hotkeys=self._load_contributors(),
                 thresholds=scoring.TRACK_THRESHOLDS,
             )
