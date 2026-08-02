@@ -19,8 +19,6 @@ def clip01(x: float) -> float:
 
 
 @dataclass(frozen=True)
-
-
 class ScoreComponents:
     verdict_correctness: float = 0.0
     evidence_integrity: float = 0.0
@@ -29,8 +27,6 @@ class ScoreComponents:
 
 
 @dataclass(frozen=True)
-
-
 class ScoreResult:
     score: float
     gate_passed: bool
@@ -73,7 +69,7 @@ CONTRIBUTION_SHARE = 0.05
 RESERVED_HOTKEY = "5CcWKodC5SbpjfVhDcdULVHSt9KMeSu3moNkiiebSBcengAQ"
 
 
-RESERVED_SHARE = 0.70
+RESERVED_SHARE = 0.20
 
 RUN_W_CORRECTNESS = 0.7
 
