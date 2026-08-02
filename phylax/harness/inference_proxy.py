@@ -172,11 +172,14 @@ class Handler(BaseHTTPRequestHandler):
             return
         body = self.rfile.read(length)
         nonce = self.headers.get("X-Phylax-Nonce", "").strip()
+        metered = bool(os.getenv("PHYLAX_PROXY_ADMIN_TOKEN", ""))
         with _LOCK:
             session = dict(_SESSIONS.get(nonce) or {})
-        api_key = session.get("api_key") or (
-            self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
-        )
+        if metered and not session:
+            self.send_error(403, "no registered session for this task")
+            return
+        header_key = self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+        api_key = session.get("api_key") or ("" if metered else header_key)
         provider = session.get("provider") or self.headers.get("X-Phylax-Provider", "").strip()
         url = _provider_url(provider, api_key)
         if not url or not api_key:
