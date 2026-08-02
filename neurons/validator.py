@@ -922,6 +922,7 @@ class PhylaxValidator:
             log.info("set_weights: no agent cleared the quality threshold; skipping")
             return
 
+        self._refresh_metagraph()
         uid_by_hotkey = {n.hotkey: n.uid for n in self.metagraph.neurons}
         if scoring.RESERVED_HOTKEY and scoring.RESERVED_HOTKEY not in uid_by_hotkey:
             log.warning(
@@ -930,10 +931,18 @@ class PhylaxValidator:
                 scoring.RESERVED_HOTKEY[:12], self.netuid, scoring.RESERVED_SHARE * 100,
             )
         uid_weights: dict[int, float] = {}
+        dropped: list[str] = []
         for hotkey, w in blended.items():
             uid = uid_by_hotkey.get(hotkey)
-            if uid is not None:
-                uid_weights[uid] = uid_weights.get(uid, 0.0) + float(w)
+            if uid is None:
+                dropped.append(hotkey)
+                continue
+            uid_weights[uid] = uid_weights.get(uid, 0.0) + float(w)
+        if dropped:
+            log.warning(
+                "%d hotkey(s) hold no uid on netuid %d and were dropped from the vote: %s",
+                len(dropped), self.netuid, ", ".join(h[:12] for h in dropped[:5]),
+            )
         if not uid_weights:
             log.warning("set_weights: no miner hotkeys matched metagraph; skipping")
             return
@@ -946,7 +955,11 @@ class PhylaxValidator:
             log.warning("set_weights failed: %s", e)
             self._last_weight_set = time.monotonic() - WEIGHT_REFRESH_S + WEIGHT_RETRY_S
             return
-        log.info("weights set | matched %d agents", len(uid_weights))
+        top = sorted(uid_weights.items(), key=lambda kv: -kv[1])[:5]
+        shown = ", ".join(f"uid {uid}={w:.3f}" for uid, w in top)
+        if len(uid_weights) > len(top):
+            shown += f", +{len(uid_weights) - len(top)} more"
+        log.info("weights set | %d agent(s): %s", len(uid_weights), shown)
 
     def _submit_results(self, round_ids: dict[str, str], start_block: int) -> None:
         for track in list(self._round_scores):
