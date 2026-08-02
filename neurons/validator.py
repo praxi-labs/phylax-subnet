@@ -70,6 +70,8 @@ class PhylaxValidator:
         self.last_round_start = -1
         self.should_exit = False
         self._round_running = False
+        self._emissions_paused = False
+        self._emissions_paused_reason = ""
         self.server = self._init_server()
         self._done_rounds: set[str] = set()
         self._retry_at: float = 0.0
@@ -206,7 +208,7 @@ class PhylaxValidator:
         except OSError as e:
             log.warning("could not persist track scores: %s", e)
 
-    def _all_track_scores(self, fresh: dict) -> dict:
+    def _all_track_scores(self, fresh: dict, from_server: dict | None = None) -> dict:
         """This pass's scores, over the last known scores for every other track.
 
         A pass covers only the tracks with an open round, so a track evaluated
@@ -217,11 +219,6 @@ class PhylaxValidator:
         run this pass carry their standing forward and hold their share.
         """
         carried = self._load_prior_scores()
-        try:
-            from_server = self._scores_from_server()
-        except Exception as e:  # noqa: BLE001
-            log.debug("could not read back prior track scores: %s", e)
-            from_server = None
         if from_server:
             carried.update(from_server)
         merged = {**carried, **fresh}
@@ -475,6 +472,8 @@ class PhylaxValidator:
         except Exception as e:  # noqa: BLE001
             log.debug("could not read back previous results: %s", e)
             return None
+        self._emissions_paused = bool(payload.get("emissions_paused"))
+        self._emissions_paused_reason = str(payload.get("emissions_paused_reason") or "")
         out: dict[str, list[tuple[str, float]]] = {}
         for track, rows in (payload.get("tracks") or {}).items():
             ranked = [
@@ -855,13 +854,20 @@ class PhylaxValidator:
     def set_weights(
         self, scores_by_track: dict[str, list[tuple[str, float]]] | None
     ) -> None:
-        if self._round_running:
+        carried = self._scores_from_server()
+        if self._emissions_paused or self._round_running:
             reserved = scoring.reserved_only_weights()
             if not reserved:
-                log.warning("no reserved hotkey set; leaving weights alone mid round")
+                log.warning("no reserved hotkey set; leaving weights alone")
                 self._last_weight_set = time.monotonic()
                 return
-            log.info("round in flight; voting the reserved hotkey until results land")
+            if self._emissions_paused:
+                log.info(
+                    "miner emissions paused by the operator%s; voting the reserved hotkey",
+                    f": {self._emissions_paused_reason}" if self._emissions_paused_reason else "",
+                )
+            else:
+                log.info("round in flight; voting the reserved hotkey until results land")
             self._last_weight_set = time.monotonic()
             self._push_weights(reserved)
             return
@@ -878,7 +884,7 @@ class PhylaxValidator:
             blended = dict(prior)
         else:
             weight_map = scoring.compute_emission_weights(
-                self._all_track_scores(scores_by_track),
+                self._all_track_scores(scores_by_track, carried),
                 contributor_hotkeys=self._load_contributors(),
                 thresholds=scoring.TRACK_THRESHOLDS,
             )
