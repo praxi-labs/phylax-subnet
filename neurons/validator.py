@@ -592,11 +592,18 @@ class PhylaxValidator:
                 fp += 1
             expected = item.get("expected_findings") or []
             if expected:
+                # Findings only count behind a correct verdict. Reporting what is
+                # wrong with an artifact while calling it safe is not a partial
+                # answer, and paying quality for it lets an agent bank the
+                # finding component on tasks it got wrong.
+                correct = flagged if malicious else verdict == "ALLOW"
                 trace = self._traces.get(item["ref"]) or {}
                 quality_scores.append(
                     quality.finding_quality(
                         expected, findings, trace.get("capabilities")
                     )
+                    if correct
+                    else 0.0
                 )
         scored = tp + tn + fp + fn
         with self._score_lock:

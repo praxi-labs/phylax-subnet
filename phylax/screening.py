@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import difflib
 import re
 
@@ -72,9 +73,41 @@ def abuse_reason(code: str) -> str:
     return ""
 
 
+def _docstring_lines(code: str) -> set[int]:
+    """Line numbers occupied by module, class and function docstrings.
+
+    A security agent describes the calls it hunts for, and those descriptions
+    live in docstrings. Matching an abuse rule against prose rejects the agents
+    the subnet most wants. Only docstrings are dropped; every other string
+    literal stays, because a payload can hide in one.
+    """
+    try:
+        tree = ast.parse(code)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return set()
+    holders = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+    lines: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, holders):
+            continue
+        body = getattr(node, "body", None)
+        if not body:
+            continue
+        first = body[0]
+        if not isinstance(first, ast.Expr):
+            continue
+        value = first.value
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            lines.update(range(first.lineno, (first.end_lineno or first.lineno) + 1))
+    return lines
+
+
 def normalise_code(code: str) -> str:
+    skip = _docstring_lines(code)
     lines = []
-    for raw in code.splitlines():
+    for number, raw in enumerate(code.splitlines(), start=1):
+        if number in skip:
+            continue
         line = raw.split("#", 1)[0].strip()
         if line:
             lines.append(line)

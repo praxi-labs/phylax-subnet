@@ -84,19 +84,34 @@ def _secret_matches(expected: dict, reported: dict) -> bool:
     return True
 
 
+def _entries(value) -> list[dict]:
+    """The dict entries in an agent supplied block, ignoring anything else.
+
+    This is miner authored evidence and its shape is not guaranteed: the same
+    key is a list of dicts on this track and a bare dict on packages, and a
+    list of strings parses as neither. Reaching for .get on whatever turns up
+    raises inside the validator, so nothing but a dict is read.
+    """
+    if isinstance(value, dict):
+        return [value]
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
 def _flatten_supply_chain(sc: dict | None) -> list[dict]:
     # Normalise the agent's supply_chain evidence into typed {type, name} findings
     # so ground truth can be authored as a flat list of the same shape.
     if not isinstance(sc, dict):
         return []
     flat: list[dict] = []
-    for t in sc.get("typosquat") or []:
+    for t in _entries(sc.get("typosquat")):
         flat.append({"type": "typosquat", "name": str(t.get("name", "")).lower()})
-    for c in sc.get("dependency_confusion") or []:
+    for c in _entries(sc.get("dependency_confusion")):
         flat.append({"type": "dependency_confusion", "name": str(c.get("name", "")).lower()})
-    for _ in sc.get("install_scripts") or []:
+    for _ in _entries(sc.get("install_scripts")):
         flat.append({"type": "install_script", "name": ""})
-    for d in sc.get("dependencies") or []:
+    for d in _entries(sc.get("dependencies")):
         if d.get("cve"):
             flat.append({"type": "vulnerable_dependency", "name": str(d.get("name", "")).lower()})
     return flat
