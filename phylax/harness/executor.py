@@ -154,7 +154,7 @@ def detonate_in_docker(
         shutil.copytree(artifact_dir, task_dir / "artifact", dirs_exist_ok=True)
         create = _docker(
             "create",
-            "--network", JAIL_NETWORK,
+            "--network", "none",
             "--cgroupns", "private",
             "--cap-drop=ALL",
             "--security-opt", "no-new-privileges",
