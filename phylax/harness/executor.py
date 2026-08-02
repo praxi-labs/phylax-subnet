@@ -14,6 +14,8 @@ JAIL_NETWORK = os.getenv("PHYLAX_JAIL_NETWORK", "phylax-jail")
 _MEMORY = "2g"
 _CPUS = "1.0"
 _PIDS = "256"
+_SANDBOX_LABEL = "phylax.sandbox=1"
+_REMOVE_TIMEOUT = 60
 
 _INFRA_ERRORS = (
     "image pull failed",
@@ -31,6 +33,20 @@ def _docker(*args: str, timeout: int = 60) -> subprocess.CompletedProcess:
         timeout=timeout,
         check=False,
     )
+
+
+def sweep_stale_sandboxes() -> int:
+    listed = _docker(
+        "ps", "-aq", "--filter", f"label={_SANDBOX_LABEL}", timeout=30
+    )
+    if listed.returncode != 0:
+        return 0
+    ids = [line.strip() for line in listed.stdout.splitlines() if line.strip()]
+    removed = 0
+    for cid in ids:
+        if _docker("rm", "-f", cid, timeout=_REMOVE_TIMEOUT).returncode == 0:
+            removed += 1
+    return removed
 
 
 def ensure_jail_network() -> None:
@@ -155,6 +171,7 @@ def detonate_in_docker(
         create = _docker(
             "create",
             "--network", "none",
+            "--label", _SANDBOX_LABEL,
             "--cgroupns", "private",
             "--cap-drop=ALL",
             "--security-opt", "no-new-privileges",
@@ -201,7 +218,7 @@ def detonate_in_docker(
                 "error": "docker command timed out"}
     finally:
         if cid:
-            _docker("rm", "-f", cid, timeout=30)
+            _docker("rm", "-f", cid, timeout=_REMOVE_TIMEOUT)
         shutil.rmtree(work, ignore_errors=True)
 
 
@@ -253,6 +270,7 @@ def run_agent_in_docker(
         create = _docker(
             "create",
             "--network", JAIL_NETWORK,
+            "--label", _SANDBOX_LABEL,
             "--cgroupns", "private",
             "--cap-drop=ALL",
             "--security-opt", "no-new-privileges",
@@ -304,5 +322,5 @@ def run_agent_in_docker(
         return {"success": False, "error": "docker command timed out"}
     finally:
         if cid:
-            _docker("rm", "-f", cid, timeout=max(1, left(30)))
+            _docker("rm", "-f", cid, timeout=_REMOVE_TIMEOUT)
         shutil.rmtree(work, ignore_errors=True)

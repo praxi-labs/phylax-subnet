@@ -18,6 +18,7 @@ from phylax.analysis import common, quality, scoring, tracks
 from phylax.analysis import proof as proofmod
 from phylax.harness.corpus import fetch_corpus, load_corpus
 from phylax.harness.detonate import detonate_artifact_bytes
+from phylax.harness.executor import sweep_stale_sandboxes
 from phylax.harness.runner import InfraFailure, run_task
 from phylax.server_client import PhylaxServerClient, ServerRejected, ServerUnreachable
 from phylax.utils.hashing import sssa_digest
@@ -1110,6 +1111,9 @@ class PhylaxValidator:
             self.netuid, self.wallet.hotkey.ss58_address,
             ",".join(rounds.TRACKS), self.round_blocks,
         )
+        swept = sweep_stale_sandboxes()
+        if swept:
+            log.info("removed %d sandbox container(s) left by a previous run", swept)
         self._register_with_server()
         self.set_weights(self._scores_from_server())
         while not self.should_exit:
