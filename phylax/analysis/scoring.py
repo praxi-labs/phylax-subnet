@@ -6,7 +6,11 @@ from dataclasses import dataclass, field
 EVIDENCE_GATE = 0.10
 
 W_VERDICT = 0.40
+
+
 W_SOLUTION = 0.35
+
+
 W_BENCHMARK = 0.25
 
 
@@ -15,6 +19,8 @@ def clip01(x: float) -> float:
 
 
 @dataclass(frozen=True)
+
+
 class ScoreComponents:
     verdict_correctness: float = 0.0
     evidence_integrity: float = 0.0
@@ -23,6 +29,8 @@ class ScoreComponents:
 
 
 @dataclass(frozen=True)
+
+
 class ScoreResult:
     score: float
     gate_passed: bool
@@ -53,15 +61,23 @@ TRACK_EMISSION_WEIGHTS: dict[str, float] = {
 }
 
 TOP_K = 3
+
+
 TOP_K_SPLIT: tuple[float, ...] = (0.50, 0.30, 0.20)
 
 PERFORMANCE_SHARE = 0.95
+
+
 CONTRIBUTION_SHARE = 0.05
 
 RESERVED_HOTKEY = "5F6huno9JTAVV4pz1CTMKBdCWU7R5j57rYKqJpUXyN7mY9nH"
+
+
 RESERVED_SHARE = 0.70
 
 RUN_W_CORRECTNESS = 0.7
+
+
 RUN_W_QUALITY = 0.3
 
 TRACK_THRESHOLDS: dict[str, float] = {
@@ -134,12 +150,6 @@ def compute_emission_weights(
 
 
 def reserved_only_weights(hotkey: str = RESERVED_HOTKEY) -> dict[str, float]:
-    """The vector voted while a round is still being evaluated.
-
-    Nothing is known about this round's agents until their results land, so
-    the whole vector sits on the reserved hotkey. Miners earn once they have
-    been evaluated and placed.
-    """
     return {hotkey: 1.0} if hotkey else {}
 
 

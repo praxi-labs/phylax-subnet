@@ -13,7 +13,7 @@ The miner submits **code**, and the validators run it inside their own hardened
 sandbox image. Because the network holds the code, the evaluated agent is the
 served agent; because the validator owns the runtime, untrusted code runs in a
 trusted jail rather than a miner-supplied image; because every validator runs the
-same agents on the same tasks (a shared round seed), a dishonest validator is
+same frozen agents against the same labels, a dishonest validator is
 visible; and because scoring is against held-out ground truth, a fabricated
 report earns nothing. The server schedules and records; the chain decides.
 
@@ -48,7 +48,7 @@ Rounds are scheduled by the server (`/v1/rounds/next`), not by block windows. Wh
 the submission window closes, the server freezes the participant set (each active
 agent and its code hash). The validator pulls each participant's agent from the
 backend, verifies the fetched code hash against the frozen pin, screens for size,
-entrypoint, and copied code, derives the task set from the round's shared seed,
+entrypoint, and copied code, draws its tasks for the round,
 runs every agent's code on every task `r` times inside the validator-owned sandbox
 with the per-track timeout, scores against ground truth, posts signed results to
 the server, and sets graduated weights above the quality threshold. Without a

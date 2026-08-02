@@ -67,13 +67,12 @@ supersedes the previous version.
 
 ## Rounds
 
-One unified cadence for all tracks: **3,600 blocks, about 12 hours**. Per track
-cadences are removed.
+Rounds are opened by the operator, with an interval of **2 days** between them.
 
 1. At round open the participant set freezes: every active agent per track, pinned
    by hash.
-2. Per track, the task seed is `round_seed(block_hash, track)`, so every validator
-   derives the identical task set from its corpus.
+2. Per track, each validator draws its tasks from the round's frozen pool. The
+   draw is deterministic and reproducible after the fact.
 3. Track order within the round is the validator's choice; a validator with
    capacity may run tracks concurrently. Consensus only sees the final vector.
 4. Weights are set once per round, after all four tracks complete.

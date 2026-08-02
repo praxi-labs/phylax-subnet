@@ -175,9 +175,9 @@ want a frozen, reproducible sandbox — that disables the per-run refresh.
 1. **Round trigger.** The validator polls the server (`/v1/rounds/next`). While the
    round's **submission window** is open the server reports a `submission` phase and
    the validator waits — miners are still submitting. When the window closes the
-   server returns the round id, the shared seed, and the frozen participant set, and
-   evaluation begins. Every validator working the round gets the same seed and set,
-   so all evaluate the identical task set. (Without a server, a block-derived
+   server returns the round id and the frozen participant set, and evaluation
+   begins. Every validator working the round gets the same frozen set of agents,
+   and draws its tasks for that round. (Without a server, a block-derived
    fallback seeds the round for local dev.)
 2. **Fetch and screen.** For each participant in the round's frozen list, pull the
    agent from the backend (`GET /v1/specialization/agent/{hotkey}/runnable`); verify

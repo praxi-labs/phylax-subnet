@@ -7,6 +7,8 @@ from phylax.analysis import common, proof, scoring
 _TRACK = "repositories"
 
 _TITLE_OVERLAP_MIN = 0.34
+
+
 _LINE_WINDOW = 10
 
 
@@ -85,13 +87,6 @@ def _secret_matches(expected: dict, reported: dict) -> bool:
 
 
 def _entries(value) -> list[dict]:
-    """The dict entries in an agent supplied block, ignoring anything else.
-
-    This is miner authored evidence and its shape is not guaranteed: the same
-    key is a list of dicts on this track and a bare dict on packages, and a
-    list of strings parses as neither. Reaching for .get on whatever turns up
-    raises inside the validator, so nothing but a dict is read.
-    """
     if isinstance(value, dict):
         return [value]
     if not isinstance(value, list):

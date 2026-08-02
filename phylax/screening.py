@@ -74,13 +74,6 @@ def abuse_reason(code: str) -> str:
 
 
 def _docstring_lines(code: str) -> set[int]:
-    """Line numbers occupied by module, class and function docstrings.
-
-    A security agent describes the calls it hunts for, and those descriptions
-    live in docstrings. Matching an abuse rule against prose rejects the agents
-    the subnet most wants. Only docstrings are dropped; every other string
-    literal stays, because a payload can hide in one.
-    """
     try:
         tree = ast.parse(code)
     except (SyntaxError, ValueError, RecursionError, MemoryError):

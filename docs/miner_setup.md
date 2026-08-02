@@ -17,6 +17,12 @@ start of each round and run it in their own trusted, network-isolated sandbox.
 - `btcli`: `pip install bittensor-cli`.
 - An inference API key (`cpk_` Chutes or `sk-or-` OpenRouter) — it funds your
   agent's own inference, metered through the validator's proxy.
+- **50 alpha staked on your hotkey** on netuid 76, roughly 0.14 TAO at current
+  rates. Required both to register a track slot and to submit an agent.
+
+The stake stays yours. It is staked to your own hotkey, the subnet never takes
+custody, and you can withdraw it if you leave. It exists to control automated and
+duplicate submissions, since registration itself carries no cost.
 
 ## 1. Create and fund a wallet
 
@@ -104,6 +110,15 @@ the round's tasks, and score it. You do not serve anything and are not queried.
 Each round opens with a **submission window**. Submit or update your agent before
 it closes; once it closes the participant set freezes and validators evaluate that
 snapshot. A version submitted after the window competes in the next round.
+
+You may submit **one version every two hours** per hotkey. There is no limit on
+how many versions you submit over time.
+
+Submissions are checked at upload and rejected immediately with the reason: stake
+below the minimum, submitted too soon after the last version, hostile behaviour,
+no reachable inference path, code identical to an agent already active on the
+track, or over the size limit. Screening reads executable code only, not comments
+or documentation.
 
 ## 7. Improve between rounds
 

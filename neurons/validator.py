@@ -23,18 +23,40 @@ from phylax.server_client import PhylaxServerClient, ServerRejected, ServerUnrea
 from phylax.utils.hashing import sssa_digest
 
 POLL_INTERVAL_S: int = int(os.getenv("PHYLAX_POLL_INTERVAL", "30"))
+
+
 MAX_AGENT_BYTES: int = 512 * 1024
+
+
 DEADLINE_MARGIN_BLOCKS: int = 20
+
+
 EMA_ALPHA: float = 0.3
+
+
 TRACK_EVAL_ORDER: tuple[str, ...] = ("repositories", "packages", "mcp_servers", "skills")
+
+
 AGENT_CONCURRENCY: int = max(1, int(os.getenv("PHYLAX_AGENT_CONCURRENCY", "2")))
+
+
 REQUIRE_INFERENCE: bool = os.getenv("PHYLAX_REQUIRE_INFERENCE", "1") != "0"
+
+
 SCORING_POLICY_VERSION: str = os.getenv("PHYLAX_SCORING_POLICY", "2026.07.31")
+
+
 WEIGHT_REFRESH_S: int = 1200
+
+
 WEIGHT_RETRY_S: int = 180
+
+
 MIN_SCORED_FRACTION: float = 0.5
 
 _VERDICT_ORDINAL = {"ALLOW": 0, "WARN": 1, "BLOCK": 2}
+
+
 _ORDINAL_VERDICT = {v: k for k, v in _VERDICT_ORDINAL.items()}
 
 log = logging.getLogger("phylax.validator")
@@ -113,12 +135,6 @@ class PhylaxValidator:
             log.warning("metagraph refresh failed; using previous snapshot: %s", e)
 
     def _is_registered(self, hotkey: str) -> bool:
-        """Whether the hotkey still holds a slot, assuming yes when unreadable.
-
-        A miner can deregister after the participant set freezes. Reading the
-        metagraph is best effort: an unreadable snapshot must not drop every
-        agent from the round.
-        """
         hotkeys = getattr(self.metagraph, "hotkeys", None)
         if hotkeys:
             return hotkey in set(hotkeys)
@@ -209,15 +225,6 @@ class PhylaxValidator:
             log.warning("could not persist track scores: %s", e)
 
     def _all_track_scores(self, fresh: dict, from_server: dict | None = None) -> dict:
-        """This pass's scores, over the last known scores for every other track.
-
-        A pass covers only the tracks with an open round, so a track evaluated
-        earlier is absent here. Absent must not read as "no winners": weights
-        are rebuilt from scratch every pass, and a track missing from the input
-        loses its emission share entirely and drops its miners to zero. The
-        backend keeps each track's last closed round, so tracks that did not
-        run this pass carry their standing forward and hold their share.
-        """
         carried = self._load_prior_scores()
         if from_server:
             carried.update(from_server)
