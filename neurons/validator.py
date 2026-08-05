@@ -877,12 +877,10 @@ class PhylaxValidator:
         self, scores_by_track: dict[str, list[tuple[str, float]]] | None
     ) -> None:
         carried = self._scores_from_server()
-        if self._emissions_paused or self._round_running:
+        if self._emissions_paused:
             reason = (
-                f"miner emissions paused by the operator"
+                "miner emissions paused by the operator"
                 f"{f': {self._emissions_paused_reason}' if self._emissions_paused_reason else ''}"
-                if self._emissions_paused
-                else "round in flight"
             )
             reserved = scoring.reserved_only_weights(self._reserved_hotkey)
             if reserved:
@@ -891,6 +889,18 @@ class PhylaxValidator:
                 self._push_weights(reserved)
                 return
             log.info("%s; leaving the prior weights on chain", reason)
+            self._last_weight_set = time.monotonic()
+            return
+
+        if self._round_running:
+            prior = self._load_prior_weights()
+            if prior:
+                held = scoring.apply_reserved_share(prior, self._reserved_hotkey, self._reserved_share)
+                log.info("round in flight; holding the last computed winners on chain")
+                self._last_weight_set = time.monotonic()
+                self._push_weights(held)
+                return
+            log.info("round in flight; no prior winners to hold yet")
             self._last_weight_set = time.monotonic()
             return
 
