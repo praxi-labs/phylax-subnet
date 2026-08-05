@@ -66,11 +66,6 @@ PERFORMANCE_SHARE = 0.95
 
 CONTRIBUTION_SHARE = 0.05
 
-RESERVED_HOTKEY = "5CcWKodC5SbpjfVhDcdULVHSt9KMeSu3moNkiiebSBcengAQ"
-
-
-RESERVED_SHARE = 0.20
-
 RUN_W_CORRECTNESS = 0.7
 
 
@@ -145,14 +140,14 @@ def compute_emission_weights(
     return weights
 
 
-def reserved_only_weights(hotkey: str = RESERVED_HOTKEY) -> dict[str, float]:
+def reserved_only_weights(hotkey: str = "") -> dict[str, float]:
     return {hotkey: 1.0} if hotkey else {}
 
 
 def apply_reserved_share(
     weights: dict[str, float],
-    hotkey: str = RESERVED_HOTKEY,
-    share: float = RESERVED_SHARE,
+    hotkey: str = "",
+    share: float = 0.0,
 ) -> dict[str, float]:
     if not hotkey or not 0.0 < share < 1.0:
         return weights

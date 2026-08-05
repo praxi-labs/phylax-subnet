@@ -95,6 +95,8 @@ class PhylaxValidator:
         self._round_running = False
         self._emissions_paused = False
         self._emissions_paused_reason = ""
+        self._reserved_hotkey = ""
+        self._reserved_share = 0.0
         self.server = self._init_server()
         self._done_rounds: set[str] = set()
         self._retry_at: float = 0.0
@@ -482,6 +484,11 @@ class PhylaxValidator:
             return None
         self._emissions_paused = bool(payload.get("emissions_paused"))
         self._emissions_paused_reason = str(payload.get("emissions_paused_reason") or "")
+        self._reserved_hotkey = str(payload.get("reserved_hotkey") or "")
+        try:
+            self._reserved_share = float(payload.get("reserved_share") or 0.0)
+        except (TypeError, ValueError):
+            self._reserved_share = 0.0
         out: dict[str, list[tuple[str, float]]] = {}
         for track, rows in (payload.get("tracks") or {}).items():
             ranked = [
@@ -871,28 +878,27 @@ class PhylaxValidator:
     ) -> None:
         carried = self._scores_from_server()
         if self._emissions_paused or self._round_running:
-            reserved = scoring.reserved_only_weights()
-            if not reserved:
-                log.warning("no reserved hotkey set; leaving weights alone")
+            reason = (
+                f"miner emissions paused by the operator"
+                f"{f': {self._emissions_paused_reason}' if self._emissions_paused_reason else ''}"
+                if self._emissions_paused
+                else "round in flight"
+            )
+            reserved = scoring.reserved_only_weights(self._reserved_hotkey)
+            if reserved:
+                log.info("%s; voting the reserved hotkey", reason)
                 self._last_weight_set = time.monotonic()
+                self._push_weights(reserved)
                 return
-            if self._emissions_paused:
-                log.info(
-                    "miner emissions paused by the operator%s; voting the reserved hotkey",
-                    f": {self._emissions_paused_reason}" if self._emissions_paused_reason else "",
-                )
-            else:
-                log.info("round in flight; voting the reserved hotkey until results land")
+            log.info("%s; leaving the prior weights on chain", reason)
             self._last_weight_set = time.monotonic()
-            self._push_weights(reserved)
             return
 
         prior = self._load_prior_weights()
         if scores_by_track is None:
             if not prior:
                 log.warning(
-                    "no scores and no prior weights; leaving the previous on chain "
-                    "vector alone rather than voting the reserved share alone"
+                    "no scores and no prior weights; leaving the previous on chain vector alone"
                 )
                 self._last_weight_set = time.monotonic()
                 return
@@ -913,7 +919,7 @@ class PhylaxValidator:
                 blended = {hk: w / competitive for hk, w in blended.items()}
             self._save_prior_weights(blended)
 
-        blended = scoring.apply_reserved_share(blended)
+        blended = scoring.apply_reserved_share(blended, self._reserved_hotkey, self._reserved_share)
         self._last_weight_set = time.monotonic()
         self._push_weights(blended)
 
@@ -924,11 +930,11 @@ class PhylaxValidator:
 
         self._refresh_metagraph()
         uid_by_hotkey = {n.hotkey: n.uid for n in self.metagraph.neurons}
-        if scoring.RESERVED_HOTKEY and scoring.RESERVED_HOTKEY not in uid_by_hotkey:
+        if self._reserved_hotkey and self._reserved_hotkey not in uid_by_hotkey:
             log.warning(
                 "reserved hotkey %s is not registered on netuid %d; its %.0f%% share "
                 "will be dropped and redistributed to the remaining miners",
-                scoring.RESERVED_HOTKEY[:12], self.netuid, scoring.RESERVED_SHARE * 100,
+                self._reserved_hotkey[:12], self.netuid, self._reserved_share * 100,
             )
         uid_weights: dict[int, float] = {}
         dropped: list[str] = []
