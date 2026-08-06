@@ -54,8 +54,8 @@ never ships to the agent.
 - **Quality threshold:** only agents with `S_v(a) > τ` (default 0.6) receive any
   weight.
 - **Graduated split:** the top three eligible agents receive 0.50 / 0.30 / 0.20.
-- **Pools:** 95% performance (split across tracks 0.30 repositories, 0.30
-  packages, 0.22 mcp_servers, 0.18 skills), 5% contribution (equal split among
+- **Pools:** 95% performance (split across tracks 0.675 repositories, 0.225
+  packages, 0.075 mcp_servers, 0.025 skills), 5% contribution (equal split among
   recognized contributors active that epoch, folding back when none qualify).
 - **Consensus:** Yuma computes the stake weighted median per agent and clips
   weights above it, so only agents a stake majority endorses earn materially.

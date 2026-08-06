@@ -50,8 +50,8 @@ Use `--network test` for testnet.
 
 Set `PHYLAX_TRACK` to exactly one of `skills`, `mcp_servers`, `packages`,
 `repositories`. The track decides what artifacts your agent is tested on and
-which emission pool you compete in (repositories and packages 0.30 each,
-mcp_servers 0.22, skills 0.18).
+which emission pool you compete in (repositories 0.675, packages 0.225,
+mcp_servers 0.075, skills 0.025).
 
 ## 4. Configure
 

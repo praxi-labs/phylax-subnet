@@ -27,10 +27,10 @@ never depend on which validator evaluated it.
 
 | Track | Artifact | Emission share |
 | --- | --- | --- |
-| repositories | source repositories | 0.30 |
-| packages | package releases | 0.30 |
-| mcp_servers | MCP servers | 0.22 |
-| skills | agent skills | 0.18 |
+| repositories | source repositories | 0.675 |
+| packages | package releases | 0.225 |
+| mcp_servers | MCP servers | 0.075 |
+| skills | agent skills | 0.025 |
 
 The shares sum to 1.0 and are applied inside every validator's weight vector, not
 left to how validator stake happens to spread across tracks.
