@@ -50,10 +50,10 @@ def combine(components: ScoreComponents) -> ScoreResult:
 
 
 TRACK_EMISSION_WEIGHTS: dict[str, float] = {
-    "repositories": 0.50,
-    "packages": 0.30,
-    "mcp_servers": 0.12,
-    "skills": 0.08,
+    "repositories": 0.675,
+    "packages": 0.225,
+    "mcp_servers": 0.075,
+    "skills": 0.025,
 }
 
 TOP_K = 3
