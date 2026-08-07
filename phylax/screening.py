@@ -1,12 +1,7 @@
 from __future__ import annotations
 
 import ast
-import difflib
 import re
-
-SIMILARITY_THRESHOLD = 0.92
-STRUCTURE_THRESHOLD = 0.95
-_STRUCTURE_SIZE_GUARD = 0.75
 
 _STRING_LITERAL = re.compile(r'"[^"\n]*"|\'[^\'\n]*\'')
 
@@ -107,56 +102,3 @@ def normalise_code(code: str) -> str:
         if line:
             lines.append(line)
     return "\n".join(lines)
-
-
-def structural_shape(code: str) -> tuple[str, ...]:
-    try:
-        tree = ast.parse(code)
-    except (SyntaxError, ValueError, RecursionError, MemoryError):
-        return ()
-    shape: list[str] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Constant):
-            shape.append(f"Const:{type(node.value).__name__}")
-        else:
-            shape.append(type(node).__name__)
-    return tuple(sorted(shape))
-
-
-def _similar(code_a: str, code_b: str) -> bool:
-    if difflib.SequenceMatcher(None, code_a, code_b).quick_ratio() < SIMILARITY_THRESHOLD:
-        return False
-    return difflib.SequenceMatcher(None, code_a, code_b).ratio() >= SIMILARITY_THRESHOLD
-
-
-def _same_structure(shape_a: tuple[str, ...], shape_b: tuple[str, ...]) -> bool:
-    if not shape_a or not shape_b:
-        return False
-    if shape_a == shape_b:
-        return True
-    shorter, longer = sorted((len(shape_a), len(shape_b)))
-    if longer and shorter / longer < _STRUCTURE_SIZE_GUARD:
-        return False
-    ratio = difflib.SequenceMatcher(None, shape_a, shape_b).ratio()
-    return ratio >= STRUCTURE_THRESHOLD
-
-
-def duplicate_hotkeys(submissions: dict[str, tuple[str, int]]) -> set[str]:
-    entries = [
-        (uid, hotkey, normalise_code(code), structural_shape(code))
-        for hotkey, (code, uid) in submissions.items()
-    ]
-    entries.sort()
-    excluded: set[str] = set()
-    for i, (_, hotkey_a, code_a, shape_a) in enumerate(entries):
-        if hotkey_a in excluded:
-            continue
-        for _, hotkey_b, code_b, shape_b in entries[i + 1:]:
-            if hotkey_b in excluded:
-                continue
-            if code_a == code_b:
-                excluded.add(hotkey_b)
-                continue
-            if _same_structure(shape_a, shape_b) or _similar(code_a, code_b):
-                excluded.add(hotkey_b)
-    return excluded

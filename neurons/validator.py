@@ -198,6 +198,30 @@ class PhylaxValidator:
         except OSError as e:
             log.warning("could not persist EMA state: %s", e)
 
+    def _seen_scores_epoch(self) -> int:
+        try:
+            raw = json.loads(
+                (self._state_dir() / "scores_epoch.json").read_text(encoding="utf-8")
+            )
+            return int(raw["scores_epoch"])
+        except (OSError, ValueError, TypeError, KeyError):
+            return 0
+
+    def _reset_carried_state(self, epoch: int) -> None:
+        for name in ("track_scores.json", "weights_ema.json"):
+            try:
+                (self._state_dir() / name).unlink()
+            except FileNotFoundError:
+                continue
+            except OSError as e:
+                log.warning("could not clear %s: %s", name, e)
+        try:
+            (self._state_dir() / "scores_epoch.json").write_text(
+                json.dumps({"scores_epoch": epoch}), encoding="utf-8"
+            )
+        except OSError as e:
+            log.warning("could not persist scores epoch: %s", e)
+
     def _load_prior_scores(self) -> dict[str, list[tuple[str, float]]]:
         try:
             raw = json.loads((self._state_dir() / "track_scores.json").read_text(encoding="utf-8"))
@@ -244,8 +268,7 @@ class PhylaxValidator:
             return {}
 
         agents: dict[str, dict] = {}
-        codes: dict[str, tuple[str, int]] = {}
-        for idx, part in enumerate(participants):
+        for part in participants:
             hotkey = str(part.get("hotkey", "") or "")
             expected = str(part.get("agent_hash", "") or "")
             if not hotkey:
@@ -282,11 +305,6 @@ class PhylaxValidator:
                 "inference_model": data.get("inference_model") or "",
                 "agent_hash": expected or actual,
             }
-            codes[hotkey] = (code, idx)
-
-        for hotkey in screening.duplicate_hotkeys(codes):
-            log.warning("screened out agent=%s: copied agent code", hotkey[:10])
-            agents.pop(hotkey, None)
         return agents
 
     def _screen_runnable(self, track: str, data: dict, code: str) -> str:
@@ -489,6 +507,17 @@ class PhylaxValidator:
             self._reserved_share = float(payload.get("reserved_share") or 0.0)
         except (TypeError, ValueError):
             self._reserved_share = 0.0
+        try:
+            epoch = int(payload.get("scores_epoch") or 0)
+        except (TypeError, ValueError):
+            epoch = 0
+        if epoch != self._seen_scores_epoch():
+            log.warning(
+                "operator reset validator state to epoch %d; "
+                "dropping carried track scores and weight EMA",
+                epoch,
+            )
+            self._reset_carried_state(epoch)
         out: dict[str, list[tuple[str, float]]] = {}
         for track, rows in (payload.get("tracks") or {}).items():
             ranked = [
