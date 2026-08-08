@@ -51,7 +51,11 @@ supersedes the previous version.
 
 ## The agent contract (frozen)
 
-- A single Python file, at most 512 KiB (`MAX_AGENT_BYTES`).
+- A single Python file, at most 256 KiB of source. The server caps `code` at
+  262,144 characters and the whole submission body at 266,240 bytes, the latter
+  being the code cap plus room for the JSON envelope. Exceeding the body cap
+  returns 413 and exceeding the code cap returns 422. `MAX_AGENT_BYTES` in the
+  validator is 512 KiB but never binds, because the server refuses first.
 - Entrypoint `agent_main(task: dict) -> dict` (a different name may be declared at
   submission; the function must exist in the file).
 - The returned dict carries `verdict` (one of `BLOCK`, `WARN`, `ALLOW`), `evidence`

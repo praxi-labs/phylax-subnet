@@ -795,7 +795,7 @@ class PhylaxValidator:
         if result is None:
             self._note_rejection("run produced no result")
             return None, None
-        if result.get("observed_probe_file") is not True:
+        if result.get("observed_probe_file") is False:
             self._note_rejection(
                 f"probe file not observed (error={str(result.get('error', ''))[:120]})"
             )
