@@ -77,9 +77,126 @@ def _package_module(artifact_dir: Path) -> str | None:
     return None
 
 
+_NPM_HOOKS = ("preinstall", "install", "postinstall", "prepare", "prepublish")
+_SHELL_MARKERS = ("|", "&&", ";", "curl", "wget", "bash", "sh -c", "powershell", "iwr")
+_SPAWN_MARKERS = ("node", "python", "npx", "sh", "bash", "cmd")
+
+
+def _tree_snapshot(root: Path) -> dict[str, tuple[int, int]]:
+    snapshot: dict[str, tuple[int, int]] = {}
+    if not root.is_dir():
+        return snapshot
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        try:
+            stat = path.stat()
+            key = str(path.relative_to(root))
+        except (OSError, ValueError):
+            continue
+        snapshot[key] = (stat.st_size, int(stat.st_mtime))
+        if len(snapshot) >= 20000:
+            break
+    return snapshot
+
+
+def npm_scripts(artifact_dir: Path) -> dict[str, str]:
+    manifest = artifact_dir / "package.json"
+    if not manifest.is_file():
+        return {}
+    try:
+        document = json.loads(manifest.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return {}
+    scripts = document.get("scripts")
+    if not isinstance(scripts, dict):
+        return {}
+    return {
+        hook: scripts[hook]
+        for hook in _NPM_HOOKS
+        if isinstance(scripts.get(hook), str) and scripts[hook].strip()
+    }
+
+
+def hook_capabilities(hook: str, command: str, changed: bool, removed: bool) -> set[str]:
+    caps = {"INSTALL_HOOK_EXEC"}
+    if hook == "postinstall":
+        caps.add("POSTINSTALL_SCRIPT")
+    lowered = command.lower()
+    if any(marker in lowered for marker in _SHELL_MARKERS):
+        caps.add("EXEC_SHELL")
+    if any(marker in lowered for marker in _SPAWN_MARKERS):
+        caps.add("CREATE_PROCESS")
+    if changed:
+        caps.add("WRITE_FILE")
+    if removed:
+        caps.add("DELETE_FILE")
+    return caps
+
+
+def _run_npm_hook(artifact_dir: Path, hook: str, command: str, timeout_s: int) -> dict:
+    home = tempfile.mkdtemp(prefix="phylax-npm-home-")
+    before = _tree_snapshot(artifact_dir)
+    outcome: dict = {"hook": hook, "command": command[:400]}
+
+    try:
+        completed = subprocess.run(
+            command,
+            shell=True,
+            cwd=str(artifact_dir),
+            env=_isolated_env(home),
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+        )
+        outcome["exit_code"] = completed.returncode
+        outcome["stdout"] = (completed.stdout or "")[:2000]
+        outcome["stderr"] = (completed.stderr or "")[:2000]
+        outcome["timed_out"] = False
+    except subprocess.TimeoutExpired:
+        outcome["exit_code"] = None
+        outcome["timed_out"] = True
+    except OSError as exc:
+        outcome["exit_code"] = None
+        outcome["error"] = str(exc)[:300]
+
+    after = _tree_snapshot(artifact_dir)
+    created = sorted(set(after) - set(before))[:200]
+    modified = sorted(k for k in set(after) & set(before) if after[k] != before[k])[:200]
+    removed = sorted(set(before) - set(after))[:200]
+
+    outcome["created"] = created
+    outcome["modified"] = modified
+    outcome["removed"] = removed
+    outcome["capabilities"] = sorted(
+        hook_capabilities(hook, command, bool(created or modified), bool(removed))
+    )
+    return outcome
+
+
+def _detonate_npm(artifact_dir: Path, timeout_s: int) -> dict:
+    scripts = npm_scripts(artifact_dir)
+    if not scripts:
+        return {"capabilities": [], "phases": {}}
+
+    phases: dict[str, dict] = {}
+    caps: set[str] = set()
+    for hook, command in scripts.items():
+        result = _run_npm_hook(artifact_dir, hook, command, timeout_s)
+        phases[f"npm_{hook}"] = result
+        caps.update(result.get("capabilities", []))
+    return {"capabilities": sorted(caps), "phases": phases}
+
+
 def _detonate_package(artifact_dir: Path, timeout_s: int) -> dict:
     phases: dict[str, dict] = {}
     caps: set[str] = set()
+
+    npm = _detonate_npm(artifact_dir, timeout_s)
+    if npm["phases"]:
+        phases.update(npm["phases"])
+        caps.update(npm["capabilities"])
+
     if (artifact_dir / "setup.py").is_file():
         res = _run_child(
             {"mode": "setup_install", "artifact_dir": str(artifact_dir),
