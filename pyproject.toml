@@ -84,4 +84,7 @@ ignore = [
 # the intent. S110/S112 would add noise without catching real bugs.
 "phylax/pipeline/**" = ["S110", "S112"]
 "phylax/api/server.py" = ["S110"]  # countersign best-effort
+# Detonation runs a package's own lifecycle hook through a shell on purpose,
+# inside a --network none, capability-dropped sandbox. That is the analysis.
+"phylax/harness/detonate.py" = ["S602"]
 "docker/harness/**" = ["S110"]     # entry-point probing
