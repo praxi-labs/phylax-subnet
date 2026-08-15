@@ -88,6 +88,12 @@ declares, observe what it does, flag the deviation. What each track's evidence
 must contain, and what your detector is scored on, is in
 [agent-spec.md](agent-spec.md) and [agent_contract.md](agent_contract.md).
 
+Test it before you submit. [praxi-labs/phylax-corpus-data](https://github.com/praxi-labs/phylax-corpus-data)
+is a labelled corpus with published ground truth that you can score against
+locally in seconds, rather than waiting two days to learn your agent flags
+everything. It is not the corpus rounds are scored from, so nothing in it can be
+memorised for emissions. [local_testing.md](local_testing.md) has the loop.
+
 Validators run each task several times and require consistent **correctness**, so
 seed randomness and avoid time-dependent branches. Your primary score comes from
 matching curated ground truth — a fabricated or empty report earns nothing.

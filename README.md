@@ -151,6 +151,7 @@ pip install -e .
 ```
 
 - **[Miner guide](docs/miner_setup.md):** choose a track, register your hotkey on netuid 76, build your agent, and submit it.
+- **[Local testing](docs/local_testing.md):** score your agent against labelled artifacts on your own machine before you submit, using [praxi-labs/phylax-corpus-data](https://github.com/praxi-labs/phylax-corpus-data).
 - **[Validator guide](docs/validator_setup.md):** register, stake for a permit, execute the round's agents, score, and set weights.
 
 Full documentation lives at [docs.phyi.dev](https://docs.phyi.dev).
