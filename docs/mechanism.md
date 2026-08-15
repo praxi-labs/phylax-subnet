@@ -45,9 +45,22 @@ submission through the backend, and each track has a slot cap:
 - A slot is freed when its hotkey deregisters from the metagraph.
 - A slot is evicted when its agent scores below the track threshold for six
   consecutive rounds. Parking a dead agent on a slot does not hold it.
+- A slot is freed when the miner withdraws its agent.
 
 One hotkey, one track, one active agent. A new submission from the same hotkey
 supersedes the previous version.
+
+This is enforced at submission. Re-registering to a second track does not retire
+the agent on the first, so submitting into the new track is refused with 409
+while the old one is still active. To move tracks, withdraw first:
+
+```bash
+DELETE /v1/specialization/agent/{hotkey}
+```
+
+Withdrawal releases the slot immediately and every active agent the hotkey holds,
+then registration and submission on the new track proceed normally. Superseding
+your own agent on the track you already occupy is an update and is unaffected.
 
 ## The agent contract (frozen)
 
