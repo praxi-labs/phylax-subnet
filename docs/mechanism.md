@@ -102,10 +102,10 @@ the evaluation path.
 
 | Track | Tasks | Repetitions | CPU budget per rep | Worst case per agent |
 | --- | --- | --- | --- | --- |
-| skills | 30 | 3 | 8 s | 720 CPU s |
-| mcp_servers | 25 | 3 | 15 s | 1,125 CPU s |
-| packages | 20 | 3 | 30 s | 1,800 CPU s |
-| repositories | 8 | 2 | 90 s | 1,440 CPU s |
+| skills | 50 | 3 | 8 s | 1,200 CPU s |
+| mcp_servers | 40 | 3 | 15 s | 1,800 CPU s |
+| packages | 30 | 3 | 30 s | 2,700 CPU s |
+| repositories | 50 | 2 | 90 s | 9,000 CPU s |
 
 - The budget is **CPU time**, enforced through the container's cgroup accounting,
   not wall clock. Faster hardware must not change outcomes.
@@ -120,8 +120,9 @@ the evaluation path.
 Validator floor specification: **16 vCPU, 32 GB RAM, 100 GB disk**. The chain
 caps the subnet at 256 UIDs, so with the three expensive tracks full (80
 repositories, 80 packages, 80 mcp_servers) at most about 14 miners remain for
-skills. That worst legal allocation is about 359,300 CPU seconds; at 14 execution
-cores that is about 7.1 hours, under 60% of the round window. A slate of
+skills. That worst legal allocation is about 1,096,800 CPU seconds; at 14
+execution cores that is about 21.8 hours, under 75% of the round window, which is
+30 hours. A slate of
 maximally stalling agents can still push wall time past the window; every
 validator then abstains identically, the stallers score 0, and eviction clears
 them within six rounds.
