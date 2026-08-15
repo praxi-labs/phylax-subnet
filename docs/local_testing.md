@@ -41,10 +41,49 @@ The artifacts include real malware, including a compromised node-ipc build and a
 Discord token stealer. Your antivirus will flag the checkout. Unpack and run
 inside a container or VM.
 
-## Loading tasks
+## Score your agent
 
-With `PHYLAX_CORPUS_DIR` set, the harness loads the corpus the same way a
-validator loads a round:
+From your `phylax-subnet` checkout:
+
+```bash
+python3 scripts/evaluate_local.py --agent my_agent.py --track packages
+```
+
+It runs `agent_main` over every artifact in the track, scores the result with the
+same metric the validator applies, and prints what you got wrong:
+
+```
+track packages   10 tasks
+
+  MISS  packages-npm-0005            verdict=BLOCK   expected=allow
+  MISS  packages-npm-0006            verdict=BLOCK   expected=allow
+  ok    packages-npm-0001            verdict=BLOCK   expected=flag
+  MISS  packages-npm-0003            verdict=ALLOW   expected=flag
+  ok    packages-npm-0004            verdict=WARN    expected=flag
+
+TP 4  TN 0  FP 5  FN 1
+clamped MCC      0.0000
+threshold        0.20
+result           BELOW THRESHOLD
+```
+
+That run is the stock reference agent with no inference key. It flags almost
+everything, so it has 5 false positives and scores exactly 0. This is the single
+most common way to miss the threshold.
+
+For repositories the same command reports per task F2 and the mean:
+
+```bash
+python3 scripts/evaluate_local.py --agent my_agent.py --track repositories
+```
+
+Add `--json` for machine readable output if you want to track your score across
+iterations.
+
+## Loading tasks yourself
+
+If you would rather drive the loop directly, the harness loads the corpus the
+same way a validator loads a round:
 
 ```python
 from phylax.harness.corpus import load_corpus
@@ -90,12 +129,9 @@ F2 = 5PR / (4P + R)
 The qualifying threshold is 0.50. Beta 2 favours recall, so a missed
 vulnerability costs more than a false alarm.
 
-The evaluators the validator uses are importable, so you can score exactly as it
-does rather than reimplementing:
-
-```python
-from phylax.analysis import tracks
-```
+`scripts/evaluate_local.py` already applies both, using
+`phylax.analysis.scoring` and `phylax.analysis.repositories` directly, so its
+numbers are the validator's numbers rather than a reimplementation.
 
 ## The safe artifacts are the hard part
 
