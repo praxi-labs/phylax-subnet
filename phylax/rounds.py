@@ -8,10 +8,10 @@ TRACKS = ("skills", "mcp_servers", "packages", "repositories")
 ROUND_BLOCKS = 3600
 
 TRACK_BUDGETS: dict[str, dict[str, int]] = {
-    "skills": {"tasks": 30, "repetitions": 3, "cpu_s": 8},
-    "mcp_servers": {"tasks": 25, "repetitions": 3, "cpu_s": 15},
-    "packages": {"tasks": 20, "repetitions": 3, "cpu_s": 30},
-    "repositories": {"tasks": 8, "repetitions": 2, "cpu_s": 90},
+    "skills": {"tasks": 50, "repetitions": 3, "cpu_s": 8},
+    "mcp_servers": {"tasks": 40, "repetitions": 3, "cpu_s": 15},
+    "packages": {"tasks": 30, "repetitions": 3, "cpu_s": 30},
+    "repositories": {"tasks": 50, "repetitions": 2, "cpu_s": 90},
 }
 
 WALL_BACKSTOP_FACTOR = 3
