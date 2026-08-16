@@ -13,7 +13,32 @@ _LINE_WINDOW = 10
 
 
 def _norm_file(vuln: dict) -> str:
-    return str(vuln.get("file", "")).strip().lower()
+    path = str(vuln.get("file", "")).strip().lower().replace("\\", "/")
+    while path.startswith(("./", "/")):
+        path = path.lstrip("/").removeprefix("./")
+    return path
+
+
+def _file_ok(expected: dict, reported: dict) -> bool:
+    fe, fr = _norm_file(expected), _norm_file(reported)
+    if not fe or not fr:
+        return False
+    return fe == fr or fe.endswith("/" + fr) or fr.endswith("/" + fe)
+
+
+def _cwe_num(value: object) -> str:
+    m = re.search(r"(\d+)", str(value or ""))
+    if not m:
+        return ""
+    return m.group(1).lstrip("0") or "0"
+
+
+def _cwe_set(vuln: dict) -> set[str]:
+    out = {_cwe_num(vuln.get("cwe"))}
+    listed = vuln.get("all_cwes")
+    if isinstance(listed, list):
+        out.update(_cwe_num(c) for c in listed)
+    return {c for c in out if c}
 
 
 def _tokens(text: str) -> set[str]:
@@ -37,13 +62,11 @@ def _line_ok(a: dict, b: dict) -> bool:
 
 
 def _matches(expected: dict, reported: dict) -> bool:
-    if _norm_file(expected) != _norm_file(reported):
+    if not _file_ok(expected, reported):
         return False
-    cwe_e = str(expected.get("cwe", "")).strip().upper()
-    cwe_r = str(reported.get("cwe", "")).strip().upper()
-    cwe_match = bool(cwe_e) and cwe_e == cwe_r
+    shared = _cwe_set(expected) & _cwe_set(reported)
     title_match = _title_overlap(expected, reported) >= _TITLE_OVERLAP_MIN
-    if not (cwe_match or title_match):
+    if not (shared or title_match):
         return False
     return _line_ok(expected, reported)
 

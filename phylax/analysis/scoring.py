@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import math
 from dataclasses import dataclass, field
 
@@ -97,10 +98,15 @@ def fbeta(precision: float, recall: float, beta: float = 2.0) -> float:
     return (1.0 + beta * beta) * precision * recall / denom
 
 
+def tiebreak_key(salt: str, hotkey: str) -> str:
+    return hashlib.sha256(f"{salt}:{hotkey}".encode()).hexdigest()
+
+
 def compute_emission_weights(
     scores_by_track: dict[str, list[tuple[str, float]]],
     contributor_hotkeys: set[str] | None = None,
     thresholds: dict[str, float] | None = None,
+    tiebreak_salt: str = "",
 ) -> dict[str, float]:
     weights: dict[str, float] = {}
     active: set[str] = set()
@@ -111,7 +117,10 @@ def compute_emission_weights(
         cut = (thresholds or {}).get(track, 0.0)
         positive = [
             (hk, s)
-            for hk, s in sorted(ranked, key=lambda r: r[1], reverse=True)
+            for hk, s in sorted(
+                ranked,
+                key=lambda r: (-r[1], tiebreak_key(f"{tiebreak_salt}:{track}", r[0])),
+            )
             if s > 0.0 and s >= cut
         ]
         active.update(hk for hk, _ in positive)

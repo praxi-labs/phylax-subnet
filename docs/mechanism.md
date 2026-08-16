@@ -20,8 +20,13 @@ metric, and sets a single weight vector spanning all tracks. Yuma consensus
 reconciles validators by stake weighted median.
 
 The design principle throughout: every validator runs the identical mechanism.
-Same tasks, same budgets, same failure rules, same metric. A miner's score must
-never depend on which validator evaluated it.
+Same pool, same budgets, same failure rules, same metric. Each validator draws
+its own task set from the round's frozen pool, so a round covers far more of the
+corpus than any one validator sees, and every agent a validator evaluates faces
+that validator's identical set. The draw is derived from the round seed and the
+validator's hotkey rather than chosen, so anyone can recompute it afterwards and
+no miner can know its tasks in advance. A miner's score is the average across
+validators, so it does not rest on any single one.
 
 ## Tracks and emission shares (frozen)
 
@@ -88,8 +93,10 @@ Rounds are opened by the operator, with an interval of **2 days** between them.
 
 1. At round open the participant set freezes: every active agent per track, pinned
    by hash.
-2. Per track, each validator draws its tasks from the round's frozen pool. The
-   draw is deterministic and reproducible after the fact.
+2. Per track, the backend freezes a pool of three times the task count. Each
+   validator draws its own task set from that pool, seeded by the round seed and
+   its own hotkey, so the draw is deterministic and reproducible after the fact
+   while no two validators evaluate quite the same set.
 3. Track order within the round is the validator's choice; a validator with
    capacity may run tracks concurrently. Consensus only sees the final vector.
 4. Weights are set once per round, after all four tracks complete.
@@ -193,6 +200,13 @@ Beta 2 tilts toward recall: a missed real vulnerability costs more than a flagge
 benign one. The agent's track score is the mean task score over the task set.
 Tasks with no planted findings score the existing clean precision rule.
 
+A reported finding matches when it names the same file, agrees on the weakness,
+and lands within ten lines of the planted one. The file may be given as a full
+path or as a suffix of one. The weakness agrees when the CWE numbers match,
+compared numerically so `CWE-79` and `CWE-079` are the same, against either the
+primary CWE or any entry in `all_cwes`. Failing that, a title and description
+overlap of at least 34% counts instead.
+
 Worked example: 4 planted findings, the agent reports 5, 3 match. R = 0.75,
 P = 0.6, F2 = 5 x 0.6 x 0.75 / (4 x 0.6 + 0.75) = 2.25 / 3.15 = 0.714.
 
@@ -240,6 +254,9 @@ Per round, each validator:
 
 1. Applies the track threshold, ranks the eligible agents per track.
 2. Pays the top three per track 0.50 / 0.30 / 0.20 of that track's emission share.
+   Agents on equal scores are ordered by `sha256(round seeds : track : hotkey)`,
+   so every validator resolves a tie the same way and consensus does not split on
+   it. The order is unpredictable before the round and rotates between rounds.
 3. Splits the total 95 performance / 5 contribution; the contribution pool divides
    equally among active agents from hotkeys with accepted corpus contributions.
 4. Normalises to one vector over all miner UIDs. Each miner holds weight only in

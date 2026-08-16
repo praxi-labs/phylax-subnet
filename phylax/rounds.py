@@ -35,6 +35,10 @@ def round_seed(start_block_hash: str, track: str) -> str:
     return hashlib.sha256(f"{start_block_hash}:{track}".encode()).hexdigest()
 
 
+def validator_draw_seed(round_seed: str, validator_hotkey: str) -> str:
+    return hashlib.sha256(f"{round_seed}:{validator_hotkey}".encode()).hexdigest()
+
+
 def select_tasks(corpus: list[dict], seed: str, count: int) -> list[dict]:
     items = sorted(corpus, key=lambda item: item["ref"])
     if count >= len(items):
