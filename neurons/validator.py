@@ -320,10 +320,14 @@ class PhylaxValidator:
             return f"abuse pattern: {abuse}"
         return ""
 
-    def _corpus_for(self, track: str, round_id: str) -> list[dict]:
+    def _corpus_for(
+        self, track: str, round_id: str, draw_seed: str = "", count: int = 0
+    ) -> list[dict]:
         if self.server is not None and round_id:
             try:
-                items = fetch_corpus(self.server, round_id, track)
+                items = fetch_corpus(
+                    self.server, round_id, track, draw_seed=draw_seed, count=count
+                )
             except ServerUnreachable as e:
                 raise AbstainRound(f"task set unreachable for track {track}: {e}") from e
             except ServerRejected as e:
@@ -383,13 +387,15 @@ class PhylaxValidator:
         start_block: int,
         end_block: int,
     ) -> list[tuple[str, float]] | None:
-        corpus = self._corpus_for(track, str(round_ids.get(track) or ""))
-        if not corpus:
-            log.info("track %s has no task set this round; skipping it", track)
-            return None
         seed = seeds.get(track) or rounds.round_seed(block_hash, track)
         budgets = rounds.budgets_for(track)
         draw_seed = rounds.validator_draw_seed(seed, self.wallet.hotkey.ss58_address)
+        corpus = self._corpus_for(
+            track, str(round_ids.get(track) or ""), draw_seed, budgets["tasks"]
+        )
+        if not corpus:
+            log.info("track %s has no task set this round; skipping it", track)
+            return None
         task_set = rounds.select_tasks(corpus, draw_seed, budgets["tasks"])
         self._detonate_task_set(track, task_set, budgets)
         agents = self._fetch_agents(track, participants.get(track))

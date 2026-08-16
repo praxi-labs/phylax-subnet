@@ -4,6 +4,7 @@ import base64
 import io
 import json
 import os
+import random
 import zipfile
 from pathlib import Path
 
@@ -99,10 +100,23 @@ def pack_files(files: dict) -> str:
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
-def fetch_corpus(client, round_id: str, track: str) -> list[dict]:
+def select_from_listing(entries: list, draw_seed: str, count: int) -> list:
+    pool = sorted(
+        (e for e in entries if e.get("source_id")),
+        key=lambda e: str(e.get("source_id")),
+    )
+    if not draw_seed or count <= 0 or count >= len(pool):
+        return pool
+    return random.Random(draw_seed).sample(pool, count)
+
+
+def fetch_corpus(
+    client, round_id: str, track: str, *, draw_seed: str = "", count: int = 0
+) -> list[dict]:
     listing = client.get_round_tasks(round_id) or {}
+    entries = select_from_listing(listing.get("tasks") or [], draw_seed, count)
     items: list[dict] = []
-    for entry in listing.get("tasks") or []:
+    for entry in entries:
         source_id = str(entry.get("source_id") or "")
         if not source_id:
             continue
