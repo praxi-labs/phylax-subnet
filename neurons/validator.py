@@ -389,7 +389,8 @@ class PhylaxValidator:
             return None
         seed = seeds.get(track) or rounds.round_seed(block_hash, track)
         budgets = rounds.budgets_for(track)
-        task_set = rounds.select_tasks(corpus, seed, budgets["tasks"])
+        draw_seed = rounds.validator_draw_seed(seed, self.wallet.hotkey.ss58_address)
+        task_set = rounds.select_tasks(corpus, draw_seed, budgets["tasks"])
         self._detonate_task_set(track, task_set, budgets)
         agents = self._fetch_agents(track, participants.get(track))
         self._round_seeds[track] = seed
@@ -947,6 +948,9 @@ class PhylaxValidator:
                 self._all_track_scores(scores_by_track, carried),
                 contributor_hotkeys=self._load_contributors(),
                 thresholds=scoring.TRACK_THRESHOLDS,
+                tiebreak_salt="".join(
+                    self._round_seeds.get(t, "") for t in sorted(self._round_seeds)
+                ),
             )
             blended = {
                 hk: EMA_ALPHA * w + (1.0 - EMA_ALPHA) * prior.get(hk, 0.0)
