@@ -51,10 +51,10 @@ def combine(components: ScoreComponents) -> ScoreResult:
 
 
 TRACK_EMISSION_WEIGHTS: dict[str, float] = {
-    "repositories": 0.675,
-    "packages": 0.225,
-    "mcp_servers": 0.075,
-    "skills": 0.025,
+    "repositories": 0.30,
+    "packages": 0.25,
+    "mcp_servers": 0.225,
+    "skills": 0.225,
 }
 
 TOP_K = 3
@@ -108,29 +108,39 @@ def compute_emission_weights(
     thresholds: dict[str, float] | None = None,
     tiebreak_salt: str = "",
 ) -> dict[str, float]:
-    weights: dict[str, float] = {}
+    qualified: dict[str, list[tuple[str, float]]] = {}
     active: set[str] = set()
-    for track, ranked in scores_by_track.items():
-        track_share = TRACK_EMISSION_WEIGHTS.get(track, 0.0)
+    for track, track_share in TRACK_EMISSION_WEIGHTS.items():
         if track_share <= 0.0:
             continue
         cut = (thresholds or {}).get(track, 0.0)
         positive = [
             (hk, s)
             for hk, s in sorted(
-                ranked,
+                scores_by_track.get(track) or [],
                 key=lambda r: (-r[1], tiebreak_key(f"{tiebreak_salt}:{track}", r[0])),
             )
             if s > 0.0 and s >= cut
         ]
-        active.update(hk for hk, _ in positive)
-        top = positive[:TOP_K]
-        if not top:
+        if not positive:
             continue
-        split = TOP_K_SPLIT[: len(top)]
-        denom = sum(split)
-        for (hotkey, _score), frac in zip(top, split, strict=True):
-            weights[hotkey] = weights.get(hotkey, 0.0) + track_share * (frac / denom)
+        active.update(hk for hk, _ in positive)
+        qualified[track] = positive[:TOP_K]
+
+    weights: dict[str, float] = {}
+    if qualified:
+        idle = sum(
+            share
+            for track, share in TRACK_EMISSION_WEIGHTS.items()
+            if share > 0.0 and track not in qualified
+        )
+        bonus = idle / len(qualified)
+        for track, top in qualified.items():
+            track_share = TRACK_EMISSION_WEIGHTS[track] + bonus
+            split = TOP_K_SPLIT[: len(top)]
+            denom = sum(split)
+            for (hotkey, _score), frac in zip(top, split, strict=True):
+                weights[hotkey] = weights.get(hotkey, 0.0) + track_share * (frac / denom)
 
     perf_total = sum(weights.values())
     if perf_total > 0.0:

@@ -32,13 +32,17 @@ validators, so it does not rest on any single one.
 
 | Track | Artifact | Emission share |
 | --- | --- | --- |
-| repositories | source repositories | 0.675 |
-| packages | package releases | 0.225 |
-| mcp_servers | MCP servers | 0.075 |
-| skills | agent skills | 0.025 |
+| repositories | source repositories | 0.30 |
+| packages | package releases | 0.25 |
+| mcp_servers | MCP servers | 0.225 |
+| skills | agent skills | 0.225 |
 
 The shares sum to 1.0 and are applied inside every validator's weight vector, not
 left to how validator stake happens to spread across tracks.
+
+When a track has no qualifying agent in a round, its share is split equally among
+the tracks that do, so a quiet track lifts every remaining track by the same
+amount rather than favouring the largest one.
 
 ## Registration and track slots
 
