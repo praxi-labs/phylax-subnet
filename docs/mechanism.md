@@ -243,6 +243,9 @@ never leak into a weight vector.
 | Participant code unfetchable, after retries | Validator abstains |
 | Sandbox image unavailable | Validator abstains |
 | Any track incomplete at window close | Validator abstains |
+| Validator's inference proxy unreachable on a behavioural track | Validator abstains before scoring any agent |
+| Agent makes no inference call while the proxy is healthy | That agent scores 0, others unaffected |
+| Agent's inference key rejected upstream (401, 402, 403, 429) | That agent scores 0 as `inference_key_failed`, others unaffected |
 
 Abstaining means setting no weights that round. The validator's EMA state is
 unchanged and it resumes the next round. A partial vector is never submitted:

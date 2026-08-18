@@ -72,6 +72,22 @@ def _record(nonce: str, data: bytes) -> None:
         row["output_tokens"] += int(usage.get("completion_tokens", 0) or 0)
 
 
+_KEY_FAILURE_CODES = frozenset({401, 402, 403, 429})
+
+
+def _record_upstream_error(nonce: str, code: int) -> None:
+    if not nonce:
+        return
+    with _LOCK:
+        row = _METRICS.setdefault(
+            nonce, {"requests": 0, "input_tokens": 0, "output_tokens": 0}
+        )
+        row["upstream_errors"] = row.get("upstream_errors", 0) + 1
+        if code in _KEY_FAILURE_CODES:
+            row["key_failures"] = row.get("key_failures", 0) + 1
+        row["last_upstream_status"] = int(code)
+
+
 def _admin_ok(headers) -> bool:
     token = os.getenv("PHYLAX_PROXY_ADMIN_TOKEN", "")
     if not token:
@@ -198,6 +214,7 @@ class Handler(BaseHTTPRequestHandler):
                 data = resp.read(_MAX_RESPONSE)
         except urllib.error.HTTPError as exc:
             payload = exc.read(_MAX_RESPONSE)
+            _record_upstream_error(nonce, exc.code)
             self.send_response(exc.code)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(payload)))

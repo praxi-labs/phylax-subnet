@@ -53,8 +53,6 @@ WEIGHT_REFRESH_S: int = 1200
 WEIGHT_RETRY_S: int = 180
 
 
-MIN_SCORED_FRACTION: float = 0.5
-
 _VERDICT_ORDINAL = {"ALLOW": 0, "WARN": 1, "BLOCK": 2}
 
 
@@ -418,6 +416,15 @@ class PhylaxValidator:
             )
         self._track_attempted = 0
         self._track_scored = 0
+        if self._inference_required(track) and not self._inference_ready():
+            self._report_progress(
+                round_id, track, "abstained", 0, len(agents), "",
+                len(task_set), "inference path unavailable",
+            )
+            raise InfraFailure(
+                f"{track} needs inference and this validator's proxy is unreachable; "
+                "abstaining before scoring so no agent is penalised for it"
+            )
         pending = [(hk, run) for hk, run in agents.items() if hk not in resumed]
         done = len(resumed)
 
@@ -464,16 +471,14 @@ class PhylaxValidator:
                     len(task_set), "",
                 )
                 self._submit_track_results(round_ids, start_block, track)
-        if self._track_attempted and (
-            self._track_scored / self._track_attempted < MIN_SCORED_FRACTION
-        ):
+        if self._track_attempted and self._track_scored == 0 and not self._inference_ready():
             self._report_progress(
                 round_id, track, "abstained", len(agents), len(agents), "",
-                len(task_set), "too few verdicts",
+                len(task_set), "inference path unavailable",
             )
-            raise AbstainRound(
-                f"only {self._track_scored}/{self._track_attempted} {track} tasks produced "
-                "a verdict; this validator cannot evaluate reliably"
+            raise InfraFailure(
+                f"no {track} task produced a verdict and this validator's inference "
+                "proxy is unreachable; abstaining rather than scoring agents zero"
             )
         self._report_progress(
             round_id, track, "scored", len(agents), len(agents), "",
@@ -679,6 +684,34 @@ class PhylaxValidator:
             scoring.RUN_W_CORRECTNESS * correctness + scoring.RUN_W_QUALITY * q
         )
 
+    def _inference_failure_reason(self, nonce: str) -> str:
+        usage = self._proxy_admin(f"/metrics?nonce={nonce}") or {}
+        row = usage.get("usage") or {}
+        if int(row.get("key_failures", 0) or 0) > 0:
+            return "inference_key_failed"
+        if int(row.get("upstream_errors", 0) or 0) > 0:
+            return "inference_upstream_error"
+        return "no_inference"
+
+    def _inference_required(self, track: str) -> bool:
+        return REQUIRE_INFERENCE and track != "repositories"
+
+    def _inference_ready(self) -> bool:
+        base = (
+            os.getenv("PHYLAX_PROXY_ADMIN_URL", "")
+            or os.getenv("PHYLAX_INFERENCE_PROXY_URL", "")
+        ).rstrip("/")
+        if not base:
+            return True
+        import urllib.request
+
+        try:
+            with urllib.request.urlopen(f"{base}/healthz", timeout=10) as response:  # noqa: S310
+                return response.status == 200
+        except Exception as e:  # noqa: BLE001
+            log.warning("inference proxy health probe failed: %s", e)
+            return False
+
     def _proxy_admin(self, path: str, payload: dict | None = None) -> dict:
         base = (
             os.getenv("PHYLAX_PROXY_ADMIN_URL", "")
@@ -765,8 +798,12 @@ class PhylaxValidator:
         if not ordinals:
             return None, wall_used, []
         if REQUIRE_INFERENCE and self._inference_calls(nonce) == 0:  # -1 means unreadable
-            self._note_rejection("no inference call")
-            self._failure_reasons[hotkey] = "no_inference"
+            reason = self._inference_failure_reason(nonce)
+            self._note_rejection(
+                "inference key rejected upstream" if reason == "inference_key_failed"
+                else "no inference call"
+            )
+            self._failure_reasons[hotkey] = reason
             return None, wall_used, []
         ordinals.sort()
         decision = _ORDINAL_VERDICT[ordinals[(len(ordinals) - 1) // 2]]
