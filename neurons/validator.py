@@ -388,10 +388,17 @@ class PhylaxValidator:
         seed = seeds.get(track) or rounds.round_seed(block_hash, track)
         budgets = rounds.budgets_for(track)
         draw_seed = rounds.validator_draw_seed(seed, self.wallet.hotkey.ss58_address)
-        corpus = self._corpus_for(
-            track, str(round_ids.get(track) or ""), draw_seed, budgets["tasks"]
-        )
+        round_id = str(round_ids.get(track) or "")
+        try:
+            corpus = self._corpus_for(track, round_id, draw_seed, budgets["tasks"])
+        except (AbstainRound, InfraFailure) as e:
+            self._report_progress(round_id, track, "abstained", 0, 0, "", 0, str(e)[:200])
+            raise
         if not corpus:
+            self._report_progress(
+                round_id, track, "abstained", 0, 0, "", 0,
+                "corpus served no tasks for this track",
+            )
             log.info("track %s has no task set this round; skipping it", track)
             return None
         task_set = rounds.select_tasks(corpus, draw_seed, budgets["tasks"])
@@ -404,7 +411,6 @@ class PhylaxValidator:
             start_block, end_block, track, len(task_set), len(agents),
         )
         track_scores: list[tuple[str, float]] = []
-        round_id = str(round_ids.get(track) or "")
         resumed = self._prior_round_results(round_id, agents)
         for done_hotkey, detail in resumed.items():
             track_scores.append((done_hotkey, float(detail["score"])))
