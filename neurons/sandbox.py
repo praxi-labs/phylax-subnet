@@ -46,10 +46,14 @@ class RunRequest(BaseModel):
 
 
 def _token_guard(x_phylax_sandbox_token: str = Header(default="")) -> None:
+    """Every run is authenticated, with no unconfigured escape hatch.
+
+    This service exists to execute untrusted code, so an unset token must fail
+    closed rather than open. main() refuses to start without one; the guard
+    still rejects here in case the app is constructed some other way.
+    """
     expected = os.getenv("PHYLAX_SANDBOX_TOKEN", "")
-    if not expected:
-        return
-    if not hmac.compare_digest(expected, x_phylax_sandbox_token or ""):
+    if not expected or not hmac.compare_digest(expected, x_phylax_sandbox_token or ""):
         raise HTTPException(status_code=401, detail="bad sandbox token")
 
 
@@ -159,6 +163,8 @@ def main() -> None:
     )
     if not os.getenv("PHYLAX_SANDBOX_IMAGE"):
         raise SystemExit("PHYLAX_SANDBOX_IMAGE is required; agents never run unjailed")
+    if not os.getenv("PHYLAX_SANDBOX_TOKEN"):
+        raise SystemExit("PHYLAX_SANDBOX_TOKEN is required; this service runs code")
     uvicorn.run(
         build(),
         host=os.getenv("PHYLAX_SANDBOX_HOST", "0.0.0.0"),
