@@ -39,14 +39,20 @@ class ServerIdentityMismatch(Exception):
 
 class PhylaxServerClient:
     def __init__(self, base_url: str, wallet, *, timeout: float = 10.0,
-                 expected_server_hotkey: str | None = None):
+                 expected_server_hotkey: str | None = None,
+                 sandbox_token: str | None = None):
         self.base_url = base_url.rstrip("/")
         self.wallet = wallet
         self.timeout = timeout
         self._server_hotkey: str | None = expected_server_hotkey
+        # Set only in the execution layer. It buys exactly one thing: fetching
+        # champion code without a validator permit on the netuid.
+        self._sandbox_token = (sandbox_token or "").strip() or None
 
     @property
     def hotkey_address(self) -> str:
+        if self.wallet is None:
+            raise RuntimeError("this client has no wallet; it authenticates by token")
         return self.wallet.hotkey.ss58_address
 
     @property
@@ -66,7 +72,8 @@ class PhylaxServerClient:
 
     def _request(self, method: str, path: str, *, json_body: dict | None = None,
                  params: dict | None = None, signed: bool = True,
-                 timeout: float | None = None) -> dict:
+                 timeout: float | None = None,
+                 extra_headers: dict[str, str] | None = None) -> dict:
         import httpx
 
         body = (
@@ -78,6 +85,8 @@ class PhylaxServerClient:
         headers: dict[str, str] = {"Content-Type": "application/json"} if json_body is not None else {}
         if signed:
             headers.update(self._signed_headers(method, path, body))
+        if extra_headers:
+            headers.update(extra_headers)
         try:
             r = httpx.request(
                 method, url, headers=headers, content=body,
@@ -162,6 +171,39 @@ class PhylaxServerClient:
                 raise
             return None
         return data or None
+
+    def get_runnable_agent_as_sandbox(self, hotkey: str) -> dict | None:
+        """Fetch champion code over the server's first-party sandbox path.
+
+        The execution layer is not a validator: it holds no stake and has no
+        metagraph presence, so it cannot sign as one. The server already knows
+        which agents are champions and already holds their code, so it serves
+        them here against the shared sandbox token instead.
+
+        Only a 404 becomes None. An auth failure is raised, because a sandbox
+        that silently reports every champion as "not runnable" looks exactly
+        like a network with no champions at all.
+        """
+        if not self._sandbox_token:
+            raise RuntimeError("no sandbox token configured")
+        try:
+            data = self._request(
+                "GET",
+                f"/v1/sandbox/agent/{hotkey}/runnable",
+                signed=False,
+                extra_headers={"x-phylax-sandbox-token": self._sandbox_token},
+            )
+        except ServerRejected as exc:
+            if exc.status_code == 404:
+                return None
+            raise
+        return data or None
+
+    def fetch_runnable_agent(self, hotkey: str) -> dict | None:
+        """Champion code, by whichever credential this process actually holds."""
+        if self._sandbox_token:
+            return self.get_runnable_agent_as_sandbox(hotkey)
+        return self.get_runnable_agent(hotkey)
 
     def get_round_tasks(self, round_id: str) -> dict:
         """Fetch this round's frozen task set from the backend.

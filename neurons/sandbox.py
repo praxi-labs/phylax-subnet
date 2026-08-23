@@ -93,7 +93,7 @@ def create_app(server: PhylaxServerClient, hotkey_ss58: str) -> FastAPI:
     @app.post("/v1/run", dependencies=[Depends(_token_guard)])
     async def run(payload: RunRequest) -> dict:
         blob = pack(payload.files)
-        runnable = server.get_runnable_agent(payload.hotkey)
+        runnable = server.fetch_runnable_agent(payload.hotkey)
         if not runnable or not runnable.get("code"):
             raise HTTPException(status_code=404, detail="agent not runnable")
         if payload.agent_hash:
@@ -142,16 +142,35 @@ def build(argv=None) -> FastAPI:
     parser.add_argument("--wallet.hotkey", dest="wallet_hotkey", default="default")
     args, _ = parser.parse_known_args(argv)
 
-    wallet = bt.wallet(name=args.wallet_name, hotkey=args.wallet_hotkey)
     url = os.getenv("PHYLAX_SERVER_URL", "").strip()
     if not url:
         raise SystemExit("PHYLAX_SERVER_URL is required")
+
+    token = os.getenv("PHYLAX_SANDBOX_TOKEN", "").strip()
+
+    # The wallet exists only to sign as a validator. With a sandbox token the
+    # server serves champion code over its first-party path, so an operator
+    # whose host has no registered hotkey can still run the execution layer.
+    wallet = None
+    identity = "sandbox"
+    try:
+        wallet = bt.wallet(name=args.wallet_name, hotkey=args.wallet_hotkey)
+        identity = wallet.hotkey.ss58_address
+    except Exception as exc:  # noqa: BLE001
+        if not token:
+            raise SystemExit(
+                "no usable wallet and no PHYLAX_SANDBOX_TOKEN: the sandbox has "
+                f"no way to fetch champion code ({exc})"
+            ) from exc
+        log.info("no usable wallet; fetching champion code with the sandbox token")
+
     server = PhylaxServerClient(
         base_url=url,
         wallet=wallet,
+        sandbox_token=token or None,
         expected_server_hotkey=os.getenv("PHYLAX_SERVER_HOTKEY", "").strip() or None,
     )
-    return create_app(server, wallet.hotkey.ss58_address)
+    return create_app(server, identity)
 
 
 def main() -> None:
