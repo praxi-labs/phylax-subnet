@@ -103,7 +103,7 @@ executed. Correctness still dominates the score.
   `ceil(ρ · r)` of `r` repeat runs (ρ = 0.5). "Correct" means the run's
   correctness clears a floor, not merely a non-zero score.
 - **Quality threshold** τ = 0.6 gates eligibility.
-- **Graduated weights** — top three per track split emissions 0.50 / 0.30 / 0.20.
+- **Graduated weights** — top five per track split emissions 0.40 / 0.25 / 0.15 / 0.12 / 0.08.
 - **Consensus** — stake-weighted median (Yuma), on chain. The server never picks
   winners; it records and reflects on-chain consensus.
 - **Repositories** — two evidence layers scored together: exploitable code

@@ -96,7 +96,7 @@ Each task is run several times on the same pinned artifact and the repetitions
 reduce to one verdict by consensus, so a flaky agent loses the vote. Behavioural
 tracks are scored by clamped Matthews correlation over the round's task set,
 repositories by F2 against known vulnerabilities, and a per track quality
-threshold plus a graduated top three split concentrate emissions on the
+threshold plus a graduated top five split concentrate emissions on the
 strongest agents a stake majority independently endorses. The full rules are
 pinned in [the mechanism spec](docs/mechanism.md).
 

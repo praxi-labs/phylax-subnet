@@ -53,7 +53,9 @@ never ships to the agent.
 
 - **Quality threshold:** only agents with `S_v(a) > τ` (default 0.6) receive any
   weight.
-- **Graduated split:** the top three eligible agents receive 0.50 / 0.30 / 0.20.
+- **Graduated split:** the top five eligible agents receive 0.40 / 0.25 / 0.15 / 0.12 / 0.08.
+  A track with fewer than five qualifying agents renormalises the leading
+  slice, so it still pays out its whole share.
 - **Pools:** 95% performance (split across tracks 0.30 repositories, 0.25
   packages, 0.225 mcp_servers, 0.225 skills), 5% contribution (equal split among
   recognized contributors active that epoch, folding back when none qualify).

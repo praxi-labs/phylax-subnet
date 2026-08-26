@@ -260,7 +260,7 @@ round start, not mid round.
 Per round, each validator:
 
 1. Applies the track threshold, ranks the eligible agents per track.
-2. Pays the top three per track 0.50 / 0.30 / 0.20 of that track's emission share.
+2. Pays the top five per track 0.40 / 0.25 / 0.15 / 0.12 / 0.08 of that track's emission share.
    Agents on equal scores are ordered by `sha256(round seeds : track : hotkey)`,
    so every validator resolves a tie the same way and consensus does not split on
    it. The order is unpredictable before the round and rotates between rounds.
