@@ -57,10 +57,17 @@ TRACK_EMISSION_WEIGHTS: dict[str, float] = {
     "skills": 0.225,
 }
 
-TOP_K = 3
+# How many agents per track earn emissions, and how a track's share is cut
+# between them. Five rather than three so the reward curve is less of a cliff:
+# fourth place used to earn nothing, which makes a near miss worth the same as
+# not competing.
+TOP_K = 5
 
 
-TOP_K_SPLIT: tuple[float, ...] = (0.50, 0.30, 0.20)
+# Must sum to 1.0 and be at least TOP_K long. A track with fewer qualifying
+# agents than TOP_K uses the leading slice and renormalises, so a thin track
+# still pays out its whole share rather than burning the remainder.
+TOP_K_SPLIT: tuple[float, ...] = (0.40, 0.25, 0.15, 0.12, 0.08)
 
 PERFORMANCE_SHARE = 0.95
 
