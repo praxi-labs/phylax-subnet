@@ -810,6 +810,19 @@ class PhylaxValidator:
                 else "no inference call"
             )
             self._failure_reasons[hotkey] = reason
+            # Record what did run before discarding the verdict.
+            #
+            # The repetitions above produced real output; the run is refused
+            # because the agent reached that output without inference, not
+            # because nothing happened. Returning here without attesting is why
+            # a rejected miner sees runs: 5 alongside tasks: [], which hides the
+            # one view that would explain the rejection. The attestation is
+            # marked rejected so it is never mistaken for a scored verdict.
+            if last_result is not None:
+                self._attest(
+                    track, hotkey, runnable, item, nonce, last_result,
+                    rejected=reason,
+                )
             return None, wall_used, []
         ordinals.sort()
         decision = _ORDINAL_VERDICT[ordinals[(len(ordinals) - 1) // 2]]
@@ -917,10 +930,25 @@ class PhylaxValidator:
         return sum(rep_scores) / len(rep_scores), wall_used
 
     def _attest(
-        self, track: str, hotkey: str, runnable: dict, item: dict, nonce: str, result: dict
+        self,
+        track: str,
+        hotkey: str,
+        runnable: dict,
+        item: dict,
+        nonce: str,
+        result: dict,
+        rejected: str | None = None,
     ) -> None:
+        """Publish one per-task attestation.
+
+        `rejected` carries the reason a run was refused. Such an attestation is
+        evidence, not a score: it exists so a miner can see what their agent did
+        on each task, including the tasks that cost them the round.
+        """
         verdict = result["verdict"]
         evidence = dict(result["evidence"] or {})
+        if rejected:
+            evidence["rejected"] = {"reason": rejected, "scored": False}
         trace = self._traces.get(item["ref"])
         if trace is not None:
             evidence["validator_observed"] = {
