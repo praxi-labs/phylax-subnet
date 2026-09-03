@@ -1,0 +1,52 @@
+name: Test
+
+# The published half of the suite, on every push and PR.
+#
+# This repo decides emissions and runs on every validator, and until now the
+# only automated check was `ruff check` — a change to the reward split or the
+# inference gate could reach main with nothing having executed it.
+#
+# The scoring tests are deliberately not here. They stay local because they
+# write out the reward curve as a table (see .gitignore for the reasoning), so
+# this job cannot cover them. What it does cover is the client, the corpus draw,
+# detonation and inference isolation: the parts where a regression is silent
+# rather than loud.
+#
+# Run the full suite locally before changing anything under phylax/analysis:
+#     pytest tests/
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # bittensor is heavy and only the validator entrypoint needs it; the
+      # published tests import phylax.* directly, so the runner stays small.
+      - name: Install
+        run: |
+          python -m pip install --quiet --upgrade pip
+          python -m pip install --quiet pytest
+          python -m pip install --quiet -e . || python -m pip install --quiet -r requirements.txt || true
+
+      - name: Test
+        run: pytest tests/ -q
+        env:
+          PYTHONPATH: .

@@ -76,8 +76,27 @@ validators/
 # Docker
 *.tar
 
-# Local verification only; never publish
-tests/
+# Tests split by what they would reveal.
+#
+# The scoring tests stay local: they assert TOP_K, TOP_K_SPLIT,
+# TRACK_THRESHOLDS and the emission weights, which is the shape of the reward
+# curve written out as a table. The modules themselves are public, but a test
+# spells out the edge cases and the exact payouts, which is a shortcut for
+# anyone tuning an agent against the mechanism rather than the task.
+#
+# Everything else is published so CI can run it. Those cover the client, the
+# corpus draw, detonation and inference isolation, and reference no scoring
+# symbol at all — verified before adding each one here.
+#
+# `tests/*` rather than `tests/`: git cannot re-include a file whose parent
+# directory is excluded, so a negation under `tests/` would silently do nothing.
+tests/*
+!tests/__init__.py
+!tests/test_server_client.py
+!tests/test_detonate.py
+!tests/test_corpus_fetch_sampling.py
+!tests/test_npm_detonation.py
+!tests/test_inference_isolation.py
 
 # Validator round records
 state/
